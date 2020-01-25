@@ -1,0 +1,1351 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+A Shared Task on Bandit Learning for Machine Translation
+
+
+Proceedings of the Conference on Machine Translation (WMT), Volume 2: Shared Task Papers, pages 514–524
+Copenhagen, Denmark, September 711, 2017. c©2017 Association for Computational Linguistics
+
+A Shared Task on Bandit Learning for Machine Translation
+
+Artem Sokolov∗,� and Julia Kreutzer� and Kellen Sunderland∗ and Pavel Danchenko∗
+and Witold Szymaniak∗ and Hagen Fürstenau∗ and Stefan Riezler�
+
+∗Amazon Development Center Germany, Berlin and �Heidelberg University, Germany
+
+Abstract
+
+We introduce and describe the results of
+a novel shared task on bandit learning for
+machine translation. The task was orga-
+nized jointly by Amazon and Heidelberg
+University for the first time at the Sec-
+ond Conference on Machine Translation
+(WMT 2017). The goal of the task is to
+encourage research on learning machine
+translation from weak user feedback in-
+stead of human references or post-edits.
+On each of a sequence of rounds, a ma-
+chine translation system is required to pro-
+pose a translation for an input, and re-
+ceives a real-valued estimate of the qual-
+ity of the proposed translation for learn-
+ing. This paper describes the shared task’s
+learning and evaluation setup, using ser-
+vices hosted on Amazon Web Services
+(AWS), the data and evaluation metrics,
+and the results of various machine transla-
+tion architectures and learning protocols.
+
+1 Introduction
+
+Bandit Learning for machine translation (MT) is
+a framework to train and improve MT systems
+by learning from weak or partial feedback: In-
+stead of a gold-standard human-generated trans-
+lation, the learner only receives feedback to a sin-
+gle proposed translation (hence the term ‘partial’),
+in form of a translation quality judgement (a real
+number which can be as weak as a binary accep-
+tance/rejection decision).
+
+In the shared task, user feedback was simu-
+lated by a service hosted on Amazon Web Ser-
+vices (AWS). Participants can submit translations
+and receive feedback on translation quality. This
+is used to adapt an out-of-domain MT model,
+pre-trained on mostly news texts, to a new do-
+
+main (e-commerce), for the translation direction
+of German (DE) to English (EN). While in our
+setup feedback was simulated by evaluating a re-
+ward function on the predicted translation against
+a gold standard reference, the reference translation
+itself was never revealed to the learner, neither at
+training nor at test time. This learning scenario
+has been investigated under the names of learning
+from bandit feedback1 or reinforcement learning
+(RL)2, and has important real world applications
+such as online advertising (Chapelle et al., 2014).
+In the advertising application, the problem is to
+select the best advertisement for a user visiting a
+publisher page. A key element is to estimate the
+click-through rate (CTR), i.e., the probability that
+an ad will be clicked by a user so that the adver-
+tiser has to pay. This probability is modeled by
+features representing user, page, and ad, and is es-
+timated by trading off exploration (a new ad needs
+to be displayed in order to learn its click-through
+rate) and exploitation (displaying the ad with the
+current best estimate is better in the short term) in
+displaying ads to users.
+
+In analogy to the online advertising scenario,
+one could imagine a scenario of personalization
+in machine translation where translations have to
+be adapted to the user’s specific purpose and do-
+main. Similar to online advertising, where it is un-
+realistic to expect more detailed feedback than a
+user click on a displayed ad, the feedback in adap-
+tive machine translation should be weaker than
+a reference translation or a post-edit created by
+
+1The name is inherited from a model where in each round
+a gambler pulls an arm of a different slot machine (‘one-
+armed bandit’), with the goal of maximizing his reward rel-
+ative to the maximal possible reward, without apriori knowl-
+edge of the optimal slot machine. See Bubeck and Cesa-
+Bianchi (2012) for an overview.
+
+2See Sutton and Barto (1998) and Szepesvári (2009) for
+an overview of algorithms for reinforcement learning and
+their relation to bandit learning.
+
+514
+
+
+
+a professional translator. Instead, the goal is to
+elicit binary or real-valued judgments of transla-
+tion quality from laymen users (for example, Gra-
+ham et al. (2016) show that consistent assessments
+of real-valued translation quality can be provided
+by crowdsourcing), or to infer feedback signals
+from user interactions with the translated content
+on a web page (for example, by interpreting a
+copy-paste action of the MT output as positive
+quality signal, and a correction as a negative qual-
+ity signal). The goal of this shared task is to eval-
+uate existing algorithms for learning MT systems
+from weak feedback (Sokolov et al., 2015, 2016a;
+Kreutzer et al., 2017) on real-world data and com-
+pare them to new algorithms, with a focus on per-
+forming online learning efficiently and effectively
+from bandit feedback, i.e. the best algorithms are
+those that perform fast online learning and, simul-
+taneously, achieve high translation quality.
+
+In the following, we present a description of
+the protocol and infrastructure of our online learn-
+ing task, and of the data for pretraining, online
+training, and evaluation (Section 2). We intro-
+duce the online and batch evaluation metrics used
+in the shared task (Section 3), and describe static
+baseline systems (Section 4) and submitted online
+learning systems (Section 5). We present and dis-
+cuss the results of the task (Section 6-7), show-
+ing that NMT systems with batch domain adapta-
+tion provide very good baselines, however, online
+learning based on SMT or NMT can catch up over
+time by adapting to the provided feedback.
+
+2 Task Description
+
+Our shared task setup follows an online learning
+protocol, where on each iteration, the learner re-
+ceives a source sentence, proposes a translation,
+and is rewarded in form of a task sentence-level
+metric evaluation of the proposed translation with
+respect to a hidden reference. The learner does
+not know what the correct translation (reference)
+looks like, nor what would have happened if it had
+proposed a different translation. Thus, we imple-
+mented two constraints to guarantee this scenario
+of online learning from weak feedback. First, sen-
+tences had to be translated one by one, i.e. the
+next source sentence could only be received after
+the translation to the previous sentence was sent
+off. Second, feedback could be obtained only for
+a single translation of any given source sentence.
+
+In our shared task, the participant systems inter-
+
+Algorithm 1 WMT Online Bandit Learning
+1: Input: MT model
+2: for k = 0, . . . ,K do
+3: Request source sentence sk from service
+4: Propose a translation tk
+5: Obtain feedback ∆(tk) from service
+6: Improve MT model with 〈sk, tk,∆(tk)〉
+
+act online with an AWS-hosted service as shown
+in Algorithm 1. The service provides a source sen-
+tence to the learner (line 3), and provides feedback
+(line 5) to the translation predicted by the learner
+(line 4). The learner updates its parameters using
+the feedback (line 6) and continues to the next ex-
+ample. We did not impose any restriction on how
+the learner could use the feedback to improve fu-
+ture translations.
+
+Infrastructure. We provided three AWS-hosted
+environments, that correspond to the three phases
+of the shared task:
+
+1. Mock service, to test the client API (op-
+tional): hosted a tiny in-domain dataset (48
+sentences).
+
+2. Development service to tune algorithms and
+hyperparameters (optional): ran on a larger
+in-domain dataset (40,000 sentences). Sev-
+eral passes were allowed and two evaluation
+metrics were communicated to the partici-
+pants via the leaderboard.
+
+3. Training service (mandatory): served sources
+from a large in-domain dataset (1,297,974
+sentences). Participants had to consume a
+fixed number of samples during the allocated
+online learning period to be eligible for final
+evaluation.
+
+We built the shared task around the following
+AWS services:
+
+• API Gateway (authentication, rate limiting,
+client API SDK);
+
+• Lambda (computation);
+• DynamoDB (data storage);
+• CloudWatch (logging and monitoring).
+
+In more detail, service endpoints were imple-
+mented using API Gateway, that gave us access,
+on a participant level, to throttle requests rates,
+manage accounts, etc. API Gateway enabled easy
+management of our public-facing endpoints and
+
+515
+
+
+
+source reference (PE) PE direction PE modification
+
+schwarz gr.xxl / xxxl black , size xxl / xxxl DE-EN fixed errors in source, expanded abbreviation
+, 147 cm 147 cm DE-EN fixed errors in source
+für starke , glänzende nägel great for strengthen your nails and enhance shine EN-DE poor quality source (EN) used as reference
+seemless verarbeitung seamless processing DE-EN source typo corrected in reference
+brenndauer : mindestens 40 stunden 40 hour minimum burn time DE-EN translation rewritten for readability
+maschinenwaschbar bei 30 ° c machine washable at 30 degrees . DE-EN literal expansion of the degree symbol
+32 unzen volumen 32-ounce capacity DE-EN language-specific typography
+material : 1050 denier nylon . material : 1050d nylon . EN-DE expanded source (EN) abbreviation used as reference
+für e-gitarre entworfen designed for electric guitar DE-EN abbreviation expanded
+
+Table 1: Examples for non-literal PEs in the e-commerce data: The first two columns show examples3 of
+source sentences and PEs used as reference translations in the shared task. The last two columns show
+the direction of translation post-editing, and a description of the modifications applied by the editors.
+
+environments, and provided integrated metrics and
+notifications, which we monitored closely during
+the shared task. Data storage was implemented
+using DynamoDB – a NoSQL storage database
+which allows dynamic scaling of our back-end
+to match the varied requirements of the differ-
+ent shared task phases. The state management
+(e.g., forbidding multiple requests), source sen-
+tence serving, feedback calculation, keeping track
+of participant’s progress and result processing was
+implemented using Lambda – a serverless com-
+pute architecture that dispenses with setting up
+and monitoring a dedicated server infrastructure.
+CloudWatch service was used to analyze logs in
+order to trace down errors, general monitoring and
+sending alarms to the shared task API maintainers.
+In addition to the service development, we also de-
+veloped a small SDK consisting of code samples
+and helper libraries in Python and Java to help par-
+ticipants in developing their clients, as well as a
+leaderboard that showed the results during the de-
+velopment phase.
+
+Data. For training initial or seed MT systems
+(the input to Algorithm 1), out-of-domain parallel
+data was restricted to DE-EN parts of Europarl v7,
+NewsCommentary v12, CommonCrawl and Rapid
+data from the WMT 2017 News Translation (con-
+strained) task4. Furthermore, monolingual EN
+data from the constrained task was allowed. Tun-
+ing of the out-of-domain systems had to be done
+on the newstest2016-deen set.
+
+The in-domain parallel data for online learning
+was taken from the e-commerce domain: The cor-
+pus was provided by Amazon and had been sam-
+pled from a large real-world collection of post-
+edited (PE’ed) translations of actual product de-
+scriptions. Since post-editors were following cer-
+
+3Examples selected by Khanh Ngyuen.
+4statmt.org/wmt17/translation-task.html
+
+tain rules aimed at improving customer experience
+on the Amazon retail website (improving read-
+ability, correction of typos, rewriting of uncom-
+mon abbreviations, removing irrelevant informa-
+tion, etc.), naturally the resulting PEs were not al-
+ways literal, sometimes adding or deleting a con-
+siderable number of tokens and resulting in low
+feedback BLEU scores for submitted literal trans-
+lations (see Table 1 for examples). Consequently,
+the participants had to solve two difficult prob-
+lems – domain adaptation and learning from ban-
+dit feedback. In addition, to simulate the level of
+noise normally encountered in real-world MT ap-
+plications, and to test noise-robustness of the ban-
+dit learning algorithms, approximately half of the
+parallel in-domain data was sourced from the EN-
+DE post-editing direction and reversed.
+
+All data was preprocessed with Moses scripts
+(removing non-printing characters, replacing and
+normalizing unicode punctuation, lowercasing,
+pretokenizing and tokenizing). No DE-side com-
+pound splitting was used, permitting custom par-
+ticipant decisions. Since the learning data came
+from a substantially different domain than the out-
+of-domain parallel texts, it had a large number
+of out-of-vocabulary (OOV) terms, aggravated by
+the high frequency of long product numbers and
+unique vendor names. To reduce the OOV rate
+we additionally filtered out all parallel sentences
+where the source contained more than one numeral
+(with a whitespace in between) and normalized
+floating point delimiters in both languages to a pe-
+riod. The resulting average OOV token rate with
+respect to the out-of-domain parallel training data
+(assuming the above preprocessing) is ' 2% for
+EN and ' 6% for DE data side. Statistics on
+the length distribution of in-domain and out-of-
+domain data is given in Table 2.
+
+For all services, the sequence of provided
+
+516
+
+
+
+# tokens out-of-domain in-domain
+
+mean 23.0±14.1 6.6±4.8
+median 25 8
+max 150 25
+
+# lines 5.5M 1.3M
+
+Table 2: Data statistics for source side of in-
+domain and out-of-domain parallel data.
+
+source sentences was the same for all participants,
+with no data intersection between the services be-
+yond natural duplicates: About 11% of data were
+duplicates on both (DE and EN) sides, where
+about 4% of DE sentences had more than one dif-
+ferent EN side.
+
+Feedback. Simulation of real-valued user feed-
+back was done by calculating the smoothed
+sentence-level BLEU-score (Lin and Och, 2004)
+(with additive n-gram count smoothing with offset
+0.01, applied only if the n-gram count was zero)
+with respect to one human reference (preprocessed
+as described above).
+
+3 Evaluation Metrics
+
+In our shared task, participants were allowed to
+use their favorite MT systems as starting points
+to integrate online bandit learning methods. This
+leads to the difficulty of separating the contribu-
+tions of the underlying MT architecture and the
+online bandit learning method. We attempted to
+tackle this problem by using different evaluation
+metrics that focus on these respective aspects:
+
+1. Online cumulative reward: This met-
+ric measures the cumulative sum C =∑K
+
+k=1 ∆(tk) of the per-sentence BLEU score
+∆ against the number of iterations. This met-
+ric has been used in reinforcement learning
+competitions (Dimitrakakis et al., 2014). For
+systems with the same design, this metric fa-
+vors those that do a good job at balancing
+exploration and exploitation to achieve high
+scores over the full data sequence. Unlike
+in these competitions, where environments
+(i.e., action spaces and context features) were
+fixed, in our task the environment is hetero-
+geneous due to the use of different under-
+lying MT architectures. Thus, systems that
+start out with a well-performing pretrained
+
+out-of-domain model have an advantage over
+systems that might improve more over worse
+starting points. Furthermore, even systems
+that do not perform online learning at all can
+achieve high cumulative rewards.
+
+2. Online regret: In order to overcome the
+problems of the cumulative reward metric,
+we can use a metric from bandit learning that
+measures the regret R = 1K
+
+∑K
+k=1
+
+(
+∆(t∗k) −
+
+∆(tk)
+)
+
+that is suffered by the system when
+predicting translation tk instead of the opti-
+mal translation t∗k produced by an oracle sys-
+tem. Plotting a running average of regret
+against the number of iterations allows sep-
+arating the gains due to the MT architecture
+from the gains due to the learning algorithm:
+Systems that do learn will decrease regret,
+systems that do not learn will not. In our
+task, we use as oracle system a model that
+is trained on in-domain data.
+
+3. Relative reward: A further way to separate
+out the learning ability of systems from the
+contribution of the underlying MT architec-
+ture is to apply the standard corpus-BLEU
+score and/or an average of the per-sentence
+BLEU score ∆ on a held-out set at regu-
+lar intervals during training. Plotting these
+scores against the number of iterations, or
+alternatively, subtracting the performance of
+the starting point at each evaluation, allows
+to discern systems that adapt to a new do-
+main from systems that are good from the be-
+ginning and can achieve high cumulative re-
+wards without learning. We performed this
+evaluation by embedding a small (relative to
+the whole sequence) fixed held-out set in the
+beginning (showing the performance of the
+initial out-of-domain model), and again at
+regular intervals including the very end of the
+learning sequence. In total, there were 4 in-
+sertions of 700 sentences in the development
+data and 12 insertions of 4,000 sentences in
+the final training phase, which constitutes
+'2% and '0.3% of the respective learning
+sequence lengths. Note that this metric mea-
+sures the systems’ performance while they
+were still exploring and learning, but the rela-
+tive size of the embedded held-out set is small
+enough to consider the models static during
+such periodic evaluations.
+
+517
+
+
+
+4 Baselines
+
+As baseline systems, we used SMT and NMT
+models that were trained on out-of-domain data,
+but did not perform online learning on in-domain
+data. We further present oracle systems that were
+trained in batch on in-domain data.
+
+4.1 Static SMT baselines.
+
+SMT-static. We based our SMT submissions
+on the SCFG decoder cdec (Dyer et al., 2010)
+with on-the-fly grammar extraction with suffix ar-
+rays (Lopez, 2007). Training was done in batch on
+the parallel out-of-domain data; tuning was done
+on newstest2016-deen. During the devel-
+opment phase we evaluated MERT (on 14 default
+dense features) and MIRA (on additional lexical-
+ized sparse features: rule-id features, rule source
+and target bigram features, and rule shape fea-
+tures), and found no significant difference in re-
+sults. We chose MERT with dense features as the
+seed system for the training phase for its speed and
+smaller memory footprint.
+
+4.2 Static NMT baselines.
+
+WMT16-static. First of all, we are interested in
+how well the currently best (third-party) model
+on the news domain would perform on the e-
+commerce domain. Therefore, the Nematus (Sen-
+nrich et al., 2017) model that won the News
+Translation Shared Task at WMT 2016 (Bojar
+et al., 2016b)5 was used to translate the data
+from this shared task. It is an attentional, bi-
+directional, singe-layered encoder-decoder model
+on sub-word units (BPE with 89,500 merge oper-
+ations) with word embeddings of dimensionality
+500, GRUs of size 1024, pervasive dropout and r2l
+reranking (details in (Sennrich et al., 2016a)). Fi-
+nal predictions are made with an ensemble formed
+of the four last training checkpoints and beam
+search with width 12. It was trained on a dif-
+ferent corpus than allowed for this shared task –
+the WMT 2016 news training data (Europarl v7,
+News Commentary v11, CommonCrawl) and ad-
+ditional synthetic parallel data generated by trans-
+lating the monolingual news crawl corpus with a
+EN-DE NMT model.
+
+BNMT-static. The UNK replacement strategy
+of Jean et al. (2015) and Luong et al. (2015) is
+
+5From data.statmt.org/rsennrich/wmt16_
+systems/de-en/
+
+expected to work reasonable well for tokens that
+occur in the training data and those that are copied
+from source to target. However, the NMT model
+does not learn anything about these words as such
+in contrast to BPE models (Sennrich et al., 2016b)
+where the decomposition by byte pair encoding
+(BPE) allows for a representation within the vo-
+cabulary. We generate a BNMT system using a
+BPE vocabulary from 30k merge operations on
+all tokens and all single characters of the training
+data, including the UNK token. If unknown char-
+acters occur, they are copied from source to target.
+
+4.3 Oracle SMT and NMT systems
+
+To simulate full-information systems (oracles) for
+regret calculation, we trained an SMT and an
+NMT system with the same architectures, on the
+in-domain data that other learning systems ac-
+cessed only through the numerical feedback. The
+SMT oracle system was trained on combined in-
+domain and out-of-domain data, while the NMT
+oracle system continued training from the con-
+verged out-of-domain system on the in-domain
+data with the same BPE vocabulary.
+
+5 Submitted Systems
+
+5.1 Online bandit learners based on SMT.
+
+Online bandit learners based on SMT were fol-
+lowing the existing approaches to adapting an
+SMT model from weak user feedback (Sokolov
+et al., 2016b,a) by stochastically optimizing ex-
+pected loss (EL) for a log-linear model. Fur-
+thermore, we present a model that implements
+stochastic zeroth-order (SZO) optimization for on-
+line bandit learning. Cube pruning limit (up to
+600), learning rate adaptation schedules (constant
+vs. Adadelta (Zeiler, 2012) or Adam (Kingma and
+Ba, 2014)), as well as the initial learning rates (for
+Adam), were tuned during the development phase.
+The best configurations were selected for the train-
+ing phase. The running average of rewards as an
+additive control variate (CV)6 was found helpful
+for stochastic policy gradient updates (Williams,
+1992) for all online learning systems.
+
+SMT-EL-CV-ADADELTA. We used the EL
+minimization approach of Sokolov et al. (2016a),
+adding Adadelta’s learning rate scheduling, and a
+control variate (effectively, replacing the received
+
+6Called a baseline in RL literature; here we use a term
+from statistics not to confuse it with baseline MT models.
+
+518
+
+
+
+feedback ∆(tk) with ∆(tk) − 1k
+∑k
+
+k′=1 ∆(tk′)).
+Sampling and computation of expectations on the
+hypergraph used the Inside-Outside algorithm (Li
+and Eisner, 2009).
+
+SMT-EL-CV-ADAM. This system uses the
+same approach as above except for using Adam to
+adapt the learning rates, with tuning of the initial
+learning rate on the development service.
+
+SMT-SZO-CV-ADAM. As a novel contribu-
+tion, we adapted the two-point stochastic zeroth-
+order approach by (Sokolov et al., 2015) that re-
+quired two quality evaluation per iteration to a
+one-point feedback scenario. In a nutshell, on
+each step of the SZO algorithm, the model pa-
+rameters w are perturbed with an additive stan-
+dard Gaussian noise �, and the Viterbi transla-
+tion is sent to the service. Such algorithm can be
+shown to maximize the smoothed version of the
+task reward: E�∼N(0,1)[∆(ŷ(w + �))] (Flaxman
+et al., 2005). The advantages of such a black-box
+optimization method over model-based (e.g. EL)
+optimization, that requires sampling of complete
+structures from the model distribution, are sim-
+pler sampling of standard Gaussians, and match-
+ing of the inference criterion to the learning ob-
+jective (MAP inference for both), unlike the EL
+optimization of expected reward that is still eval-
+uated at test time using MAP inference. For SZO
+models we found that the Adam scheduling con-
+sistently outperforms Adadelta.
+
+5.2 Online bandit learners based on NMT.
+
+Kreutzer et al. (2017) recently presented an al-
+gorithm for online expected loss minimization to
+adapt NMT models to unknown domains with
+bandit feedback. Exploration (i.e. sampling from
+the model) and exploitation (i.e. presenting the
+highest scored translation) are controlled by the
+softmax distribution in the last layer of the net-
+work. Ideally, the model would converge towards
+a peaked distribution. In our online learning sce-
+nario this is not guaranteed, but we would like the
+model to gradually stop exploring, in order to still
+achieve high cumulative per-sentence reward. To
+achieve such a behavior, the temperature of the
+softmax over the outputs of the last layer of the
+network is annealed (Rose, 1998). More specifi-
+cally, let o be the scores of the output projection
+layer of the decoder, then pθ(ỹt = wi|x, ŷ<t) =
+
+exp(owi/T )∑V
+v=1 exp(owv/T )
+
+is the distribution that defines the
+
+probability of each word wi of the target vocabu-
+lary V to be sampled in timestep t. The anneal-
+ing schedule for this temperature T is defined as
+Tk = 0.99
+
+max(k−kSTART,0), i.e. decreases from iter-
+ation kSTART on. The same decay is applied to the
+learning rate, such that γk = γk−1 ·Tk. This sched-
+ule was proven successful during tuning with the
+leaderboard.
+
+WNMT-EL. Using the implementation of
+Kreutzer et al. (2017), we built a word-based
+NMT system with NeuralMonkey (Libovickỳ
+et al., 2016; Bojar et al., 2016a) and trained
+it with the EL algorithm. The vocabulary is
+limited to the 30k most frequent words in the
+out-of-domain training corpus. The architecture
+is similar to WMT16-static with GRU size 1024,
+embedding size 500. It was pretrained on the
+out-of-domain data with the standard maximum
+likelihood objective, Adam (α = 1× 10−4,
+β1 = 0.9, β2 = 0.999) and dropout (Srivas-
+tava et al., 2014) with probability 0.2. Bandit
+learning starts from this pretrained model and
+continues with stochastic gradient descent (initial
+learning rate γ0 = 1× 10−5, annealing starts at
+kSTART = 700, 000, dropout with probability 0.5,
+gradient norm clipping when the norm exceeds
+1.0 (Pascanu et al., 2013)), where the model was
+updated as soon as a feedback is received. As
+described above, UNK replacement was applied
+to the output on the basis of an IBM2 lexical
+translation model built with fast align (Dyer
+et al., 2013) on out-of-domain training data. If the
+aligned source word for a generated UNK token
+is not in the dictionary of the lexical translation
+model, the UNK token was simply replaced by
+the source word.
+
+BNMT-EL. The pretrained BPE model is fur-
+ther trained on the bandit task data with the EL
+algorithm, as described for BL1, with the only dif-
+ference of using Adam (α = 1× 10−5, β1 = 0.9,
+β2 = 0.999) instead of SGD. Again, annealing
+started at kSTART = 700, 000.
+
+BNMT-EL-CV. BNMT-EL-CV is trained in the
+same manner as BNMT-EL with the addition of
+the same control variate technique (running av-
+erage of rewards) that has been previously found
+to improve both variance and generalization for
+NMT bandit training (Kreutzer et al., 2017).
+
+519
+
+
+
+5.3 Domain adaptation and reinforcement
+learning based on NMT (University of
+Maryland).
+
+UMD-domain-adaptation. The UMD team’s
+systems were based on an attention-based
+encoder-decoder translation model. The models
+use the BPE technique for subword encoding,
+which helps addressing the rare word problem
+and enlarges vocabulary. A further addition is
+the domain adaptation approach of Axelrod et al.
+(2011) to select training data after receiving
+in-domain source-side data and selecting the most
+similar out-of-domain data from the WMT 2016
+training set for re-training.
+
+UMD-reinforce. Another type of models sub-
+mitted by UMD uses reinforcement learning tech-
+niques to learn from feedback and improve the up-
+date of the translation model to optimize the re-
+ward, based on Bahdanau et al. (2016) and Ran-
+zato et al. (2016).
+
+5.4 Domain adaptation and bandit learning
+based on SMT (LIMSI).
+
+LIMSI. The team from LIMSI tried to adapt a
+seed Moses system trained on out-domain data
+to a new, unknown domain relying on two com-
+ponents, each of which addresses one of the chal-
+lenges raised by the shared task: i) estimate the
+parameters of a MT system without knowing the
+reference translation and in a ‘one-shot’ way (each
+source sentence can only be translated once); ii)
+discover the specificities of the target domain ‘on-
+the-fly’ as no information about it is available.
+First, a linear regression model was used to exploit
+weak and partial feedback the system received by
+learning to predict the reward a translation hy-
+pothesis will get. This model can then be used
+to score hypotheses of the search space and trans-
+late source sentences while taking into account the
+specificities of the in-domain data. Second, three
+variants of the UCB1 (Auer et al., 2002) algorithm
+(vanilla UCB1, a UCB1-sampling variant encour-
+aging more exploration, and a UCB1 with select-
+ing only the examples not used to train the regres-
+sion model) chose which of the ‘adapted’ or ‘seed’
+systems should be used to translate a given source
+sentence in order to maximize the cumulative re-
+ward (Wisniewski, 2017).
+
+model cumulativereward
+
+‘translate’ by copying source 64,481.8
+
+SM
+T
+
+SMT-oracle 499,578.0
+SMT-static 229,621.7
+
+SMT-EL-CV-ADADELTA 214,398.8
+SMT-EL-CV-ADAM 225,535.3
+SMT-SZO-CV-ADAM 208,464.7
+
+N
+M
+
+T
+
+BNMT-oracle 780,580.4
+BNMT-static 222,066.0
+WMT16-static 139,668.1
+
+BNMT-EL-CV 212,703.2
+BNMT-EL 237,663.0
+WNMT-EL 115,098.0
+
+UMD-domain-adaptation 248,333.2
+
+Table 3: Cumulative rewards over the full train-
+ing sequence. Only completely finished submis-
+sion are shown.
+
+6 Results
+
+Table 3 shows the evaluation results under the cu-
+mulative rewards metric. Of the non-oracle sys-
+tems, good results are obtained by static SMT
+and BNMT system, while the best performance is
+obtained by the UMD-domain adaptation system
+which is also basically a static system. This re-
+sult is followed closely by the online bandit learner
+BNMT-EL which is based on an NMT baseline
+and optimizes the EL objective. It outperforms the
+BNMT-static baseline. Cumulative rewards could
+not be computed for all submitted systems since
+some training runs could not be fully finished.
+
+The evolution of the online regret plotted
+against the log-scaled number of iterations during
+training is shown in Figure 1. Most of the learn-
+ing happens in the first 100,000 iterations, how-
+ever, online learning systems optimizing struc-
+tured EL objectives or based on reinforcement
+learning eventually converge to the same result:
+BNMT-EL or UMD-reinforce2 get close to the re-
+gret of the static UMD-domain adaptation. Sys-
+tems that optimize the EL objective do not start
+from strong out-of-domain systems with domain-
+adaptation, however, due to a steeper learning
+curve they arrive at similar results.
+
+Figures 2, 3a and 3b show the evolution of
+corpus- and sentence-BLEU on the heldout set that
+
+520
+
+
+
+0.19
+
+0.20
+
+0.21
+
+0.22
+
+0.23
+
+0.24
+
+0.25
+
+0.26
+
+0.27
+
+0.28
+
+0.29
+
+0.30
+
+0.31
+
+ 1000  10000  100000  1e+06
+
+re
+gr
+
+et
+
+iteration
+
+SMT-static
+SMT-EL-CV-ADADELTA
+
+SMT-EL-CV-ADAM
+SMT-SZO-CV-ADAM
+
+WMT16-static
+BNMT-static
+
+WNMT-EL
+BNMT-EL
+
+BNMT-EL-CV
+UMD-dom-adapt
+UMD-reinforce1
+UMD-reinforce2
+
+UMD-reinforce3
+LIMSI-UCB1
+
+LIMSI-UCB1-sampl
+LIMSI-UCB1-select
+
+Figure 1: Evolution of regret plotted against log-scaled number of iterations during training. The steeper
+is the decrease of a curve, the better learning capability has the corresponding algorithm.
+
+0.06
+
+0.08
+
+0.10
+
+0.12
+
+0.14
+
+0.16
+
+0.18
+
+ 0  1  2  3
+
+co
+rp
+
+us
+-B
+
+LE
+U
+
+check points
+
+Lexical IBM2
+SMT-static
+
+SMT-EL-CV-ADADELTA
+SMT-EL-CV-ADAM
+
+SMT-SZO-CV-ADAM
+WMT16-static
+
+BNMT-static
+WNMT-EL
+
+BNMT-EL
+BNMT-EL-CV
+
+BNMT-EL-CV w/o annealing
+
+Figure 2: Evolution of corpus BLEU scores during development for configuration selected for the train-
+ing phase of the competition. Each check point is comprised of the same 700 sentences spaced at a
+regular intervals of 12,400 sentences starting from the beginning of the development sequence.
+
+521
+
+
+
+0.07
+
+0.08
+
+0.09
+
+0.10
+
+0.11
+
+0.12
+
+0.13
+
+0.14
+
+0.15
+
+0.16
+
+0.17
+
+0.18
+
+0.19
+
+0.20
+
+0.21
+
+0.22
+
+ 0  1  2  3  4  5  6  7  8  9  10  11
+
+co
+rp
+
+us
+-B
+
+LE
+U
+
+check points
+
+SMT-static
+SMT-EL-CV-ADADELTA
+
+SMT-EL-CV-ADAM
+SMT-SZO-CV-ADAM
+
+WMT16-static
+BNMT-static
+
+WNMT-EL
+BNMT-EL
+
+BNMT-EL-CV
+UMD-dom-adapt
+UMD-reinforce1
+UMD-reinforce2
+
+UMD-reinforce3
+LIMSI-UCB1
+
+LIMSI-UCB1-sampl
+LIMSI-UCB1-select
+
+(a) corpus-BLEU
+
+0.08
+
+0.09
+
+0.10
+
+0.11
+
+0.12
+
+0.13
+
+0.14
+
+0.15
+
+0.16
+
+0.17
+
+0.18
+
+0.19
+
+0.20
+
+ 0  1  2  3  4  5  6  7  8  9  10  11
+
+av
+er
+
+ag
+e 
+
+se
+nt
+
+en
+ce
+
+-B
+LE
+
+U
+
+check points
+
+SMT-static
+SMT-EL-CV-ADADELTA
+
+SMT-EL-CV-ADAM
+SMT-SZO-CV-ADAM
+
+WMT16-static
+BNMT-static
+
+WNMT-EL
+BNMT-EL
+
+BNMT-EL-CV
+UMD-dom-adapt
+UMD-reinforce1
+UMD-reinforce2
+
+UMD-reinforce3
+LIMSI-UCB1
+
+LIMSI-UCB1-sampl
+LIMSI-UCB1-select
+
+(b) sentence-BLEU
+
+Figure 3: The evolution of corpus- and sentence-BLEU scores during training for all participant and
+baselines. Each check point is comprised of the same 4,000 sentences spaced at a regular intervals of
+113,634 sentences starting from the beginning of the training sequence.
+
+522
+
+
+
+has been embedded in the development and the
+training sequences. While under corpus-BLEU,
+static systems always outperform online learners
+on the held-out embedded set, online learning
+systems such as BNMT-EL can catch up under
+corpus-BLEU during development, and under a
+sentence-BLEU evaluation during training. The
+curves for corpus- and average sentence-BLEU
+(Figures 3a and 3b) show a different dynam-
+ics, with the corpus-BLEU sometimes decreasing
+whereas the sentence-BLEU curve continues to in-
+crease. However, if the focus is online learning,
+the online task loss is per-sentence BLEU and so
+should be the evaluation metric.
+
+7 Conclusion
+
+We presented the learning setup and infrastruc-
+ture, data and evaluation metrics, and descrip-
+tions of baselines and submitted systems for a
+novel shared task on bandit learning for machine
+translation. The task implicitly involved domain
+adaptation from the news domain to e-commerce
+data (with the additional difficulty of non-literal
+post-editions as references), and online learning
+from simulated per-sentence feedback on transla-
+tion quality (creating a mismatch between the per-
+sentence task loss and the corpus-based evaluation
+metric standardly used in evaluating batch-trained
+machine translation systems). Despite these chal-
+lenges, we found promising results for both linear
+and non-linear online learners that could outper-
+form their static SMT and NMT baselines, respec-
+tively. A desideratum for a future installment of
+this shared task is the option to perform offline
+learning from bandit feedback (Lawrence et al.,
+2017), thus allowing a more lightweight infras-
+tructure, and opening the task to (mini)batch learn-
+ing techniques that are more standard in the field
+of machine translation.
+
+Acknowledgments
+
+This research was supported in part by the German
+research foundation (DFG), and in part by a re-
+search cooperation grant with the Amazon Devel-
+opment Center Germany. We would like to thank
+Amazon for supplying data and engineering exper-
+tise, and for covering the running costs.
+
+References
+Peter Auer, Nicolò Cesa-Bianchi, and Paul Fischer.
+
+2002. Finite-time analysis of the multiarmed ban-
+dit problem. Machine Learning 47(2-3):235–256.
+
+Amittai Axelrod, Xiaodong He, and Jianfeng Gao.
+2011. Domain adaptation via pseudo in-domain data
+selection. In EMNLP. Edinburgh, Scotland.
+
+Dzmitry Bahdanau, Philemon Brakel, Kelvin Xu,
+Anirudh Goyal, Ryan Lowe, Joelle Pineau, Aaron
+Courville, and Yoshua Bengio. 2016. An Actor-
+Critic Algorithm for Sequence Prediction. eprint
+arXiv:1607.07086 .
+
+Ondřej Bojar, Roman Sudarikov, Tom Kocmi, Jindřich
+Helcl, and Ondřej Cıfka. 2016a. UFAL submissions
+to the IWSLT 2016 MT track. In IWSLT . Seattle,
+WA.
+
+Ondřej Bojar, Rajen Chatterjee, Christian Federmann,
+Yvette Graham, Barry Haddow, Matthias Huck,
+Antonio Jimeno Yepes, Philipp Koehn, Varvara
+Logacheva, Christof Monz, Matteo Negri, Aure-
+lie Neveol, Mariana Neves, Martin Popel, Matt
+Post, Raphael Rubino, Carolina Scarton, Lucia Spe-
+cia, Marco Turchi, Karin Verspoor, and Marcos
+Zampieri. 2016b. Findings of the 2016 conference
+on machine translation. In WMT . Berlin, Germany.
+
+Sébastian Bubeck and Nicolò Cesa-Bianchi. 2012. Re-
+gret analysis of stochastic and nonstochastic multi-
+armed bandit problems. Foundations and Trends in
+Machine Learning 5(1):1–122.
+
+Olivier Chapelle, Eren Masnavoglu, and Romer Ros-
+ales. 2014. Simple and scalable response prediction
+for display advertising. ACM Trans. on Intelligent
+Systems and Technology 5(4).
+
+Christos Dimitrakakis, Guangliang Li, and Nikolaos
+Tziortziotis. 2014. The reinforcement learning com-
+petition 2014. AI Magazine 35(3):61–65.
+
+Chris Dyer, Victor Chahuneau, and Noah A. Smith.
+2013. A simple, fast, and effective reparameteriza-
+tion of IBM model 2. In HLT-NAACL. Atlanta, GE.
+
+Chris Dyer, Adam Lopez, Juri Ganitkevitch, Jonathan
+Weese, Ferhan Ture, Phil Blunsom, Hendra Seti-
+awan, Vladimir Eidelman, and Philip Resnik. 2010.
+cdec: A decoder, alignment, and learning framework
+for finite-state and context-free translation models.
+In ACL Demo. Uppsala, Sweden.
+
+Abraham D. Flaxman, Adam Tauman Kalai, and
+H. Brendan McMahan. 2005. Online convex opti-
+mization in the bandit setting: gradient descent with-
+out a gradient. In SODA. Vancouver, Canada.
+
+Yvette Graham, Timothy Baldwin, Alistair Moffat, and
+Justin Zobel. 2016. Can machine translation sys-
+tems be evaluated by the crowd alone? Natural Lan-
+guage Engineering 23(1):3–30.
+
+523
+
+
+
+Sébastien Jean, Orhan Firat, Kyunghyun Cho, Roland
+Memisevic, and Yoshua Bengio. 2015. Montreal
+neural machine translation systems for WMT’15. In
+WMT . Lisbon, Portugal.
+
+Diederik Kingma and Jimmy Ba. 2014. Adam:
+A method for stochastic optimization. eprint
+arXiv:1412.6980 .
+
+Julia Kreutzer, Artem Sokolov, and Stefan Riezler.
+2017. Bandit structured prediction for neural
+sequence-to-sequence learning. In ACL. Vancouver,
+Canada.
+
+Carolin Lawrence, Artem Sokolov, and Stefan Riezler.
+2017. Counterfactual learning from bandit feedback
+under deterministic logging: A case study in statis-
+tical machine translation. In EMNLP. Copenhagen,
+Denmark.
+
+Zhifei Li and Jason Eisner. 2009. First-and second-
+order expectation semirings with applications to
+minimum-risk training on translation forests. In
+EMNLP. Singapore.
+
+Jindřich Libovickỳ, Jindřich Helcl, Marek Tlustỳ,
+Pavel Pecina, and Ondřej Bojar. 2016. CUNI system
+for WMT16 automatic post-editing and multimodal
+translation tasks. In WMT . Berlin, Germany.
+
+Chin-Yew Lin and Franz Josef Och. 2004. Auto-
+matic evaluation of machine translation quality us-
+ing longest common subsequence and skip-bigram
+statistics. In ACL. Barcelona, Spain.
+
+Adam Lopez. 2007. Hierarchical phrase-based transla-
+tion with suffix arrays. In EMNLP-CoNLL. Prague,
+Czech Republic.
+
+Thang Luong, Ilya Sutskever, Quoc Le, Oriol Vinyals,
+and Wojciech Zaremba. 2015. Addressing the rare
+word problem in neural machine translation. In
+ACL. Beijing, China.
+
+Razvan Pascanu, Tomas Mikolov, and Yoshua Bengio.
+2013. On the difficulty of training recurrent neural
+networks. In ICML. Atlanta, GA.
+
+MarcAurelio Ranzato, Sumit Chopra, Michael Auli,
+and Wojciech Zaremba. 2016. Sequence level train-
+ing with recurrent neural networks. In ICLR. San
+Juan, Puerto Rico.
+
+Kenneth Rose. 1998. Deterministic annealing for clus-
+tering, compression, classification, regression and
+related optimization problems. IEEE 86(11).
+
+Rico Sennrich, Orhan Firat, Kyunghyun Cho, Alexan-
+dra Birch, Barry Haddow, Julian Hitschler, Marcin
+Junczys-Dowmunt, Samuel Läubli, Antonio Valerio
+Miceli Barone, Jozef Mokry, and Maria Nadejde.
+2017. Nematus: a toolkit for neural machine trans-
+lation. In EACL. Valencia, Spain.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016a. Edinburgh neural machine translation sys-
+tems for WMT 16. In WMT . Berlin, Germany.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016b. Neural machine translation of rare words
+with subword units. In ACL. Berlin, Germany.
+
+Artem Sokolov, Julia Kreutzer, Christopher Lo, and
+Stefan Riezler. 2016a. Learning structured predic-
+tors from bandit feedback for interactive NLP. In
+ACL. Berlin, Germany.
+
+Artem Sokolov, Julia Kreutzer, Christopher Lo, and
+Stefan Riezler. 2016b. Stochastic structured pre-
+diction under bandit feedback. In NIPS. Barcelona,
+Spain.
+
+Artem Sokolov, Stefan Riezler, and Tanguy Urvoy.
+2015. Bandit structured prediction for learning from
+partial feedback in statistical machine translation. In
+MT Summit. Miami, FL.
+
+Nitish Srivastava, Geoffrey E Hinton, Alex Krizhevsky,
+Ilya Sutskever, and Ruslan Salakhutdinov. 2014.
+Dropout: a simple way to prevent neural networks
+from overfitting. JMLR 15(1):1929–1958.
+
+Richard S. Sutton and Andrew G. Barto. 1998. Re-
+inforcement Learning. An Introduction. The MIT
+Press.
+
+Csaba Szepesvári. 2009. Algorithms for Reinforcement
+Learning. Morgan & Claypool.
+
+Ronald J. Williams. 1992. Simple statistical gradient-
+following algorithms for connectionist reinforce-
+ment learning. Machine Learning 20:229–256.
+
+Guillaume Wisniewski. 2017. LIMSI submission for
+WMT’17 shared task on bandit learning. In WMT .
+Copenhagen, Denmark.
+
+Matthew D. Zeiler. 2012. ADADELTA: an adaptive
+learning rate method. eprint arXiv:1212.5701 .
+
+524
+
+

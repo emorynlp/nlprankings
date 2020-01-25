@@ -1,0 +1,1343 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Modelling Events through Memory-based, Open-IE Patterns for Abstractive Summarization
+
+
+Proceedings of the 52nd Annual Meeting of the Association for Computational Linguistics, pages 892–901,
+Baltimore, Maryland, USA, June 23-25 2014. c©2014 Association for Computational Linguistics
+
+Modelling Events through Memory-based, Open-IE Patterns
+for Abstractive Summarization
+
+Daniele Pighin
+Google Inc.
+
+biondo@google.com
+
+Marco Cornolti∗
+University of Pisa, Italy
+cornolti@di.unipi.it
+
+Enrique Alfonseca
+Google Inc.
+
+ealfonseca@google.com
+
+Katja Filippova
+Google Inc.
+
+katjaf@google.com
+
+Abstract
+
+Abstractive text summarization of news
+requires a way of representing events, such
+as a collection of pattern clusters in which
+every cluster represents an event (e.g.,
+marriage) and every pattern in the clus-
+ter is a way of expressing the event (e.g.,
+X married Y, X and Y tied the knot). We
+compare three ways of extracting event
+patterns: heuristics-based, compression-
+based and memory-based. While the for-
+mer has been used previously in multi-
+document abstraction, the latter two have
+never been used for this task. Compared
+with the first two techniques, the memory-
+based method allows for generating sig-
+nificantly more grammatical and informa-
+tive sentences, at the cost of searching a
+vast space of hundreds of millions of parse
+trees of known grammatical utterances. To
+this end, we introduce a data structure and
+a search method that make it possible to
+efficiently extrapolate from every sentence
+the parse sub-trees that match against any
+of the stored utterances.
+
+1 Introduction
+
+Text summarization beyond extraction requires a
+semantic representation that abstracts away from
+words and phrases and from which a summary can
+be generated (Mani, 2001; Spärck-Jones, 2007).
+Following and extending recent work in semantic
+parsing, information extraction (IE), paraphrase
+generation and summarization (Titov and Klemen-
+tiev, 2011; Alfonseca et al., 2013; Zhang and
+Weld, 2013; Mehdad et al., 2013), the represen-
+tation we consider in this paper is a large collec-
+
+∗Work done during an internship at Google Zurich.
+
+[John Smith] and 
+[Mary Brown] wed 
+in [Baltimore]...
+
+[Smith] tied the 
+knot with [Brown] 
+this Monday...
+
+#21: death
+
+#22: divorce
+
+#23: marriage
+PER married PER
+PER and PER wed
+PER tied the knot with PER
+PER has married PER
+
+John Smith married Mary Brown
+e1: J. Smith (PER)
+e2: M. Brown (PER)
+e3: Baltimore, MD (LOC)
+
+Figure 1: An example of abstracting from input
+sentences to an event representation and genera-
+tion from that representation.
+
+tion of clusters of event patterns. An abstractive
+summarization system relying on such a represen-
+tation proceeds by (1) detecting the most relevant
+event cluster for a given sentence or sentence col-
+lection, and (2) using the most representative pat-
+tern from the cluster to generate a concise sum-
+mary sentence. Figure 1 illustrates the summa-
+rization architecture we are assuming in this pa-
+per. Given input text(s) with resolved and typed
+entity mentions, event mentions and the most rele-
+vant event cluster are detected (first arrow). Then,
+a summary sentence is generated from the event
+and entity representations (second arrow).
+
+However, the utility of such a representation for
+summarization depends on the quality of pattern
+clusters. In particular, event patterns must cor-
+respond to grammatically correct sentences. In-
+troducing an incomplete or incomprehensible pat-
+tern (e.g., PER said PER) may negatively affect
+both event detection and sentence generation. Re-
+lated work on paraphrase detection and relation
+extraction is mostly heuristics-based and has re-
+lied on hand-crafted rules to collect such patterns
+(see Sec. 2). A standard approach is to focus
+on binary relations between entities and extract
+
+892
+
+
+
+Event 
+model
+
+Pattern 
+clustering
+
+News 
+clusters
+
+Pattern 
+extraction
+
+News 
+article
+
+Pattern 
+extraction Inference
+
+Abstractive
+summary
+
+Figure 2: A generic pipeline for event-driven ab-
+stractive headline generation.
+
+the dependency path between the two entities as
+an event representation. An obvious limitation
+of this approach is there is no guarantee that the
+extracted pattern corresponds to a grammatically
+correct sentence, e.g., that an essential preposi-
+tional phrase is retained like in file for a divorce.
+
+In this paper we explore two novel, data-driven
+methods for event pattern extraction. The first,
+compression-based method uses a robust sentence
+compressor with an aggressive compression rate
+to get to the core of the sentence (Sec. 3). The
+second, memory-based method relies on a vast
+collection of human-written headlines and sen-
+tences to find a substructure which is known to
+be grammatically correct (Sec. 4). While the lat-
+ter method comes closer to ensuring perfect gram-
+maticality, it introduces a problem of efficiently
+searching the vast space of known well-formed
+patterns. Since standard iterative approaches com-
+paring every pattern with every sentence are pro-
+hibitive here, we present a search strategy which
+scales well to huge collections (hundreds of mil-
+lions) of sentences.
+
+In order to evaluate the three methods, we con-
+sider an abstractive summarization task where the
+goal is to get the gist of single sentences by recog-
+nizing the underlying event and generating a short
+summary sentence. To the best of our knowledge,
+this is the first time that this task has been pro-
+posed; it can be considered as abstractive sentence
+compression, in contrast to most existing sentence
+compression systems which are based on selecting
+words from the original sentence or rewriting with
+simpler paraphrase tables. An extensive evalua-
+tion with human raters demonstrates the utility of
+the new pattern extraction techniques. Our analy-
+sis highlights advantages and disadvantages of the
+three methods.
+
+To better isolate the qualities of the three ex-
+traction methodologies, all three methods use the
+same training data and share components of the
+
+Algorithm 1 HEURISTICEXTRACTOR(T, E): heuristi-
+cally extract relational patterns for the dependency parse T
+and the set of entities E.
+
+1: /* Global constants /*
+2: global Vp, Vc, Np, Nc
+3: Vc ← {subj, nsubj, nsubjpass, dobj, iobj, xcomp,
+4: acomp, expl, neg, aux, attr, prt}
+5: Vp ← {xcomp}
+6: Nc ← {det, predet, num, ps, poss, nc, conj}
+7: Np ← {ps, poss, subj, nsubj, nsubjpass, dobj, iobj}
+8: /* Entry point /*
+9: P ← ∅
+
+10: for all C ∈ COMBINATIONS(E) do
+11: N ← MENTIONNODES(T, C)
+12: N ′ ← APPLYHEURISTICS(T, BUILDMST(T, N))
+13: P ← P ∪ {BUILDPATTERN(T, N ′)}
+14: return P
+15: /* Procedures /*
+16: procedure APPLYHEURISTICS(T, N )
+17: N ′ ← N
+18: while |N ′| > 0 do
+19: N ′′ ← ∅
+20: for all n ∈ N ′ do
+21: if n.ISVERB() then
+22: N ′′ ← N ′′ ∪ INCLUDECHILDREN(n, Vc)
+23: N ′′ ← N ′′ ∪ INCLUDEPARENT(n, Vp)
+24: else if n.ISNOUN() then
+25: N ′′ ← N ′′ ∪ INCLUDECHILDREN(n, Nc)
+26: N ′′ ← N ′′ ∪ INCLUDEPARENT(n, Np)
+27: N ′ ← N ′′ \N ′
+28: procedure INCLUDECHILDREN(n, L)
+29: R← ∅
+30: for all c ∈ n.CHILDREN() do
+31: if c.PARENTEDGELABEL() ∈ L then
+32: R← R ∪ {c}
+33: return R
+34: procedure INCLUDEPARENT(n, L)
+35: if n.PARENTEDGELABEL() ∈ L then
+36: return {n}
+37: else return ∅
+
+very same summarization architecture, as shown
+in Figure 2: an event model is constructed by clus-
+tering the patterns extracted according to the se-
+lected extraction method. Then, the same extrac-
+tion method is used to collect patterns from sen-
+tences in never-seen-before news articles. Finally,
+the patterns are used to query the event model and
+generate an abstractive summary. The three differ-
+ent pattern extractors are detailed in the next three
+sections.
+
+2 Heuristics-based pattern extraction
+
+In order to be able to work in an Open-IE man-
+ner, applicable to different domains, most existing
+pattern extraction systems are based on linguisti-
+cally motivated heuristics. Zhang and Weld (2013)
+is based on REVERB (Fader et al., 2011), which
+uses a regular expression on part-of-speech tags
+to produce the extractions. An alternative system,
+
+893
+
+
+
+OLLIE (Schmitz et al., 2012), uses syntactic de-
+pendency templates to guide the pattern extraction
+process.
+
+The heuristics used in this paper are inspired by
+Alfonseca et al. (2013), who built well formed re-
+lational patterns by extending minimum spanning
+trees (MST) which connect entity mentions in a
+dependency parse. Algorithm 1 details our re-
+implementation of their method and the specific
+set of rules that we rely on to enforce pattern gram-
+maticality. We use the standard Stanford-style set
+of dependency labels (de Marneffe et al., 2006).
+The input to the algorithm are a parse tree T and
+a set of target entities E. We first generate com-
+binations of 1-3 elements of E (line 10), then for
+each combination C we identify all the nodes in
+T that mention any of the entities in C. We con-
+tinue by constructing the MST of these nodes, and
+finally apply our heuristics to the nodes in the
+MST. The procedure APPLYHEURISTICS (:16) re-
+cursively grows a nodeset N ′ by including chil-
+dren and parents of noun and verb nodes in N ′
+
+based on dependency labels. For example, we in-
+clude all children of verbs in N ′ whose label is
+listed in Vc (:3), e.g., active or passive subjects,
+direct or indirect objects, particles and auxiliary
+verbs. Similarly, we include the parent of a noun
+in N ′ if the dependency relation between the node
+and its parent is listed in Np.
+
+3 Pattern extraction by sentence
+compression
+
+Sentence compression is a summarization tech-
+nique that shortens input sentences preserving the
+most important content (Grefenstette, 1998; Mc-
+Donald, 2006; Clarke and Lapata, 2008, inter
+alia). While first attempts at integrating a com-
+pression module into an extractive summarization
+system were not particularly successful (Daumé
+III and Marcu, 2004, inter alia), recent work
+has been very promising (Berg-Kirkpatrick et al.,
+2011; Wang et al., 2013). It has shown that drop-
+ping constituents of secondary importance from
+selected sentences – e.g., temporal modifiers or
+relative clauses – results in readable and more in-
+formative summaries. Unlike this related work,
+our goal here is to compress sentences to obtain
+an event pattern – the minimal grammatical struc-
+ture expressing an event. To our knowledge, this
+application of sentence compressors is novel. As
+in Section 2, we only consider sentences mention-
+
+ing entities and require the compression (pattern)
+to retain at least one such mention.
+
+Sentence compression methods are abundant
+but very few can be configured to produce out-
+put satisfying certain constraints. For example,
+most compression algorithms do not accept com-
+pression rate as an argument. In our case, sen-
+tence compressors which formulate the compres-
+sion task as an optimization problem and solve it
+with integer linear programming (ILP) tools un-
+der a number of constraints are particularly attrac-
+tive (Clarke and Lapata, 2008; Filippova and Al-
+tun, 2013). They can be extended relatively easily
+with both the length constraint and the constraint
+on retaining certain words. The method of Clarke
+and Lapata (2008) uses a trigram language model
+(LM) to score compressions. Since we are inter-
+ested in very short outputs, a LM trained on stan-
+dard, uncompressed text would not be suitable. In-
+stead, we chose to modify the method of Filippova
+and Altun (2013) because it relies on dependency
+parse trees and does not use any LM scoring.
+
+Like other syntax-based compressors, the sys-
+tem of Filippova and Altun (2013) prunes depen-
+dency structures to obtain compression trees and
+hence sentences. The objective function to maxi-
+mize in an ILP problem (Eq. 1) is formulated over
+weighted edges in a transformed dependency tree
+and is subject to a number of constraints. Edge
+weight is defined as a linear function over a fea-
+ture set: w(e) = w · f(e).
+
+F (X) =
+∑
+e∈E
+
+xe × w(e) (1)
+
+In our reimplementation we followed the algo-
+rithm as described by Filippova and Altun (2013).
+The compression tree is obtained in two steps.
+First, the input tree is transformed with determin-
+istic rules, most of which aim at collapsing indis-
+pensable modifiers with their heads (determiners,
+auxiliary verbs, negation, multi-word expressions,
+etc.). Then a sub-tree maximizing the objective
+function is found under a number of constraints.
+
+Apart from the structural constrains from the
+original system which ensure that the output is a
+valid tree, the constraints we add state that:
+
+1. tree size in edges must be in [3, 6],
+2. entity mentions must be retained,
+3. subject of the clause must be retained,
+4. the sub-tree must be covered by a single
+
+clause – exactly one finite verb must used.
+
+894
+
+
+
+Since we consider compressions with different
+lengths as candidates, from this set we select the
+one with the maximum averaged edge weight as
+the final compression. Figure 3 illustrates the
+use of the compressor for obtaining event pat-
+terns. Dashed edges are dropped as a result of
+constrained compression so that the output is John
+Smith married Mary Brown and the event pattern
+is PER married PER. Note that the root of a sub-
+clause is allowed to be the top-level node in the
+extracted compression.
+
+Compared with patterns obtaines with heuris-
+tics, compression patterns should retain preposi-
+tional verb arguments whose removal would ren-
+der the pattern ungrammatical. As an example
+consider [C. Zeta-Jones] and [M. Douglas] filed
+for divorce. The heuristics-based pattern is PER
+and PER filed which is incomplete. Unlike it,
+the compression-based method keeps the essential
+prepositional phrase for divorce in the pattern be-
+cause the average edge weight is greater for the
+tree with the prepositional phrase.
+
+4 Memory-based pattern extraction
+
+Neither heuristics-based, nor compression-based
+methods provide a guarantee that the extracted
+pattern is grammatically correct. In this sec-
+tion we introduce an extraction technique which
+makes it considerably more likely because it only
+extracts patterns which have been observed as
+full sentences in a human-written text (Sec. 4.1).
+However, this memory-based method also poses
+a problem not encountered by the two previous
+methods: how to search over the vast space of ob-
+served headlines and sentences to extract a pattern
+from a given sentence? Our trie-based solution,
+which we present in the remainder of this sec-
+tion, makes it possible to compare a dependency
+graph against millions of observed grammatical
+utterances in a fraction of a second.
+
+4.1 A tree-trie to store them all. . .
+
+Our objective is to construct a compact representa-
+tion of hundreds of millions of observed sentences
+that can fit in the memory of a standard worksta-
+tion. This data structure should make it possible
+to efficiently identify the sub-trees of a sentence
+that match any complete utterance previously ob-
+served. To this end, we build a trie of depen-
+dency trees (which we call a tree-trie) by scan-
+ning all the dependency parses in the news training
+
+Algorithm 2 STORE(T, I): store the dependency tree T
+in the tree-trie I .
+
+1: /* Entry point /*
+2: L← T.LINEARIZE()
+3: STORERECURSION(I.ROOT(), L, 0)
+4: return M
+5: /* Procedures /*
+6: procedure STORERECURSION(n, L, o)
+7: if o == L.LENGTH() then
+8: n.ADDTREESTRUCTURE(L.STRUCTURE())
+9: return
+
+10: if not n.HASCHILD(L.TOKEN(o)) then
+11: n.ADDCHILD(L.TOKEN(o))
+12: n′ ← n.GETCHILD(L.TOKEN(o))
+13: STORERECURSION(n′, L, o + 1)
+
+data, and index each tree in the tree-trie accord-
+ing to Algorithm 2. For better clarity, the process
+is also described graphically in Figure 4. First,
+each dependency tree (a) is linearized, resulting
+in a data structure that consists of two aligned se-
+quences (b). The first sequence (tokens) encodes
+word/parent-relation pairs, while the second se-
+quence (structure) encodes the offsets of parent
+nodes in the linearized tree. As an example, the
+first word “The” is a determiner (“det”) for the sec-
+ond node (offset 1) in the sequence, which is “cat”.
+In turn, “cat” is the subject (“nsubj”) of the node
+in position 2, i.e., “sleeps”. As described in Algo-
+rithm 2, we recursively store the token sequence
+in the trie, each word/relation pair being stored in
+a node. When the token sequence is completely
+consumed, we store in the current trie node the
+structure of the linearized tree. Combining struc-
+tural information with the sequential information
+encoded by each path in the trie makes it possi-
+ble to rebuild a complete dependency graph. Fig-
+ure 4(c) shows an example trie encoding 4 differ-
+ent sentences. We highlighted in bold the path cor-
+responding to the linearized form (b) of the exam-
+ple parse tree (a).
+
+The figure shows that the tree contains two
+kinds of nodes: end-of-sentence (EOS) nodes
+(red) and non-terminal nodes (in blue). EOS nodes
+do not necessarily coincide with trie leaves, as it
+is possible to observe complete sentences embed-
+ded in longer ones. EOS nodes differ from non-
+terminal nodes in that they store one or more struc-
+tural sequences corresponding to different syntac-
+tic representations of observed sentences with the
+same tokens.
+
+Space-complexity and generalization. Storing
+all the observed sentences in a single trie requires
+huge amounts of memory. To make it possible to
+
+895
+
+
+
+root Our sources report John Smith married Mary Brown in Baltimore yesterday
+
+root
+
+root
+
+subj
+subj
+
+obj
+in
+
+tmod
+
+Figure 3: Transformed dependency tree with a sub-tree expressing an event pattern.
+
+The cat sleeps under the table
+
+root
+
+nsubjdet
+prep
+
+pobj
+det
+
+(a)
+
+The
+det
+
+cat
+nsubj
+
+sleeps
+ROOT
+
+under
+prep
+
+the
+det
+
+table
+pobj
+
+1 2 -1 2 5 3
+
+(b)
+
+The
+det
+
+dog
+
+nsubj
+
+barked
+ROOT
+1,2,-1
+
+cat
+nsubj
+
+sleeps
+ROOT
+1,2,-1 soundly
+
+advmod
+1,2,-1,2
+
+under
+prep
+
+the
+det
+
+table
+pobj
+
+1,2,-1,2,5,3
+
+(c)
+
+Figure 4: A dependency tree (a), its linearized form (b) and the resulting path in a trie (c), in bold.
+
+store a complete tree-trie in memory, we adopt the
+following strategy. We replace the surface form of
+entity nodes with the coarse entity type (e.g., PER,
+LOC, ORG) of the entity. Similarly, we replace
+proper nouns with the placeholder “[P]”, thus sig-
+nificantly reducing lexical sparsity. Then, we en-
+code each distinct word/relation pair as a 32-bit
+unsigned integer. Assuming a maximum tree size
+of 255 nodes, we represent structure sequences as
+vectors of type unsigned char (8 bit per element).
+Finally, we store trie-node children as sorted vec-
+tors instead of hash maps to reduce memory foot-
+print. As a result, we are able to load a trie encod-
+ing 400M input dependency parses, 170M distinct
+nodes and 48M distinct sentence structures in un-
+der 10GB of RAM.
+
+4.2 . . . and in the vastness match them
+
+At lookup time, we want to use the tree-trie to
+identify all sub-graphs of an input dependency tree
+T that match at least a complete observed sen-
+tence. To do so, we need to identify all paths in
+the trie that match any sub-sequence s of the lin-
+earized sequence of T nodes. Whenever we en-
+counter an EOS node e, we verify if any of the
+structures stored at e matches the sub-tree gener-
+ated by s. If so, then we have a positive match.
+As a sentence might embed many shorter utter-
+ances, each input T will generally yield multiple
+matches. For example, querying the tree-trie in
+Figure 4(c) with the input tree shown in (a) would
+yield two results, as both The cat sleeps and The
+cat sleeps under the table are complete utterances
+
+stored in the trie.
+
+Algorithm 3 LOOKUP(T, I): Lookup for matches of sub-
+set of tree T in the trie index I .
+
+1: /* Entry point /*
+2: L← T.LINEARIZE()
+3: M ← ∅
+4: LOOKUPRECURSIVE(T, L, 0, I.ROOT(), ∅, M)
+5: return M
+6: /* Procedures /*
+7: procedure LOOKUPRECURSIVE(T, L, o, n, P, M )
+8: for all i ∈ [o, L.LENGTH()) do
+9: if n.HASCHILD(L.TOKEN(i)) then
+
+10: n′ ← n.GETCHILD(L.TOKEN(i))
+11: P ′ ← P ∪ {i}
+12: for all S ∈ n′.TREESTRUCTURES() do
+13: if L.ISCOMPATIBLE(S, P ′) then
+14: M ←M ∪ {T.GETNODES(P ′)}
+15: LOOKUPRECURSIVE(L, i, o + 1, n′, P ′, M)
+
+Algorithm 3 describes the lookup process in
+more detail. The first step consists in the lineariza-
+tion of the input tree T . Then, we recursively tra-
+verse the trie calling LOOKUPRECURSIVE. The
+inputs of this procedure are: the input tree T , its
+linearization L and an offset o (starting at 0), the
+trie node currently being traversed n (starting with
+the root), the set of offsets in L that constitute a
+partial match P (initially empty) and the set of
+complete matches found M . We recursively tra-
+verse all the nodes in the trie that yield a partial
+match with any sub-sequence of the linearized to-
+kens of T . At each step, we scan all the tokens
+in L in the range [o, L.LENGTH()) looking for to-
+kens matching any of the children of n. If a match-
+ing node is found, a new partial match P ′ is con-
+structed by extending P with the matching token
+
+896
+
+
+
+Sheet6
+
+Page 1
+
+0 10 20 30 40 50 60 70 80 90
+1.0E-05
+
+1.0E-04
+
+1.0E-03
+
+1.0E-02
+
+1.0E-01
+
+1.0E+00
+
+1.0E+01
+
+f(x) = 1.9E-07 x^3.3E+00
+
+Tree size (number of nodes)
+
+Time (seconds)
+
+Figure 5: Time complexity of lookup operations
+for inputs of different sizes.
+
+offset i (line 11), and the recursion continues from
+the matching trie node n′ and offset i (line 15).
+Every time a partial match is found, we verify if
+the partial match is compatible with any of the
+tree structures stored in the matching node. If that
+is the case, we identify the corresponding set of
+matching nodes in T and add it to the result M
+(lines 12-14). A pattern is generated from each
+complete match returned by LOOKUP after apply-
+ing a simple heuristic: for each verb node v in the
+match, we enforce that negations and auxiliaries in
+T depending from x are also included in the pat-
+tern.
+
+Time complexity of lookups. Let k be the max-
+imum fan-out of trie nodes, d be the depth of
+the trie and n be the size of an input tree (num-
+ber of nodes). If trie node children are hashed
+(which has a negative effect on space complex-
+ity), then worst case complexity of LOOKUP() is
+O(nk)d−1. If they are stored as sorted lists, as in
+our memory-efficient implementation, theoretical
+complexity becomes O(nk log(k))d−1. It should
+be noted that worst case complexity can only be
+observed under extremely unlikely circumstances,
+i.e., that at every step of the recursion all the nodes
+in the tail of the linearized tree match a child of
+the current node. Also, in the actual trie used in
+our experiments the average branching factor k is
+very small. We observed that a trie storing 400M
+sentences (170M nodes) has an average branching
+factor of 1.02. While the root of the trie has unsur-
+prisingly many children (210K, all the observed
+first sentence words), already at depth 2 the aver-
+age fan-out is 13.7, and at level 3 it is 4.9.
+
+For an empirical analysis of lookup complexity,
+Figure 5 plots, in black, wall-clock lookup time
+
+as a function of tree size n for a random sample
+of 1,600 inputs. As shown by the polynomial re-
+gression curve (red), observed lookup complexity
+is approximately cubic with a very small constant
+factor. In general, we can see that for sentences of
+common length (20-50 words) a lookup operation
+can be completed in well under one second.
+
+5 Evaluation
+
+5.1 Experimental settings
+All the models for the experiments that we present
+have been trained using the same corpus of
+news crawled from the web between 2008 and
+2013. The news have been processed with a to-
+kenizer, a sentence splitter (Gillick and Favre,
+2009), a part-of-speech tagger and dependency
+parser (Nivre, 2006), a co-reference resolution
+module (Haghighi and Klein, 2009) and an entity
+linker based on Wikipedia and Freebase (Milne
+and Witten, 2008). We use Freebase types as fine-
+grained named entity types, so we are also able to
+label e.g. instances of sports teams as such instead
+of the coarser label ORG.
+
+Next, the news have been grouped based on
+temporal closeness (Zhang and Weld, 2013) and
+cosine similarity (using tf·idf weights). For each
+of the three pattern extraction methods we used the
+same summarization pipeline (as shown above in
+Figure 2):
+
+1. Run pattern extraction on the news.
+
+2. For every news collection Coll and entity set
+E, generate a set containing all the extracted
+patterns from news in Coll mentioning all
+the entities in E. These are patterns that are
+likely to be paraphrasing each other.
+
+3. Run a clustering algorithm to group together
+patterns that typically co-occur in the sets
+generated in the previous step. There are
+many choices for clustering algorithms (Al-
+fonseca et al., 2013; Zhang and Weld, 2013).
+Following Alfonseca et al. (2013) we use in
+this work a Noisy-OR Bayesian Network be-
+cause it has already been applied for abstrac-
+tive summarization (albeit multi-document),
+it provides an easily interpretable probabilis-
+tic clustering, and training can be easily par-
+allelized to be able to handle large training
+sets. The hidden events in the Bayesian net-
+work represent pattern clusters. When train-
+ing is done, for each extraction pattern pj
+
+897
+
+
+
+Original sentence Abstractive summary (method)
+
+Two-time defending overall World Cup champion Marcel Hirscher won the
+challenging giant slalom on the Gran Risa course with two solid runs Sunday
+and attributed his victory to a fixed screw in his equipment setup.
+
+Marcel Hirscher has won the giant
+slalom. (C)
+
+Zodiac Aerospace posted a 7.9 percent rise in first-quarter revenue, below mar-
+ket expectations, but reaffirmed its full-year financial targets.
+
+Zodiac Aerospace has reported a rise in
+profits. (C)
+
+Australian free-agent closer Grant Balfour has agreed to terms with the Balti-
+more Orioles on a two-year deal, the Baltimore Sun reported on Tuesday citing
+multiple industry sources.
+
+Balfour will join the Baltimore Orioles.
+(H)
+
+Paul Rudd is ’Ant-Man’: 5 reasons he needs an ’Agents of SHIELD’ appear-
+ance.
+
+Paul Rudd to play Ant-Man. (H)
+
+Millwall defender Karleigh Osborne has joined Bristol City on a two-and-a-half
+year deal after a successful loan spell.
+
+Bristol City have signed Karleigh Os-
+borne. (M)
+
+Simon Hoggart, one of the Spectator’s best-loved columnists, died yesterday
+after fighting pancreatic cancer for over three years.
+
+Simon Hoggart passed away yesterday.
+(M)
+
+Table 1: Abstraction examples from compression (C), heuristic (H) and memory-based (M) patterns.
+
+Method Extractions Abstractions
+
+HEURISTIC 24,630 956
+COMPRESSION 15,687 657
+MEMORY-BASED 11,459 967
+
+Table 2: Patterns extracted in each method, before
+Noisy-OR inference.
+
+and pattern cluster ci, the network provides
+p(pj |ci) —the probability that ci will gener-
+ate pj— and p(ci|pj) —the probability that,
+given a pattern pj , ci was the hidden event
+that generated it.
+
+At generation time we proceed in the following
+way:
+
+1. Given the title or first sentence of a news ar-
+ticle, run the same pattern extraction method
+that was used in training and, if possible, ob-
+tain a pattern p involving some entities.
+
+2. Find the model clusters that contain this pat-
+tern, Cp = {ci such that p(ci|p) > 0}.
+
+3. Return a ranked list of model patterns
+output = {(pj , score(pj))}, scored as fol-
+lows:
+
+score(pj) =
+∏
+
+ci∈Cp
+p(pj |ci)p(ci|p)
+
+where p was the input pattern.
+
+4. Replace the entity placeholders in the top-
+scored patterns pj with the entities that were
+actually mentioned in the input news article.
+
+In all cases the parameters of the network were
+predefined as 20,000 nodes in the hidden layer
+(model clusters) and 40 Expectation Maximization
+(EM) training iterations. Training was distributed
+across 20 machines with 10 GB of memory each.
+
+For testing we used 37,584 news crawled dur-
+ing December 2013, which had not been used for
+training the models. Table 3 shows one pattern
+cluster example from each of the three trained
+models. The table shows only the surface form
+of the pattern for simplicity.
+
+Pattern cluster (MEMORY-BASED)
+organization1 gets organization0 nod for drug
+organization1 gets organization0 nod for tablets
+organization0 approves organization1 drug
+organizations0 approves organization1 ’s drug
+organization1 gets organization0 nod for capsules
+
+Pattern cluster (HEURISTIC)
+organization0 to buy organization1
+organization0 to acquire organization1
+organization0 buys organization1
+organization0 acquires organization1
+organization0 to acquire organizations1
+organization0 buys organizations1
+organization0 acquires organizations1
+organization0 agrees to buy organization1
+organization0 snaps up organization1
+organization0 to purchase organizations1
+organization0 is to acquire organization1
+organization0 has agreed to buy organization1
+organization0 announces acquisition of organizations1
+organization0 may bid for organization1
+organization1 sold to organization0
+organization1 acquired by organization0
+
+Pattern cluster (COMPRESSION)
+the sports team1 have acquired person0 from the sports team2
+the sports team1 acquired person0 from the sports team2
+the sports team2 have traded person0 to the sports team1
+sports team1 acquired the rights to person0 from sports team2
+sports team2 acquired from sports team1 in exchange for person0
+sports team2 have acquired from the sports team1 in exchange for person0
+
+Table 3: Examples of pattern clusters. In each
+cluster ci, patterns are sorted by p(pj |ci).
+
+898
+
+
+
+5.2 Results
+
+Table 2 shows the number of extracted patterns
+from the test set, and the number of abstractive
+event descriptions produced.
+
+As expected, the number of extracted patterns
+using the memory-based model is smaller than
+with the two other models, which are based on
+generic rules and are less restricted in what they
+can generate. As mentioned, the memory-based
+model can only extract previously-seen structures.
+Compared to this model, with heuristics we can
+obtain patterns for more than twice more news ar-
+ticles. At the same time, looking at the number
+of summary sentences generated they are com-
+parable, meaning that a larger proportion of the
+memory-based patterns actually appeared in the
+pattern clusters and could be used to produce sum-
+maries. This is also consistent with the fact that us-
+ing heuristics the space of extracted patterns is ba-
+sically unbounded and many new patterns can be
+generated that were previously unseen –and these
+cannot generate abstractions. A positive outcome
+is that restricting the syntactic structure of the ex-
+tracted patterns to what has been observed in past
+news does not negatively affect end-to-end cover-
+age when generating the abstractive summaries.
+
+Table 1 shows some of the abstractive sum-
+maries generated with the different methods. For
+manually evaluating their quality, a random sam-
+ple of 100 original sentences was selected for each
+method. The top ranked summary for each origi-
+nal sentence was sent to human raters for evalua-
+tion, and received three different ratings. None of
+the raters had any involvement in the development
+of the work or the writing of the paper, and a con-
+straint was added that no rater could rate more than
+50 abstractions. Raters were presented with the
+original sentence and the compressed abstraction,
+and were asked to rate it along two dimensions, in
+both cases using a 5-point Likert scale:
+
+• Readability: whether the abstracted com-
+pression is grammatically correct.
+
+• Informativeness: whether the abstracted
+compression conveys the most important in-
+formation from the original sentence.
+
+Inter-judge agreement was measured using the
+Intra-Class Correlation (ICC) (Shrout and Fleiss,
+1979; Cicchetti, 1994). The ICC for readability
+was 0.37 (95% confidence interval [0.32, 0.41]),
+
+Method Readability Informativeness
+
+HEURISTIC 3.95 3.07
+COMPRESSION 3.98 2.35
+MEMORY-BASED 4.20 3.70
+
+Table 4: Results for the three methods when rating
+the top-ranked abstraction.
+
+and for informativeness it was 0.64 (95% confi-
+dence interval [0,60, 0.67]), representing fair and
+substantial reliability.
+
+Table 4 shows the results when rating the top
+ranked abstraction using either of the three dif-
+ferent models for pattern extraction. The abstrac-
+tions produced with the memory-based method are
+more readable than those produced with the other
+two methods (statistically significant with 95%
+confidence).
+
+Regarding informativeness, the differences be-
+tween the methods are bigger, because the first two
+methods have a proportionally larger number of
+items with a high readability but a low informa-
+tiveness score. For each method, we have man-
+ually reviewed the 25 items where the difference
+between readability and informativeness was the
+largest, to understand in which cases grammatical,
+yet irrelevant compressions are produced. The re-
+sults are shown in Table 5. Be+adjective includes
+examples where the pattern is of the form Entity is
+Adjective, which the compression-based systems
+extracts often represents an incomplete extraction.
+Wrong inference contains the cases where patterns
+that are related but not equivalent are clustered,
+e.g. Person arrived in Country and Person arrived
+in Country for talks. Info. missing represents cases
+where very relevant information has been dropped
+and the summary sentence is not complete. Pos-
+sibility contains cases where the original sentence
+described a possibility and the compression states
+it as a fact, or vice versa. Disambiguation are en-
+tity disambiguations errors, and Opposite contains
+cases of patterns clustered together that are op-
+posite along some dimension, e.g. Person quits
+TV Program and Person to return to TV Program.
+
+The method with the largest drop between the
+readability and informativeness scores is COM-
+PRESSION. As can be seen, many of these mis-
+takes are due to relevant information being miss-
+ing in the summary sentence. This is also the
+largest source of errors for the HEURISTIC system.
+For the MEMORY-BASED system, the drop in read-
+
+899
+
+
+
+Method Be+adjective Wrong inference Info. missing Possibility Disambiguation Opposite
+
+HEURISTIC 0 7 14 3 1 0
+COMPRESSION 3 10 10 0 0 2
+MEMORY-BASED 0 17 4 2 0 2
+
+Table 5: Sources of errors for the top 25 items with high readability and low informativeness.
+
+Original sentence Pattern extracted (method) Abstraction
+
+David Moyes is happy to use tough love on Adnan Januzaj
+to ensure the Manchester United youngster fulfils his mas-
+sive potential.
+
+David Moyes is happy. (C) Fortune will start to favourDavid Moyes.
+
+The Democratic People’s Republic of Korea will “achieve
+nothing by making threats or provocation,” the United
+States said Friday.
+
+The United States said Fri-
+day. (C, H)
+
+United States officials said
+Friday.
+
+EU targets Real and Barca over illegal state aid.
+EU targets Real Madrid.
+(H)
+
+EU is going after Real
+Madrid.
+
+EU warns Israel over settlement construction EU warns Israel. (M)
+EU says Israel needs re-
+forms.
+
+Table 6: Examples of compression (C), heuristic (H) and memory-based (M) patterns that led to abstrac-
+tions with high readability but a low informativeness score. Both incomplete summary sentences and
+wrong inferences can be observed.
+
+ability score is much smaller, so there were less of
+these examples. And most of these examples be-
+long to the class of wrong inferences (patterns that
+are related but not equivalent, so we should not
+abstract one of them from the other, but they were
+clustered together in the model). Our conclusion
+is that the examples with missing information are
+not such a big problem with the MEMORY-BASED
+system, as using the trie is an additional safeguard
+that the generated titles are complete statements,
+but the method is not preventing the wrong infer-
+ence errors so this class of errors become the dom-
+inant class by a large margin.
+
+Some examples with high readability but low
+informativeness are shown in Table 6.
+
+6 Conclusions
+
+Most Open-IE systems are based on linguistically-
+motivated heuristics for learning patterns that ex-
+press relations between entities or events. How-
+ever, it is common for these patterns to be incom-
+plete or ungrammatical, and therefore they are not
+suitable for abstractive summary generation of the
+relation or event mentioned in the text.
+
+In this paper, we describe a memory-based ap-
+proach in which we use a corpus of past news
+to learn valid syntactic sentence structures. We
+discuss the theoretical time complexity of look-
+ing up extraction patterns in a large corpus of
+
+syntactic structures stored as a trie and demon-
+strate empirically that this method is effective in
+practice. Finally, the evaluation shows that sum-
+mary sentences produced by this method outper-
+form heuristics and compression-based ones both
+in terms of readability and informativeness. The
+problem of generating incomplete summary sen-
+tences, which was the main source of informative-
+ness errors for the alternative methods, becomes a
+minor problem with the memory-based approach.
+Yet, there are some cases in which also the mem-
+ory based approach extracts correct but misleading
+utterances, e.g., a pattern like PER passed away
+from the sentence PER passed the ball away. To
+solve this class of problems, a possible research
+direction would be the inclusion of more complex
+linguistic features in the tree-trie, such as verb sub-
+categorization frames.
+
+As another direction for future work, more ef-
+fort is needed in making sure that no incorrect in-
+ferences are made with this model. These happen
+when a more specific pattern is clustered together
+with a less specific pattern, or when two non-
+equivalent patterns often co-occur in news as two
+events are somewhat correlated in real life, but it is
+generally incorrect to infer one from the other. Im-
+provements in the pattern-clustering model, out-
+side the scope of this paper, will be required.
+
+900
+
+
+
+References
+Enrique Alfonseca, Daniele Pighin, and Guillermo
+
+Garrido. 2013. HEADY: News headline abstraction
+through event pattern clustering. In Proceedings of
+the 51st Annual Meeting of the Association for Com-
+putational Linguistics, Sofia, Bulgaria, 4–9 August
+2013, pages 1243–1253.
+
+Taylor Berg-Kirkpatrick, Dan Gillick, and Dan Klein.
+2011. Jointly learning to extract and compress. In
+Proceedings of the 49th Annual Meeting of the As-
+sociation for Computational Linguistics, Portland,
+OR, 19–24 June 2011.
+
+Domenic V Cicchetti. 1994. Guidelines, criteria, and
+rules of thumb for evaluating normed and standard-
+ized assessment instruments in psychology. Psycho-
+logical Assessment, 6(4):284.
+
+James Clarke and Mirella Lapata. 2008. Global in-
+ference for sentence compression: An integer linear
+programming approach. Journal of Artificial Intelli-
+gence Research, 31:399–429.
+
+Hal Daumé III and Daniel Marcu. 2004. A tree-
+position kernel for document compression. In Pro-
+ceedings of the 2004 Document Understanding Con-
+ference held at the Human Language Technology
+Conference of the North American Chapter of the
+Association for Computational Linguistics,, Boston,
+Mass., 6–7 May 2004.
+
+Marie-Catherine de Marneffe, Bill MacCartney, and
+Christopher D. Manning. 2006. Generating typed
+dependency parses from phrase structure parses. In
+Proceedings of the 5th International Conference on
+Language Resources and Evaluation, Genoa, Italy,
+22–28 May 2006, pages 449–454.
+
+Anthony Fader, Stephen Soderland, and Oren Etzioni.
+2011. Identifying relations for open information ex-
+traction. In Proceedings of the 2011 Conference on
+Empirical Methods in Natural Language Process-
+ing, Edinburgh, UK, 27–29 July 2011, pages 1535–
+1545.
+
+Katja Filippova and Yasemin Altun. 2013. Overcom-
+ing the lack of parallel data in sentence compression.
+In Proceedings of the 2013 Conference on Empirical
+Methods in Natural Language Processing, Seattle,
+WA, USA, 18–21 October 2013, pages 1481–1491.
+
+Dan Gillick and Benoit Favre. 2009. A scalable global
+model for summarization. In Proceedings of the ILP
+for NLP Workshop, Boulder, CO, June 4 2009, pages
+10–18.
+
+Gregory Grefenstette. 1998. Producing intelligent
+telegraphic text reduction to provide an audio scan-
+ning service for the blind. In Working Notes of the
+Workshop on Intelligent Text Summarization, Palo
+Alto, Cal., 23 March 1998, pages 111–117.
+
+Aria Haghighi and Dan Klein. 2009. Simple coref-
+erence resolution with rich syntactic and semantic
+
+features. In Proceedings of the 2009 Conference on
+Empirical Methods in Natural Language Process-
+ing, Singapore, 6-7 August 2009, pages 1152–1161.
+
+Inderjeet Mani. 2001. Automatic Summarization.
+John Benjamins, Amsterdam, Philadelphia.
+
+Ryan McDonald. 2006. Discriminative sentence com-
+pression with soft syntactic evidence. In Proceed-
+ings of the 11th Conference of the European Chap-
+ter of the Association for Computational Linguistics,
+Trento, Italy, 3–7 April 2006, pages 297–304.
+
+Yashar Mehdad, Giuseppe Carenini, and Frank W.
+Tompa. 2013. Abstractive meeting summariza-
+tion with entailment and fusion. In Proceedings
+of the 14th European Workshop on Natural Lan-
+guage Generation, Sofia, Bulgaria, 8–9 August,
+2013, pages 136–146.
+
+David Milne and Ian H. Witten. 2008. An effective,
+low-cost measure of semantic relatedness obtained
+from Wikipedia links. In Proceedings of the AAAI
+2008 Workshop on Wikipedia and Artificial Intelli-
+gence, Chicago, IL, 13-14 July, 2008.
+
+Joakim Nivre. 2006. Inductive Dependency Parsing.
+Springer.
+
+Michael Schmitz, Robert Bart, Stephen Soderland,
+Oren Etzioni, et al. 2012. Open language learn-
+ing for information extraction. In Proceedings of
+the 2012 Conference on Empirical Methods in Natu-
+ral Language Processing, Jeju Island, Korea, 12–14
+July 2012, pages 523–534.
+
+Patrick E Shrout and Joseph L Fleiss. 1979. Intraclass
+correlations: uses in assessing rater reliability. Psy-
+chological bulletin, 86(2):420.
+
+Karen Spärck-Jones. 2007. Automatic summaris-
+ing: A review and discussion of the state of the art.
+Technical Report UCAM-CL-TR-679, University of
+Cambridge, Computer Laboratory, Cambridge, U.K.
+
+Ivan Titov and Alexandre Klementiev. 2011. A
+Bayesian model for unsupervised semantic parsing.
+In Proceedings of the 49th Annual Meeting of the As-
+sociation for Computational Linguistics, Portland,
+OR, 19–24 June 2011, pages 1445–1455.
+
+Lu Wang, Hema Raghavan, Vittorio Castelli, Radu Flo-
+rian, and Claire Cardie. 2013. A sentence com-
+pression based framework to query-focused multi-
+document summarization. In Proceedings of the
+51st Annual Meeting of the Association for Com-
+putational Linguistics, Sofia, Bulgaria, 4–9 August
+2013, pages 1384–1394.
+
+Congle Zhang and Daniel S. Weld. 2013. Harvest-
+ing parallel news streams to generate paraphrases of
+event relations. In Proceedings of the 2013 Con-
+ference on Empirical Methods in Natural Language
+Processing, Seattle, WA, USA, 18–21 October 2013,
+pages 1776–1786.
+
+901
+
+

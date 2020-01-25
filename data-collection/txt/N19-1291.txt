@@ -1,0 +1,1401 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Scalable Collapsed Inference for High-Dimensional Topic Models
+
+
+Proceedings of NAACL-HLT 2019, pages 2836–2845
+Minneapolis, Minnesota, June 2 - June 7, 2019. c©2019 Association for Computational Linguistics
+
+2836
+
+Scalable Collapsed Inference for High-Dimensional Topic Models
+
+Rashidul Islam and James Foulds
+Department of Information Systems
+
+University of Maryland, Baltimore County
+{islam.rashidul,jfoulds}@umbc.edu
+
+Abstract
+
+The bigger the corpus, the more topics it can
+potentially support. To truly make full use of
+massive text corpora, a topic model inference
+algorithm must therefore scale efficiently in
+1) documents and 2) topics, while 3) achiev-
+ing accurate inference. Previous methods have
+achieved two out of three of these criteria si-
+multaneously, but never all three at once. In
+this paper, we develop an online inference
+algorithm for topic models which leverages
+stochasticity to scale well in the number of
+documents, sparsity to scale well in the num-
+ber of topics, and which operates in the col-
+lapsed representation of the topic model for
+improved accuracy and run-time performance.
+We use a Monte Carlo inner loop in the on-
+line setting to approximate the collapsed vari-
+ational Bayes updates in a sparse and efficient
+way, which we accomplish via the Metropolis-
+Hastings Walker method. We showcase our
+algorithm on LDA and the recently proposed
+mixed membership skip-gram topic model.
+Our method requires only amortized O(kd)
+computation per word token instead of O(K)
+operations, where the number of topics occur-
+ring for a particular document kd ≪ the total
+number of topics in the corpus K, to converge
+to a high-quality solution.
+
+1 Introduction
+
+Topic models are powerful tools for analyzing to-
+day’s massive, constantly expanding digital text
+information by representing high-dimensional
+data in a low-dimensional subspace. We can re-
+cover the main themes of a corpus by using topic
+models such as latent Dirichlet allocation (LDA)
+to organize, understand, search, and explore the
+documents (Blei et al., 2003).
+
+Traditional LDA inference techniques such as
+variational Bayes and collapsed Gibbs sampling
+do not readily scale to corpora containing mil-
+lions of documents. To scale up inference, the
+main approaches are distributed algorithms (New-
+man et al., 2008) and stochastic algorithms (Hoff-
+man et al., 2010, 2013). Stochastic algorithms,
+such as stochastic variational inference (SVI), op-
+erate in an online fashion, and hence do not
+need to see all of the documents before updating
+the topics, so they can be applied to corpora of
+any size, without expensive distributed hardware
+(Hoffman et al., 2010). The “collapsed” represen-
+tation of topic models is also frequently important,
+as it leads to faster convergence, efficient updates,
+and lower variance in estimation (Griffiths and
+Steyvers, 2004). The stochastic collapsed vari-
+ational Bayesian inference (SCVB0) algorithm,
+proposed by (Foulds et al., 2013), combines the
+benefits of stochastic and collapsed inference.
+
+Larger corpora typically support more topics,
+which brings the additional efficiency challenge
+of training a larger model (Mimno et al., 2012).
+This challenge has been addressed by exploiting
+sparsity to perform updates in time sublinear in
+the number of topics. A sparse variant of the SVI
+algorithm for LDA, SSVI, proposed by (Mimno
+et al., 2012), is scalable to large numbers of topics,
+but does not fully exploit the collapsed represen-
+tation of LDA, which is important for faster con-
+vergence and improved inference accuracy, due to
+a better variational bound (Teh et al., 2007). The
+Metropolis Hastings Walker (MHW) method (Li
+et al., 2014) scales well in the number of topics,
+and uses a collapsed inference algorithm, but it
+operates in the batch setting, so it is not scalable
+to large corpora. LightLDA (Yuan et al., 2015)
+
+
+
+2837
+
+is a distributed approach to the MHW method
+which adopts a data-and-model-parallel strategy
+to maximize memory and CPU efficiency. How-
+ever, it is not an online approach, and furthermore
+requires multiple expensive computer clusters to
+converge faster. Tensor methods are another ap-
+proach to speeding up topic models (Anandku-
+mar et al., 2014; Arora et al., 2012), which the-
+oretically guarantee the recovery of the true pa-
+rameters by overcoming the problem of local op-
+tima. These techniques use the method of mo-
+ments instead of maximum likelihood estimation
+or Bayesian inference, which leads to lower data
+efficiency, and sometimes unreliable performance.
+
+In this work, we propose a highly efficient
+and scalable inference algorithm for topic mod-
+els. We develop an online algorithm which lever-
+ages stochasticity to scale well in the number of
+documents, sparsity to scale well in the number of
+topics, and which operates in the collapsed rep-
+resentation of topic models. We thereby combine
+the individual benefits of SVI, SSVI, SCVB0, and
+MHW into a single algorithm. Our approach is to
+develop a sparse version of SCVB0. Inspired by
+SSVI, we use a Monte Carlo inner loop to approx-
+imate the SCVB0 variational distribution updates
+in a sparse and efficient way, which we accom-
+plish via MHW method. To show the generality
+of our algorithm, we explore the benefits of our in-
+ference method for LDA and another recently pro-
+posed topic model, MMSGTM, with experiments
+on both small and large-scale datasets.
+
+2 Background
+
+To build the foundation for our proposed method,
+in this section we provide the necessary back-
+ground on LDA and MMSGTM topic models and
+their associated inference algorithms. This is fol-
+lowed by a description of the MHW sampler for
+reducing topic model sampling complexity.
+
+2.1 Latent Dirichlet Allocation and SCVB0
+
+Probabilistic topic models such as LDA (Blei
+et al., 2003) use latent variables to encode co-
+occurrence patterns between words in text corpora
+and other bag-of-words represented data. In LDA,
+we assume that the D documents in a corpus are
+each from mixture distributions of K individual
+topics ϕk, k ∈ {1, ...,K}, each of which are dis-
+
+crete distributions over words. For a document
+j of length Nj , the local (document-level) vari-
+ables θj are a distribution over topics drawn from a
+Dirichlet prior with parameters αk and for each to-
+ken, global variables (corpus-level) ϕk are drawn
+from a Dirichlet prior with parameters βw. Due to
+conjugacy, we can marginalize out topics Θ and
+distributions over topics Φ, and perform inference
+only on the topic assignments Z in the collapsed
+representation of LDA (Griffiths and Steyvers,
+2004). For scalable and accurate inference, Foulds
+et al. (2013) proposed a stochastic collapsed vari-
+ational inference algorithm, SCVB0. The SCVB0
+approach computes a variational discrete distribu-
+tion γij over the K topic assignment probabilities
+for each word i in each document j, but does not
+maintain the γ variables that increase the mem-
+ory requirement of original batch CVB0 algorithm
+(Asuncion et al., 2009). SCVB0 iteratively up-
+dates each γij using
+
+γijk :∝
+NΦwijk + βwij
+
+NZk +
+∑
+
+w βw
+(NΘjk + αk) (1)
+
+for each topic k, with jth document’s ith word
+wij . The NZ , NΘ, and NΦ are referred to as
+CVB0 statistics, where NZ is the vector of ex-
+pected number of words assigned to each topic,
+each entry j, k of matrix NΘ, and each entry w,
+k of matrix NΦ are the expected number of times
+document j, and word w are assigned to topic k,
+respectively, across the corpus. To do stochastic
+updates of these variables, one sequence of step-
+sizes ρΦ for NΦ and NZ and another sequence
+ρΘ for NΘ are maintained. The update of NΘj
+for every token i of document j with an online av-
+erage of the current value and its expected value is
+
+NΘj := (1− ρ
+Θ
+t )N
+
+Θ
+j + ρ
+
+Θ
+t Cjγij (2)
+
+where Cj is the document length. In practice, it
+is too expensive to update NΦ after every token.
+This leads to the use of minibatch updates with the
+average of the M per-token estimates of the form
+Yij , which is a W ×K matrix with the wij th row
+being γij and with zeros in the other entries:
+
+NΦ := (1− ρΦt )NΦ + ρΦt N̂Φ (3)
+NZ := (1− ρΦt )NZ + ρΦt N̂Z , (4)
+
+
+
+2838
+
+where N̂Φ = C|M |
+∑
+
+ij∈M Yij , N̂
+Z =
+
+C
+|M |
+
+∑
+ij∈M γij , and C is the number of words in
+
+the corpus. The SCVB0 algorithm outperforms
+stochastic VB (Hoffman et al., 2010) on large
+corpora by converging faster and often to a better
+solution (Foulds et al., 2013). However, the
+SCVB0 algorithm does not leverage sparsity, and
+hence requires O(K) operations per word token.
+
+2.2 MMSG Topic Model
+To show the generality of our approach to topic
+models other than LDA, we will also apply our
+method to a recent model called the Mixed Mem-
+bership Skip-gram Topic Model (MMSGTM)
+(Foulds, 2018), which combines ideas from topic
+models and word embeddings (cf. also (Das et al.,
+2015; Liu et al., 2015)). MMSGTM’s generative
+model for words and their surrounding context is:
+
+• For each word wi in the corpus
+– Sample a topic zi ∼ Discrete(θwi)
+– For each word wc ∈ context(i)
+
+∗ Sample a context word
+wc ∼ Discrete(ϕzi) .
+
+The inferred model can then be used to train em-
+beddings for topics and words, although we do
+not consider this here. The MMSGTM admits a
+collapsed Gibbs sampler (CGS) which efficiently
+resolves the cluster assignments. With Dirichlet
+priors on the parameters, the CGS update is
+
+p(zi = k|.) :∝ (N (Φ)−iwik + αk) ×
+|context(i)|∏
+
+c=1
+
+N
+(Φ)−i
+wck
+
++ βwc +N
+(i,c)
+wc
+
+N
+(Z)−i
+k +
+
+∑
+w βw + c− 1
+
+, (5)
+
+where α and β are parameter vectors for Dirichlet
+priors over the topic and word distributions, NΦwi
+and NΦwc are input and output word-topic counts
+(excluding the current word), NZ is the total topic
+counts in output word-topic counts, and N (i,c)wc is
+the number of occurrences of word wc before the
+cth word in the ith context. MMSGTM exploits
+the MHW algorithm, which scales sub-linearly in
+K, but not in the number of training documents.
+
+2.3 Metropolis-Hastings-Walker Sampler
+The MHW method (Li et al., 2014), which is a key
+component of our approach, uses a data structure
+called an alias table which allows sampling from
+
+a discrete distribution in amortized O(1) time.
+Assuming initial probabilities p0, p1, ..., pl−1 of a
+distribution over l outcomes and average of prob-
+abilities a = 1l , the alias table A can be formed as
+follows (Marsaglia et al., 2004):
+
+• Initialize: for i from 0 to l − 1
+– Aalias[i] = i and Aprob = (i+ 1)a
+
+• Do the following steps n− 1 times
+– Find smallest pi and largest pj
+– Set Aalias[i] = j and Aprob = i×a+pi
+– pj := pj − (a− pi) and pi := a .
+
+Then, to sample from p using the alias table:
+• Roll l-sided fair die to choose element i of A
+
+• If Rand(1) < Aprob[i] return i,
+else return Aalias[i].
+
+Li et al. (2014) cache alias table samples, avoid-
+ing the need to store the table. Once the supply of
+samples is exhausted they compute a new alias ta-
+ble. They draw samples from the Gibbs sampling
+update, analogous to γij in Equation 1, in amor-
+tized O(kd) time by decomposing the update into
+
+p(zij = k|.) ∝ NΘjk
+NΦwijk + βwij
+
+NZk +
+∑
+
+w βw
++ αk
+
+NΦwijk + βwij
+
+NZk +
+∑
+
+w βw
+(6)
+
+where the first term, sparse in kd, admits sampling
+in O(kd) time, and the second term is dense but
+slow changing. A Metropolis-Hastings (M-H) up-
+date is used to correct for approximating the CGS
+update with a proposal distribution q(k) based on
+the stale alias samples. Foulds et al. (2018) pro-
+pose to apply simulated annealing to optimize in-
+stead of sample, and which improves mixing for
+the MMSGTM. This is achieved by raising the
+model part of the M-H acceptance ratio for a new
+sample z(new)i ∼ q(k) to the power of
+
+1
+Tj
+
+at itera-
+tion j:
+
+p(accept z
+(new)
+i |.) = (7)
+
+min(1, (
+p(z
+
+(new)
+i )
+
+p(z
+(old)
+i )
+
+)
+1
+Tj
+
+q(z
+(old)
+i )
+
+q(z
+(new)
+i )
+
+) .
+
+3 Sparse Stochastic CVB0
+
+In this section, we introduce our approach, a
+sparse version of SCVB0, which combines the in-
+dividual benefits of the SVI, SSVI, SCVB0 and
+MHW algorithms, to scale well not only in the
+
+
+
+2839
+
+SparseSCVB0 Original SCVB0 SVI
+units
+unit
+net
+hidden
+output
+neural
+networks
+
+neurons
+model
+synaptic
+input
+neuron
+response
+cell
+
+support
+kernel
+margin
+function
+vector
+svm
+machines
+
+data
+clustering
+cluster
+clusters
+algorithm
+model
+problem
+
+matrix
+pca
+linear
+principal
+eigenvectors
+eigenvalues
+eigenvalue
+
+eeg
+time
+data
+brain
+activity
+signal
+analysis
+
+word
+words
+character
+recognition
+characters
+trained
+input
+
+cells
+cell
+cortex
+response
+firing
+cortical
+inhibitory
+
+circuit
+current
+circuits
+figure
+input
+analog
+filter
+
+Table 1: Randomly selected example topics, while models trained on the NIPS corpus for K = 500.
+
+Algorithm 1 SparseSCVB0 for TM Inference
+Randomly initialize NG, NL; NZ :=
+
+∑
+w N
+
+G
+w ;
+
+doSparse = true or false
+for each minibatch M do
+
+N̂G := 0; N̂Z := 0
+for each document j in M do
+
+for each token i in j do
+γ
+(pseudo)
+ij := 0
+
+for each sample s in S do
+draw z(new)i ∼ q(k)
+
+//via efficient sampling or
+cached alias samples
+
+accept or reject z(new)i via Eq. 7
+if (accept), zi := z(new)i
+γ
+(pseudo)
+ij [zi] := γ
+
+(pseudo)
+ij [zi] +
+
+1
+S
+
+end for
+NLj := (1− ρLt )NLj + ρLt Cjγ
+
+(pseudo)
+ij
+
+if (not burn-in pass),
+//update estimates for i or for
+each context word of i:
+
+N̂Gwij := N̂
+G
+wij +
+
+C
+|M|γ
+
+(pseudo)
+ij
+
+N̂Z := N̂Z + C|M|γ
+(pseudo)
+ij
+
+elseif(doSparse),NLj [k] < τρLtCj Cj := 0
+
+end for
+end for
+update NG := (1− ρGt )NG + ρGt N̂G
+
+update NZ := (1− ρGt )NZ + ρGt N̂Z
+
+end for
+
+number of documents but also in the number of
+topics, while gaining the benefits of collapsed in-
+ference. We refer to our method as the sparse
+stochastic collapsed variational Bayesian infer-
+ence (SparseSCVB0) algorithm.
+
+In SparseSCVB0, we obtain sparsity by sub-
+stituting sparse Monte Carlo approximations
+γ
+(pseudo)
+ij for the original SCVB0 variational dis-
+
+tributions γij . The justification for this procedure,
+also used by (Mimno et al., 2012), is that the ex-
+pected value of an average over one-hot samples
+from a distribution is equal to that distribution:
+
+Esi∼p(s)
+
+[∑S
+i=1 δk(si)
+
+S
+
+]
+=
+
+1
+
+S
+
+S∑
+i=1
+
+Esi∼p(s)
+
+[
+δk(si)
+
+]
+=
+
+1
+
+S
+
+S∑
+i=1
+
+∑
+k′
+
+δk(si = k
+′)p(si = k
+
+′) = p(s = k) .
+
+Thus, the overall procedure is still a valid stochas-
+tic optimization algorithm. We approximate the
+inner loop sampler in time sublinear in K, con-
+structing γ(pseudo) by generating S samples from
+γij using the MHW method. To describe the
+general form of our algorithm, we introduce
+SparseSCVB0 statistics: local (e.g. document-
+level) expected counts NL, global (corpus-level)
+expected counts NG, and total expected topic
+counts NZ . We approximate local sufficient
+statistics NL for each token i in document j via:
+
+NLjk ≈ CjEγ(pseudo)ij
+[∑s∈S δzsij=k
+
+S
+
+]
+.
+
+Since γ(pseudo) is sparse, we can efficiently up-
+date these statistics using only its non-zero entries.
+This approach allows us to learn high-dimensional
+topic models efficiently on very large corpora. Be-
+fore updating global parameters in a similar fash-
+ion, it may also be beneficial to perform a small
+number of burn-in passes to learn the local param-
+eters NL (Foulds et al., 2013). For large-scale
+datasets (e.g. Wikipedia), SparseSCVB0 operates
+in a “mini-epoch” approach where we process a
+large subset of the corpus (e.g. 5, 000 documents)
+several (e.g. 3) times, before discarding and pro-
+cessing the next subset, and so on. This allows a
+“warm start” of NL in repeating iterations, with a
+small memory overhead. Pseudo-code of Spars-
+eSCVB0 for a mini-epoch is provided in Algo-
+rithm 1, which we discuss more in the next two
+sections, including model-specific aspects.
+
+
+
+2840
+
+SparseSCVB0 Original SCVB0 SVI
+infection
+infected
+
+infections
+host
+
+infectious
+antiviral
+
+inoculation
+
+human
+humans
+
+chimpanzee
+macaque
+monkey
+primates
+
+chimpanzees
+
+liver
+hcv
+hbv
+
+hepatic
+hepatitis
+
+hepatocytes
+cirrhosis
+
+decreased
+decrease
+increased
+increase
+
+decreases
+decreasing
+
+dramatically
+
+dna
+replication
+chromatin
+
+origins
+ssdna
+
+primase
+xenopus
+
+medication
+patients
+
+medications
+prescribed
+
+patient
+prescription
+pharmacy
+
+mutations
+mutation
+mutated
+crosses
+
+missense
+mut
+hpf
+
+hormone
+invasive
+androgen
+hormones
+
+testosterone
+chr
+
+hormonal
+
+intensive
+icu
+
+delirium
+occurrences
+
+sedation
+haloperidol
+
+psychotropic
+
+Table 2: Randomly selected example topics, while models trained on the PubMed corpus with K = 1, 000.
+
+SparseSCVB0 Original SCVB0 SVI
+band
+music
+released
+show
+song
+live
+records
+
+town
+city
+road
+south
+river
+village
+school
+
+blood
+treatment
+disease
+patients
+medical
+health
+effects
+
+army
+war
+division
+battle
+forces
+corps
+infantry
+
+data
+system
+software
+computer
+systems
+version
+bit
+
+gold
+silver
+diamond
+golden
+bronze
+diamonds
+pit
+
+president
+political
+court
+senate
+constitution
+politics
+elected
+
+japanese
+china
+chinese
+japan
+people
+countries
+asia
+
+engine
+test
+center
+small
+gas
+engines
+base
+
+Table 3: Randomly selected example topics, while models trained on the Wikipedia corpus for K = 1, 000.
+
+4 SparseSCVB0 for LDA
+
+To deploy SparseSCVB0 for LDA, we use the
+M-H proposal distribution from (Li et al., 2014)
+which involves drawing samples exactly from
+document-specific sparse terms or approximately
+using cached samples from the alias table:
+
+q(k) :=
+PL
+
+PL +QG
+pL(k) +
+
+QG
+PL +QG
+
+qG(k) (8)
+
+where pL(k) and qG(k) represent the sparse and
+dense part, respectively from Equation 6 and
+PL =
+
+∑
+k pL(k), QG =
+
+∑
+k qG(k). When
+
+PL
+PL+QG
+
+> RandUnif(1), we sample from the
+sparse part in O(kd) time depending on only the
+non-zero entries of NLj (analogous to N
+
+Θ
+j ), as
+
+NLj is sparse in the LDA setting. Otherwise, we
+sample from the dense part in amortized O(1)
+time using the alias method. Unfortunately, due
+to the stochastic update, any entry of NLj never
+becomes exactly zero, however it may maintain a
+very small value. To address this, we apply a spar-
+sification heuristic, where we threshold NLj after
+burn-in passes for each document iteration. We
+parameterize the threshold as τρLtCjCj ; where Cj
+is the length of the j document, ρLtCj is the step
+size for the last token of this document, and con-
+stant 0 < τ ≤ 1 controls the sparsity. In our pre-
+liminary experiments, we found that, somewhat
+counter-intuitively, the Monte Carlo and sparsi-
+fication approximations actually improve conver-
+gence in early iterations. We believe that this
+
+is because they help SCVB0 escape the initial
+high-entropy regime, during which convergence
+of variational algorithms is poor (Salakhutdinov
+et al., 2003). This property makes the benefit of
+annealing insignificant, so we do not use simu-
+lated annealing for LDA inference, fixing Tj = 1.
+
+An additional optimization of SparseSCVB0
+for LDA inference can be performed by “clump-
+ing” (Teh et al., 2007; Foulds et al., 2013), where
+one update of the local parameters is performed
+for each distinct word type in each document.
+This is performed by fixing the variational dis-
+tribution, and scaling the update by number of
+copies of the distinct word type in the document.
+If we observe the distinct word type waj , which
+occurs maj times in document j, the update is
+
+NLj := (1− ρ
+L
+t )
+
+majNLj
+
++ (1− (1− ρLt )maj )Cjγ
+(pseudo)
+aj . (9)
+
+5 SparseSCVB0 for MMSGTM
+
+The main contribution of our approach for the
+MMSGTM algorithm is to scale this algorithm in
+number of documents with online inference, as
+MMSGTM already scales sublinearly in K using
+MHW. Foulds et al. (2018) use an MHW proposal
+which approximates the CGS update, interpreted
+as a product of experts (Hinton, 2002) in which
+each word in the context is an “expert” which
+weighs in multiplicatively on the update, with a
+mixture of experts. In the proposal, they draw a
+
+
+
+2841
+
+Input word = learning
+Top words in top 2 topics for the input word
+
+NIPS
+SparseSCVB0 algorithms algorithm reinforcement problem problems | learning gradient descent rate weight machine
+
+Original SCVB0 learning networks network algorithm neural | propagation function reinforcement gradient algorithms
+
+Wikipedia
+SparseSCVB0 university school college education students research | public center science schools article information
+
+Original SCVB0 students school education university college schools | center year program degree systems information
+
+Table 4: Top words in the top 2 topics for an input word using original SCVB0 and SparseSCVB0 for MMSGTM.
+
+context word wc uniformly from the context of the
+current word, wc ∼ Uniform(|context(wi)|),
+and then sample a word based on the chosen con-
+text word’s contribution to the update:
+
+q(k) :∝
+NGwck + βwc
+
+NZk +
+∑
+
+w βw
+(10)
+
+where NGwc is analogous to the output context
+word-topic counts NΦwc of original MMSGTM
+model. The proposal samples via the alias method
+in amortized O(1) time, instead of O(kd) time,
+since it does not involve the sparse term. We
+use this proposal to approximate the CVB0 up-
+date for the model, which is a deterministic ver-
+sion of Equation 5, neglecting to exclude the cur-
+rent assignment of zi. We update NGwi (analo-
+gous to NΦwc) for each current word wi locally,
+but update NGwc and N
+
+z via minibatch counts
+N̂Gwc and N̂
+
+Z , respectively, for each context word
+wc of current word wi. Unlike for LDA, Cj in
+the local updates represents the total number of
+input word j in the corpus. As we draw multi-
+ple output words from each topic assignment, the
+effective temperature of the MMSGTM model is
+much lower than for standard LDA which may
+cause problems with mixing and leads it to get
+stuck in the initial regime. Following Foulds et
+al. (2018), we perform simulated annealing which
+varies the M-H acceptance ratio to improve mix-
+ing. We parameterize the temperature schedule as
+Tj = T0 + λκ
+
+µj
+D , where T0 is the target final tem-
+
+perature, κ ≤ 1, constant µ controls the amount
+of temperature reduction after each document it-
+eration j and λ controls the initial temperature.
+
+6 Experiments
+
+In this section we study the performance of our
+SparseSCVB0 1 algorithm, on small as well as
+large corpora to validate the proposed method for
+
+1Code implementing SparseSCVB0 can be found at
+https://github.com/dr97531/SparseSCVB0 .
+
+Figure 1: Comparison of runtime per iteration for LDA
+in terms of: (a) number of topics K and (b) number
+of iterations when K = 10, 000. Original SCVB0 is
+linear in K, while SparseSCVB0 is sublinear in K.
+
+topic models such as LDA and MMSGTM, and to
+compare with other state-of-the-art algorithms.
+
+6.1 Experimental Environment and Datasets
+
+We compared SparseSCVB0 to SCVB0 and SVI.
+For a fair comparison, we implemented all of
+them in the fast high-level language Julia V0.6.2
+(Bezanson et al., 2017). We conducted all exper-
+iments on a computer with 64GB memory and
+an Intel Xeon E5-2623 V4 processor with 2.60
+GHz clock rate, 8×256KB L2 Cache and 10MB
+L3 Cache. As we only use one single thread for
+sampling across all experiments, only one CPU
+core is active throughout the experiment with only
+256KB available L2 Cache.2
+
+We used NIPS, Reuters-150, PubMed Central,
+and Wikipedia as representative very small, small,
+medium, and large-scale datasets, respectively.
+The NIPS corpus has 1740 scientific articles from
+years 1987-1999 with 2.3M tokens, due to Sam
+Roweis. The newswire corpus Reuters-150 con-
+tains 15, 500 articles with dictionary size of 8, 350
+words. PubMed Central has 320M tokens across
+165, 000 scientific articles and a vocabulary size
+of around 38, 500 words. The Wikipedia cor-
+pus contained 4.6 million articles from the online
+
+2Since SSVI relies on multiple complex implementation
+details, we were unable to develop a fair implementation, nor
+were we able to obtain soure code for a previous implemen-
+tation. We expect that its accuracy would be similar to SVI,
+with a speed-up at or below that bestowed by a MHW-based
+inner loop. (Mimno et al., 2012) apply it with only 200 topics
+for most of their experiments, and at most 1000 topics.
+
+
+
+2842
+
+Figure 2: Per-topic coherence for LDA when K = 1, 000 on (a) NIPS, (b) PubMed, and (c) Wikipedia. Spars-
+eSCVB0 completely outperforms other models for large-scale corpus.
+
+network data communication information communicate connection
+prison prisoners prisoner imprisoned jail escaped detained guards
+
+dog dogs shepherd hounds bred coat scent instinct eating companion
+song sung sing singing sings sang songs recorded melody tune
+
+votes vote cast elections voted candidate parties majority election
+wind winds blowing speed blows direction high low blown chill
+
+hour hours noon time daylight minutes midnight morning seconds
+
+Table 5: Randomly selected topics from a 10, 000-
+topic model trained using SparseSCVB0 on Wikipedia
+
+encyclopedia. We used the dictionary of 7, 700
+words which was extracted by Hoffman et al.
+(Hoffman et al., 2013). There were 811M tokens
+in the corpus.
+
+6.2 Performance for LDA
+
+We implement SparseSCVB0, original SCVB0
+and SVI algorithms using the clumping optimiza-
+tion (Teh et al., 2007) technique. In all LDA ex-
+periments, each algorithm was trained using mini-
+batches of size 20 for the NIPS corpus and 100
+for other corpora. For PubMed and Wikipedia,
+we chose mini-epoch subsets of size 5, 000 doc-
+
+uments and processed for 5 passes. We used a
+step-size schedule of scale(η+t)κ as in original SCVB0
+for global parameters, where t is the document
+iteration with scale = 100.0, η = 1000.0 and
+κ = 0.9. For document-level parameters, we used
+the scale = 1.0, η = 10.0 and κ = 0.9, with t
+referring here to the word iteration of the current
+document. In case of PubMed corpus, we found
+out that original SCVB0 and SVI tend to stuck in
+the initial regime for document-level step-size pa-
+rameter η = 1.0 which we later fixed by setting
+η = 10.0, while SparseSCVB0 didn’t suffer from
+this problem due to the extra randomness from
+the sparse sampled updates. Finally, we choose
+hyper-parameters α = 0.1 and β = 0.01 and
+burn-in pass of 5 for each document in all LDA
+experiments. For SparseSCVB0, we used sample
+size S = 5 to approximate γ(pseudo) and τ = 1/K
+for the sparsification heuristic on local parameters.
+
+To study the acceleration benefits of our ap-
+proach, we evaluated the runtime performance per
+
+
+
+2843
+
+Figure 3: Comparison of average log-likelihood vs. Time for LDA on (a) NIPS, (b) PubMed, and (c) Wikipedia.
+
+iteration on the number topics and the number of
+iterations. In Figure 1(a), SparseSCVB0 is com-
+pared to original SCVB0 in terms of the average
+runtime per document iteration as a function of
+the number topics. We see that original SCVB0
+requires average linear runtime due to O(K) op-
+erations to compute collapsed variational distribu-
+tion, while the average runtime for SparseSCVB0
+grows sublinearly in K, due to O(kd) operations
+instead of O(K) operations. SparseSCVB0 starts
+with approximately O(K) operations in its initial
+stage of iterations, but it starts getting a benefit
+from sparsification heuristic after burning in, as
+shown in Figure 1(b) for K = 10, 000.
+
+To evaluate the performance in terms of learned
+topic quality, we start by comparing all of the al-
+gorithms in qualitative experiments (see Table 1,
+Table 2, and Table 3) where we show randomly se-
+lected example topics, while all the models were
+trained on the NIPS, PubMed, and Wikipedia cor-
+pus for K = 500, K = 1, 000, and 1, 000, re-
+
+spectively. To get a quantitative insight we evalu-
+ated the topics using the per topic coherence met-
+ric, which measures the semantic quality of a topic
+based on the W most probable words for the top-
+ics (Mimno et al., 2011), thereby approximating
+the user viewing experience. In Figure 2, we see
+that SparseSCVB0 generates better quality topics
+with higher coherence scores than the other two
+models for K = 1000 with W = 10 after running
+all the models on each corpus for the same amount
+of time. The coherence performance of Spars-
+eSCVB0 increases substantially in the case of the
+large-scale corpus (Figure 2(c)), since it gets the
+opportunity to use its runtime advantage and pro-
+cess more documents than the other algorithms.
+
+To investigate model convergence, we mea-
+sured the held-out log-probability versus wall-
+clock time for all the algorithms. For each exper-
+iment we held-out a set of documents (150 docu-
+ments for NIPS, 3500 documents for Reuters, and
+1000 documents for all other corpora) as test data
+
+
+
+2844
+
+Figure 4: Comparison of runtime per iteration for
+MMSGTM in terms of: (a) number of topics K and (b)
+number of iterations when K = 5, 000. SparseSCVB0
+runs in amortized O(1) time, while original SCVB0 is
+linear in K.
+
+Figure 5: Per-topic coherence for MMSGTM, K =
+500, on (a) NIPS and (b) Wikipedia. SparseSCVB0 has
+higher coherence scores for both the small and large
+corpora.
+
+and trained the model on the rest of the corpus.
+Then, we split each test document in half, esti-
+mated local parameters on first half and finally
+computed the log-likelihood of the remaining half
+of the document. Figure 3 shows the comparison
+of average log-likelihood versus wall-clock time
+for all four corpora. In terms of log-likelihood,
+SparseSCVB0 provides an approximately similar
+result to original SCVB0 for the small corpus, but
+it converged to a better solution than others in
+the case of large corpora like Wikipedia (see Fig-
+ure 3(c)), likely due to its processing a larger num-
+ber of documents.
+
+SparseSCVB0 enables the large-scale computa-
+tion needed to learn high-dimensional topic mod-
+els that could not feasibly be trained using previ-
+ous methods due to their runtime complexity in
+the number of documents and/or topics. We show
+randomly selected topics from the LDA model
+with K = 10, 000 in Table 5. This big topic model
+was trained for 36 hours using SparseSCVB0 on
+Wikipedia. We performed a dense initialization,
+running original SCVB0 for the first 5 hours,
+which was found to help avoid local optima.
+
+6.3 Performance for MMSGTM
+We also conducted experiments to evaluate the
+performance of SparseSCVB0 for MMSGTM and
+compare with original SCVB0. In all MMSGTM
+experiments, we kept the same step size schedule
+for global parameters as scale = 1.0, η = 5.0
+and κ = 0.9, but for local parameter updates we
+maintain a separate step-size schedule of scale(η+t)κ
+for each input word, with t referring to the number
+of times we processed this input word, while η and
+κ values remained the same. For simulated an-
+nealing of SparseSCVB0, we used T0 = 0.00001,
+κ = 0.9, µ = 5 and λ = |context| with a context
+size of 5. We kept the same number of document
+burn-in passes as we did for the LDA experiments.
+
+In Figure 4, we show the runtime improvement
+of SparseSCVB0 over original SCVB0 for MMS-
+GTM in a similar experiment to the one for LDA.
+For MMSGTM, SparseSCVB0 substantially out-
+performs original SCVB0 by processing each doc-
+ument in amortized O(1) time. We provide qual-
+itative results in the case of MMSGTM model by
+showing several top words in the top 2 topics for
+an input word using original SCVB0 and Spars-
+eSCVB0 in Table 4 for K = 500. As for LDA,
+SparseSCVB0 allows us to generate topics with
+higher coherence scores compared to the original
+SCVB0 after running for the same amount of time
+(Figure 5) on both small and large corpora.
+
+7 Conclusions
+
+This paper introduced SparseSCVB0, a sparse
+version of the SCVB0 inference algorithm
+which performs fast, scalable high-dimensional
+topic model inference. SparseSCVB0 leverages
+stochasticity to scale well in both the corpus size
+and in the number of topics. It operates in the col-
+lapsed representation of topic models which leads
+to fast convergence while providing an improved
+variational bound. We show that SparseSCVB0
+reduces the operational complexity for the varia-
+tional Bayes update of online topic models from
+O(K) to O(kd) time for LDA and amortized O(1)
+time for MMSGTM. We evaluated and compared
+the performance of our approach with state-of-
+the-art models such as original SCVB0 and SVI to
+demonstrate that SparseSCVB0 converges much
+more efficiently, while maintaining high quality
+topics with a better per-topic coherence score.
+
+
+
+2845
+
+References
+Animashree Anandkumar, Rong Ge, Daniel Hsu,
+
+Sham M Kakade, and Matus Telgarsky. 2014. Ten-
+sor decompositions for learning latent variable mod-
+els. The Journal of Machine Learning Research,
+15(1):2773–2832.
+
+Sanjeev Arora, Rong Ge, and Ankur Moitra. 2012.
+Learning topic models–going beyond SVD. In
+Foundations of Computer Science (FOCS), 2012
+IEEE 53rd Annual Symposium on, pages 1–10.
+IEEE.
+
+Arthur Asuncion, Max Welling, Padhraic Smyth, and
+Yee Whye Teh. 2009. On smoothing and inference
+for topic models. In Proceedings of the 25th Confer-
+ence on Uncertainty in Artificial Intelligence, pages
+27–34. AUAI Press.
+
+Jeff Bezanson, Alan Edelman, Stefan Karpinski, and
+Viral B Shah. 2017. Julia: A fresh approach to nu-
+merical computing. SIAM review, 59(1):65–98.
+
+David M Blei, Andrew Y Ng, and Michael I Jordan.
+2003. Latent Dirichlet allocation. Journal of Ma-
+chine Learning Research, 3(Jan):993–1022.
+
+Rajarshi Das, Manzil Zaheer, and Chris Dyer. 2015.
+Gaussian LDA for topic models with word embed-
+dings. In Proceedings of the 53rd Annual Meet-
+ing of the Association for Computational Linguistics
+and the 7th International Joint Conference on Natu-
+ral Language Processing (Volume 1: Long Papers),
+volume 1, pages 795–804.
+
+J. R. Foulds. 2018. Mixed membership word embed-
+dings for computational social science. Proceedings
+of the 21st International Conference on Artificial In-
+telligence and Statistics (AISTATS).
+
+James Foulds, Levi Boyles, Christopher DuBois,
+Padhraic Smyth, and Max Welling. 2013. Stochas-
+tic collapsed variational Bayesian inference for la-
+tent Dirichlet allocation. In Proceedings of the 19th
+ACM SIGKDD International Conference on Knowl-
+edge Discovery and Data Mining, pages 446–454.
+ACM.
+
+Thomas L Griffiths and Mark Steyvers. 2004. Find-
+ing scientific topics. Proceedings of the National
+Academy of Sciences, 101(suppl 1):5228–5235.
+
+Geoffrey E Hinton. 2002. Training products of experts
+by minimizing contrastive divergence. Neural Com-
+putation, 14(8):1771–1800.
+
+Matthew Hoffman, Francis R Bach, and David M Blei.
+2010. Online learning for latent Dirichlet alloca-
+tion. In Advances in Neural Information Processing
+Systems, pages 856–864.
+
+Matthew D Hoffman, David M Blei, Chong Wang,
+and John Paisley. 2013. Stochastic variational infer-
+ence. The Journal of Machine Learning Research,
+14(1):1303–1347.
+
+Aaron Q Li, Amr Ahmed, Sujith Ravi, and Alexan-
+der J Smola. 2014. Reducing the sampling com-
+plexity of topic models. In Proceedings of the 20th
+ACM SIGKDD International Conference on Knowl-
+edge Discovery and Data Mining, pages 891–900.
+ACM.
+
+Yang Liu, Zhiyuan Liu, Tat-Seng Chua, and Maosong
+Sun. 2015. Topical word embeddings. In AAAI,
+pages 2418–2424.
+
+George Marsaglia, Wai Wan Tsang, Jingbo Wang, et al.
+2004. Fast generation of discrete random variables.
+Journal of Statistical Software, 11(3):1–11.
+
+David Mimno, Matt Hoffman, and David Blei. 2012.
+Sparse stochastic inference for latent Dirichlet allo-
+cation. Proceedings of the 29th International Con-
+ference on Machine Learning.
+
+David Mimno, Hanna M Wallach, Edmund Talley,
+Miriam Leenders, and Andrew McCallum. 2011.
+Optimizing semantic coherence in topic models. In
+Proceedings of the Conference on Empirical Meth-
+ods in Natural Language Processing, pages 262–
+272. Association for Computational Linguistics.
+
+David Newman, Padhraic Smyth, Max Welling, and
+Arthur U Asuncion. 2008. Distributed inference for
+latent Dirichlet allocation. In Advances in Neural
+Information Processing Systems, pages 1081–1088.
+
+Ruslan Salakhutdinov, Sam T Roweis, and Zoubin
+Ghahramani. 2003. Optimization with EM and
+expectation-conjugate-gradient. In Proceedings
+of the 20th International Conference on Machine
+Learning (ICML-03), pages 672–679.
+
+Yee W Teh, David Newman, and Max Welling. 2007.
+A collapsed variational Bayesian inference algo-
+rithm for latent Dirichlet allocation. In Advances
+in Neural Information Processing Systems, pages
+1353–1360.
+
+Jinhui Yuan, Fei Gao, Qirong Ho, Wei Dai, Jinliang
+Wei, Xun Zheng, Eric Po Xing, Tie-Yan Liu, and
+Wei-Ying Ma. 2015. LightLDA: Big topic mod-
+els on modest computer clusters. In Proceedings
+of the 24th International Conference on World Wide
+Web, pages 1351–1361. International World Wide
+Web Conferences Steering Committee.
+
+

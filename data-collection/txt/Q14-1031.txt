@@ -1,0 +1,1722 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Locally Non-Linear Learning for Statistical Machine Translation
+via Discretization and Structured Regularization
+
+Jonathan H. Clark∗ Chris Dyer† Alon Lavie†
+
+*Microsoft Research †Carnegie Mellon University
+Redmond, WA 98052, USA Pittsburgh, PA 15213, USA
+
+jonathan.clark@microsoft.com {cdyer,alavie}@cs.cmu.edu
+
+Abstract
+Linear models, which support efficient learn-
+ing and inference, are the workhorses of statis-
+tical machine translation; however, linear de-
+cision rules are less attractive from a modeling
+perspective. In this work, we introduce a tech-
+nique for learning arbitrary, rule-local, non-
+linear feature transforms that improve model
+expressivity, but do not sacrifice the efficient
+inference and learning associated with linear
+models. To demonstrate the value of our tech-
+nique, we discard the customary log transform
+of lexical probabilities and drop the phrasal
+translation probability in favor of raw counts.
+We observe that our algorithm learns a vari-
+ation of a log transform that leads to better
+translation quality compared to the explicit log
+transform. We conclude that non-linear re-
+sponses play an important role in SMT, an ob-
+servation that we hope will inform the efforts
+of feature engineers.
+
+1 Introduction
+
+Linear models using log-transformed probabilities
+as features have emerged as the dominant model
+in MT systems. This practice can be traced back
+to the IBM noisy channel models (Brown et al.,
+1993), which decompose decoding into the product
+of a translation model (TM) and a language model
+(LM), motivated by Bayes’ Rule. When Och and
+Ney (2002) introduced a log-linear model for trans-
+lation (a linear sum of log-space features), they
+noted that the noisy channel model was a special
+case of their model using log probabilities. This
+
+∗This work was conducted as part of the first author’s Ph.D.
+work at Carnegie Mellon University.
+
+same formulation persisted even after the introduc-
+tion of MERT (Och, 2003), which optimizes a lin-
+ear model; again, using two log probability fea-
+tures (TM and LM) with equal weight recovered the
+noisy channel model. Yet systems now use many
+more features, some of which are not even probabil-
+ities. We no longer believe that equal weights be-
+tween the TM and LM provides optimal translation
+quality; the probabilities in the TM do not obey the
+chain rule nor Bayes’ rule, nullifying several the-
+oretical mathematical justifications for multiplying
+probabilities. The story of multiplying probabilities
+may just amount to heavily penalizing small values.
+
+The community has abandoned the original mo-
+tivations for a linear interpolation of two log-
+transformed features. Is there empirical evidence
+that we should continue using this particular trans-
+formation? Do we have any reason to believe it is
+better than other non-linear transformations? To an-
+swer these, we explore the issue of non-linearity in
+models for MT. In the process, we will discuss the
+impact of linearity on feature engineering and de-
+velop a general mechanism for learning a class of
+non-linear transformations of real-valued features.
+
+Applying a non-linear transformation such as
+log to features is one way of achieving a non-linear
+response function, even if those features are aggre-
+gated in a linear model. Alternatively, we could
+achieve a non-linear response using a natively non-
+linear model such as a SVM (Wang et al., 2007) or
+RankBoost (Sokolov et al., 2012). However, MT
+is a structured prediction problem, in which a full
+hypothesis is composed of partial hypotheses. MT
+decoders take advantage of the fact that the model
+
+393
+
+Transactions of the Association for Computational Linguistics, 2 (2014) 393–404. Action Editor: Robert C. Moore.
+Submitted 2/2014; Revised 6/2014; Published 10/2014. c©2014 Association for Computational Linguistics.
+
+
+
+score decomposes as a linear sum over both local
+features and partial hypotheses to efficiently per-
+form inference in these structured spaces (§2) – cur-
+rently, there are no scalable solutions to integrating
+the hypothesis-level non-linear feature transforms
+typically associated with kernel methods while still
+maintaining polynomial time search. Another alter-
+native is incorporating a recurrent neural network
+(Schwenk, 2012; Auli et al., 2013; Kalchbrenner
+and Blunsom, 2013) or an additive neural network
+(Liu et al., 2013a). While these models have shown
+promise as methods of augmenting existing mod-
+els, they have not yet offered a path for replacing
+or transforming existing real-valued features.
+
+In this article, we discuss background (§2), de-
+scribe local discretization, our approach to learning
+non-linear transformations of individual features,
+compare it with globally non-linear models (§3),
+present our experimental setup (§5), empirically ver-
+ify the importance of non-linear feature transforma-
+tions in MT and demonstrate that discretization can
+be used to recover non-linear transformations (§6),
+discuss related work (§7), and conclude (§8).
+2 Background and Definitions
+2.1 Feature Locality & Structured Hypotheses
+Decoding a given source sentence f can be ex-
+pressed as search over target hypotheses e, each with
+an associated complete derivation D. To find the
+best-scoring hypothesis ê(f), a linear model applies
+a set of weights w to a complete hypothesis’ feature
+vector H:
+
+ê(f) = arg max
+e,D
+
+|H|∑
+
+i=0
+
+wiHi(f , e, D) (1)
+
+However, this hides many of the realities of perform-
+ing inference in modern decoders. Traditional in-
+ference would be intractable if every feature were
+allowed access to the entire derivation D and its as-
+sociated target hypothesis e. Decoders take advan-
+tage of the fact that features decompose over par-
+tial derivations d. For a complete derivation D, the
+global features H(D) are an efficient summation
+over local features h(d):
+
+ê(f) = arg max
+e,D
+
+|H|∑
+
+i=0
+
+wi
+∑
+
+d∈D
+hi(d)
+
+︸ ︷︷ ︸
+Hi(D)
+
+(2)
+
+This contrasts with non-local features such as the
+language model (LM), which cannot be exactly cal-
+culated given an arbitrary partial hypothesis, which
+may lack both left and right context.1 Such features
+require special handling including future cost esti-
+mation. In this study, we limit ourselves to local
+features, leaving the traditional non-local LM fea-
+ture unchanged. In general, feature locality is rel-
+ative to a particular structured hypothesis space,
+and is unrelated to the structured features described
+in Section 4.2.
+
+2.2 Feature Non-Linearity and Separability
+Unlike models that rely primarily on a large number
+of sparse indicator features, state-of-the-art machine
+translation systems rely heavily on a small number
+of dense real-valued features. However, unlike indi-
+cator features, real-valued features may benefit from
+non-linear transformations to allow a linear model to
+better fit the data.
+
+Decoders use a linear model to rank hypotheses,
+selecting the highest-ranked derivation. Since the
+absolute score of the model is irrelevant, non-linear
+responses are useful only in cases where they elicit
+novel rankings. In this section, we will discuss these
+cases in terms of separability. Here, we are sepa-
+rating the correctly ranked pairs of hypotheses from
+the incorrect in the implicit pairwise rankings de-
+fined by the total ordering on hypotheses provided
+by our model.
+
+When the local feature vectors h of each oracle-
+best2 hypothesis (or hypotheses) are distinct from
+those of all other competing hypotheses, we say that
+the inputs are oracle separable given the feature set.
+If there exists a weight vector that distinguishes the
+oracle-best ranking from all other rankings under a
+linear model, we say that the inputs are linearly sep-
+arable given the feature set. If the inputs are ora-
+cle separable but not linearly separable, we say that
+there are non-linearities that are unexplained by the
+feature set. For example, this can happen if a feature
+is positively related to quality in some regions but
+negatively related in other regions.
+
+As we add more sentences to our corpus, sepa-
+rability becomes increasingly difficult. For a given
+
+1This is especially problematic for chart-based decoders.
+2We define the oracle-best hypothesis in terms of some ex-
+
+ternal quality measure such as BLEU
+
+394
+
+
+
+corpus, if all hypotheses are oracle separable, we
+can always produce the oracle translation – assum-
+ing an optimal (and potentially very complex) model
+and weight vector. If our hypothesis space also con-
+tains all reference translations, we can always re-
+cover the reference. In practice, both of these condi-
+tions are typically violated to a certain degree. How-
+ever, if we modify our feature set such that some
+lower-ranked higher-quality hypothesis can be sepa-
+rated from all higher-ranked lower-quality hypothe-
+ses, then we can improve translation quality. For
+this reason, we believe that separability remains an
+informative tool for thinking about modeling in MT.
+
+Currently, non-linearities in novel real-valued fea-
+tures are typically addressed via manual feature en-
+gineering involving a good deal of trial and error
+(Gimpel and Smith, 2009)3 or by manually discretiz-
+ing features (e.g. indicator features for count=N ).
+We will explore one technique for automatically
+avoiding non-linearities in Section 3.
+
+2.3 Learning with Large Feature Sets
+
+While MERT has proven to be a strong baseline, it
+does not scale to larger feature sets in terms of both
+inefficiency and overfitting. While MIRA (Chiang
+et al., 2008), Rampion (Gimpel and Smith, 2012),
+and HOLS (Flanigan et al., 2013) have been shown
+to be effective over larger feature sets, they are dif-
+ficult to explicitly regularize – this will become im-
+portant in Section 4.2. Therefore, we use the PRO
+optimizer (Hopkins and May, 2011) as our baseline
+learner since it has been shown to perform compa-
+rably to MERT for a small number of features, and
+to significantly outperform MERT for a large num-
+ber of features (Hopkins and May, 2011; Ganitke-
+vitch et al., 2012). Other very recent MT optimiz-
+ers such as the linear structured SVM (Cherry and
+Foster, 2012), AROW (Chiang, 2012) and regular-
+ized MERT (Galley et al., 2013) are also compatible
+with the discretization and structured regularization
+techniques described in this article.4
+
+3Gimpel et al. eventually used raw probabilities in their
+model rather than log-probabilities.
+
+4Since we dispense with nearly all of the original dense fea-
+tures and our structured regularizer is scale sensitive, one would
+need to use the `1-renormalized variant of regularized MERT.
+
+3 Discretization and Feature Induction
+
+In this section, we propose a feature induction tech-
+nique based on discretization that produces a feature
+set that is less prone to non-linearities (see §2.2).
+
+We define feature induction as a function Φ(y)
+that takes the result of the feature function y =
+h(x) ∈ R and returns a tuple 〈y′, j〉 where y′ ∈ R is
+a transformed feature value and j is the transformed
+feature index.5 Building on equation 2, we can apply
+feature induction as follows:
+
+ê(f) = arg max
+e,D
+
+∑
+
+d∈D
+
+|H|∑
+
+i=0
+〈y′,j〉=Φi(hi(d))
+
+w′jy
+′
+
+︸ ︷︷ ︸
+H′(f ,e,D)
+
+(3)
+
+At first glance, one might be tempted to sim-
+ply choose some non-linear function for Φ (e.g.
+log(x), exp(x), sin(x), xn). However, even if we
+were to restrict ourselves to some “standard” set of
+non-linear functions, many of these functions have
+hyperparameters that are not directly tunable by con-
+ventional optimizers (e.g.period and amplitude for
+sin, n in xn).
+
+Learning
+
+H Learning w
+Original Linear Model: w • H
+
+H Feature 
+Induction
+
+w'
+
+Induced Linear Model: w' • H'
+H'
+
+Figure 1: Top: A traditional learning procedure, assign-
+ing a set of weights to a fixed feature set. Bottom: Dis-
+cretization, our feature induction technique, expands the
+feature set as part of learning, while still producing a lin-
+ear model for inference, albeit with more features.
+
+Discretization allows us to avoid many non-
+linearities (§2.2) while preserving the fast inference
+provided by feature locality (§2.1). We first dis-
+cretize real-valued features into a set of indicator
+
+5One could also imagine a feature transformation function
+Φ that returns a vector of bins for a single value returned by a
+feature function h or a transformation that has access to values
+from multiple feature functions at once.
+
+395
+
+
+
+features and then use a conventional optimizer to
+learn a weight for each indicator feature (Figure 1).
+This technique is sometimes referred to as binning
+and is closely related to quantization. Effectively,
+discretization allows us to re-shape a feature func-
+tion (Figure 2). In fact, given an infinite number of
+bins, we can perform any non-linear transformation
+of the original function.
+
+1.00.5
+h0
+
+1.00.5
+h1 h2 h3 h4R
+
+Figure 2: Left: A real-valued feature. Bold dots repre-
+sent points where we could imagine bins being placed.
+However, since we may only adjust w0, these “bins” will
+be rigidly fixed along the feature function’s value. Right:
+After discretizing the feature into 4 bins, we may now
+adjust 4 weights independently, to achieve a non-linear
+re-shaping of the function.
+
+For indicator discretization, we define Φi in terms
+of a binning function BINi(x) ∈ R→ N:
+
+Φi(x) = 〈1, i _ BINi(x)〉 (4)
+where the _ operator indicates concatenation of a
+feature identifier with a bin identifier to form a new,
+unique feature identifier.
+
+3.1 Local Discretization
+Unlike other approaches to non-linear learning in
+MT, we perform non-linear transformation on par-
+tial hypotheses as in equation 3 where discretiza-
+tion is applied as Φi(hi(d)), which allows locally
+non-linear transformations, instead of applying Φ to
+complete hypotheses as in Φi(Hi(D)), which would
+allow globally non-linear transformations. This en-
+ables our transformed model to produce non-linear
+responses with regard to the initial feature set H
+while inference remains linear with regard to the
+optimized parameters w′. Importantly, our trans-
+formed feature set requires no additional non-local
+information for inference.
+
+By performing transformations within a local
+context, we effectively reinterpret the feature set.
+For example, the familiar target word count feature
+
+found in many modern MT systems is often concep-
+tualized as “what is the count of target words in the
+complete hypothesis?” A hypothesis-level view of
+discretization would view this as “Did this hypoth-
+esis have 5 target words?”. Only one such feature
+will fire for each hypothesis. However, local dis-
+cretization reinterprets this feature as “How many
+phrases in the complete hypothesis have 1 target
+word?” Many such features are likely to fire for
+each hypothesis. We provide a further example of
+this technique in Figure 3.
+
+hTM=0.1 hTM=0.2
+
+hCount=2
+
+hTM=0.113
+
+hTM_0.1=1 hTM_0.2=1
+
+hTM_0.1=1
+
+hCount_2=1
+
+el    gato    come       furtivamente
+
+Figure 3: We perform discretization locally on each
+grammar rule or phrase pair, operating on the local fea-
+ture vectors h. In this example, the original real-valued
+features are crossed out with a solid gray line and their
+discretized indicator features are written above. When
+forming a complete hypothesis from partial hypotheses,
+we sum the counts of these indicator features to ob-
+tain the complete feature vector H. In this example,
+H = {HTM 0.1 : 2, HTM 0.2 : 1, HCount 2 : 1}
+
+In terms of predictive power, this transformation
+can provide the learned model with increased abil-
+ity to discriminate between hypotheses. This is pri-
+marily a result of moving to a higher-dimensional
+feature space. As we introduce new parameters, we
+expect that some hypotheses that were previously in-
+distinguishable under H become separable under H′
+
+(§2.2). We show specific examples comparing lin-
+ear, locally non-linear, and globally non-linear mod-
+els in Figures 4 - 6. As seen in these examples, lo-
+cally non-linear models (Eq. 3, 4) are not an approx-
+imation nor a subset of globally non-linear models,
+but rather a different class of models.
+
+3.2 Binning Algorithm
+To initialize the learning procedure, we construct
+the binning function BIN used by the indicator di-
+
+396
+
+
+
+Linear Globally Non-Linear Locally Non-Linear
+
+Ranking
+
+∗S13
+he
+
+h:1.0
+says
+h:1.0 = {H:2.0}
+
+S23
+she
+
+h:2.0
+said
+h:2.0 = {H:4.0}
+
+S14
+small
+h:2.0
+
+kitten
+h:2.0 = {H:4.0}
+
+∗S24
+big
+
+h:3.0
+lion
+h:3.0 = {H:6.0}
+
+∗S13
+he
+
+h:1.0
+says
+h:1.0 = {H2:1}
+
+S23
+she
+
+h:2.0
+said
+h:2.0 = {H4:1}
+
+S14
+small
+h:2.0
+
+kitten
+h:2.0 = {H4:1}
+
+∗S24
+big
+
+h:3.0
+lion
+h:3.0 = {H6:1}
+
+∗S13
+he
+
+h1:1
+says
+h1:1 = {H1:2}
+
+S23
+she
+h2:1
+
+said
+h2:1 = {H2:2}
+
+S14
+small
+h2:1
+
+kitten
+h2:1 = {H2:2}
+
+∗S24
+big
+h3:1
+
+lion
+h3:1 = {H3:2}
+
+Pairs
+
+(S13 , S
+2
+3) {∆H:-2.0} ⊕
+
+(S23 , S
+1
+3) {∆H:2.0} 	
+
+(S24 , S
+1
+4) {∆H:-2.0} 	
+
+(S14 , S
+2
+4) {∆H:2.0} ⊕
+
+(S13 , S
+2
+3) {∆H2:1, ∆H4:-1} ⊕
+
+(S23 , S
+1
+3) {∆H2:-1, ∆H4:1} 	
+
+(S24 , S
+1
+4) {∆H4:1, ∆H6:-1} 	
+
+(S14 , S
+2
+4) {∆H4:-1, ∆H6:1} ⊕
+
+(S13 , S
+2
+3) {∆H1:2, ∆H2:-2} ⊕
+
+(S23 , S
+1
+3) {∆H1:-2, ∆H2:2} 	
+
+(S24 , S
+1
+4) {∆H2:2, ∆H3:-2} 	
+
+(S14 , S
+2
+4) {∆H2:-2, ∆H3:2} ⊕
+
+Pairwise
+Ranking
+
+ΔH
+-2 0 2
+
+⊖
+⊕ ⊕
+
+⊖
+
+Inseparable
+
+ΔH2-1 1
+
+⊕-1
+
+1
+
+ΔH4
+⊕
+
+H6:1
+
+H6:-1
+
+⊖
+
+⊖
+
+Separable
+
+ΔH1-1 1
+
+⊕-1
+
+1
+
+ΔH2
+⊕
+
+H3:1
+
+H3:-1
+
+⊖
+
+⊖
+
+Separable
+
+Figure 4: An example showing a collinearity over multiple input sentences S3, S4 in which the oracle-best hypothesis
+is “trapped” along a line with other lower quality hypotheses in the linear model’s output space. Ranking shows how
+the hypotheses would appear in a k-best list with each partial derivation having its partial feature vector h under it; the
+complete feature vector H is shown to the right of each hypothesis and the oracle-best hypothesis is notated with a ∗.
+Pairs explicates the implicit pairwise rankings. Pairwise Ranking graphs those pairs in order to visualize whether or
+not the hypotheses are separable. (⊕ indicates that the pair of hypotheses is ranked correctly according to the extrinsic
+metric and 	 indicates the pair is ranked incorrectly. In the pairwise ranking row, some ⊕ and 	 points are annotated
+with their positions along the third axis H3 (omitted for clarity). Collinearity can also occur with a single input having
+at least 3 hypotheses.
+
+Linear Globally Non-Linear Locally Non-Linear
+
+Ranking
+∗S12
+
+some
+h:2.0
+
+things
+h:2.0 = {H:4.0}
+
+S22
+something
+
+h:4.0 = {H:4.0}
+
+∗S12
+some
+h:2.0
+
+things
+h:2.0 = {H4:1}
+
+S22
+something
+
+h:4.0 = {H4:1}
+
+∗S12
+some
+h2:1
+
+things
+h2:1 = {H2:2}
+
+S22
+something
+
+h4:1 = {H4:1}
+
+Pairs
+(S12 , S
+
+2
+2) {∆H:0.0} ⊕
+
+(S22 , S
+1
+2) {∆H:0.0} 	
+
+(S12 , S
+2
+2) {∆H4:0} ⊕
+
+(S22 , S
+1
+2) {∆H4:0} 	
+
+(S12 , S
+2
+2) {∆H2:2, ∆H4:-1} ⊕
+
+(S22 , S
+1
+2) {∆H2:-2, ∆H4:1} 	
+
+Pairwise
+Ranking
+
+Inseparable Inseparable Separable
+
+Figure 5: An example showing a trivial “collision” in which two hypotheses of differing quality receive the same
+model score until local discretization is applied. The two hypotheses are indistinguishable under a linear model with
+the feature set H , as shown by the zero-difference in the “pairs” row. While a globally non-linear transformation
+does not yield any improvement, local discretization allows the hypotheses to be properly ranked due to the higher-
+dimensional feature space H2, H4. See Figure 4 for an explanation of notation.
+
+397
+
+
+
+Linear Locally Non-Linear
+
+Ranking
+
+∗hB:1.0 = {HB:1.0}
+hA:1.0 hA:1.0 = {HA:2.0}
+
+∗hA:1.0 hA:1.0 hB:1.0 = {HA:2.0, HB:1.0}
+hA:0.0 = {}
+∗ hB:-4.0 hB:1.0 hB:1.0 hB:1.0 = {HB:-1.0}
+hA:1.0 = {HA:1.0}
+∗hB:-4.0 hA:1.0 = {HA:1.0, HB:-4.0}
+hB:1.0 hB:1.0 = {HB:2.0}
+
+∗hB1 :1 = {HB1 :1}
+hA1 :1 h
+
+A
+1 :1 = {HA1 :2}
+
+∗hA1 :1 h
+A
+1 :1 h
+
+B
+1 :1 = {HA1 :2, HB1 :1}
+
+hA1 :0 = {}
+∗hB−4:1 h
+
+B
+1 :1 h
+
+B
+1 :1 h
+
+B
+1 :1 = {HB−4:1, HB1 :3}
+
+hA1 :1 = {HA1 :1}
+∗hB−4:1 h
+
+A
+1 :1 = {HA1 :1, HB−4:1}
+
+hB1 :1 h
+B
+1 :1 = {HB1 :2}
+
+Pairwise
+Ranking
+
+ΔHA-6 6
+⊕
+
+-6
+
+6
+ΔHB
+
+⊖
+
+⊖⊖
+⊕
+
+⊕
+
+⊕
+⊖
+
+Inseparable
+
+ΔHA-3 3
+
+⊕
+
+-3
+
+3
+ΔHB
+
+⊖
+⊖
+
+⊖
+⊕
+
+⊕
+
+⊕
+
+⊖
+
+1
+
+1
+
+HB:1-4
+HB:-1-4
+
+HB:1-4
+HB:-1-4
+
+Separable
+
+Figure 6: An example demonstrating a non-linear decision boundary induced by discretization. The non-linear nature
+of the decision boundary can be seen clearly when the induced feature set HA1 , H
+
+B
+1 , H
+
+B
+−4 (right) is considered in the
+
+original feature space HA, HB (left). In the pairwise ranking row, two axes (HA1 , HB1 ) are plotted while the third
+axis HB−4 is indicated only as stand-off annotations for clarity . Given a larger number of hypotheses, such situations
+could also arise within a single sentence. See Figure 4 for an explanation of notation.
+
+cretizer Φ. We have two desiderata: (1) any mono-
+tonic transformation of a feature should not affect
+the induced binning since we should not require
+feature engineers to determine the optimal feature
+transformation and (2) no bin’s data should be so
+sparse that the optimizer cannot reliably estimate a
+weight for each bin. Therefore, we construct bins
+that are (i) populated uniformly subject to (ii) each
+bin containing no more than one feature value. We
+call this approach uniform population feature bin-
+ning. While one could consider the predictive power
+of the features when determining bin boundaries,
+this would suggest that we should jointly optimize
+and determine bin boundaries, which is beyond the
+scope of this work. This problem has recently been
+considered for NLP by Suzuki and Nagata (2013)
+and for MT by Liu et al. (2013b), though the latter
+involves decoding the entire training data.
+
+Let X be the list of feature values to bin where
+i indexes feature values xi ∈ X and their associ-
+
+ated frequencies fi. We want each bin to have a
+uniform size u. For the sake of simplifying our fi-
+nal algorithm, we first create adjusted frequencies
+f ′i so that very frequent feature values will not oc-
+cupy more than 100% of a bin via the following al-
+gorithm, which iterates over k:
+
+uk =
+1
+
+|X |
+
+|X |∑
+
+i=1
+
+fki (5)
+
+fk+1i = min(f
+k
+i , u
+
+k) (6)
+
+which returns u′ = uk when fki < u
+k ∀i. Next,
+
+we solve for a binning B of N bins where bj is the
+population of each bin:
+
+arg min
+B
+
+1
+
+N
+
+N∑
+
+j=1
+
+|bj − u′| (7)
+
+We use Algorithm 1 to produce this binning. In our
+experiments, we construct a translation model for
+each sentence in our tuning corpus; we then add a
+feature value instances to X for each rule instance.
+
+398
+
+
+
+Algorithm 1 POPULATEBINSUNIFORMLY(X , N)
+B Remaining values for bj , s.t. bk > 0 ∀k
+def R(j) = |X | − (N − j − 1)
+B Remaining frequency mass within ideal bound
+def C(j) = j · u′ −∑jk bk
+i← 1 B Current feature value
+for j ∈ [1, N ] do
+
+while i ≤ R(j) and fi ≤ C(j) do
+bj ← bj ∪ {xi}
+i← i+ 1
+
+end while
+B Handle value that straddles ideal boundaries
+
+by minimizing its violation of the ideal
+if i ≤ R(j) and fi−C(j)fi < 0.5 then
+bj ← bj ∪ {xi}
+i← i+ 1
+
+end if
+end for
+return B
+
+4 Structured Regularization
+Unfortunately, choosing the right number of bins
+can have important effects on the model, including:
+Fidelity. If we choose too few bins, we risk degrad-
+ing the model’s performance by discarding impor-
+tant distinctions encoded in fine differences between
+the feature values. In the extreme, we could reduce
+a real-valued feature to a single indicator feature.
+Sparsity. If we choose too many bins, we risk mak-
+ing each indicator feature too sparse, which is likely
+to result in the optimizer overfitting such that we
+generalize poorly to unseen data.
+
+While one may be tempted to simply throw more
+data or millions of sparse features at the problem, we
+elect to more strategically use existing data, since (1)
+large in-domain tuning data is not always available,
+and (2) when it is available, it can add considerable
+computational expense. In this section, we explore
+methods for mitigating data sparsity by embedding
+more knowledge into the learning procedure.
+
+4.1 Overlapping Bins
+One very simplistic way we could combat sparsity is
+to extend the edges of each bin such that they cover
+their neighbors’ values (see Equation 4):
+
+Φ′i(x) = 〈1, i _ BINi(x)〉 if x ∈ ∪i+1k=i−1BINk (8)
+
+This way, each bin will have more data points to
+estimate its weight, reducing data sparsity, and the
+bins will mutually constrain each other, reducing the
+ability to overfit. We include this technique as a con-
+trastive baseline for structured regularization.
+
+4.2 Linear Neighbor Regularization
+
+Regularization has long been used to discourage op-
+timization solutions that give too much weight to
+any one feature. This encodes our prior knowl-
+edge that such solutions are unlikely to generalize.
+Regularization terms such as the `p norm are fre-
+quently used in gradient-based optimizers including
+our baseline implementation of PRO.
+
+Unregularized discretization is potentially brittle
+with regard to the number of bins chosen. Primar-
+ily, it suffers from sparsity. At the same time, we
+note that we know much more about discretized
+features than initial features since we control how
+they are formed. These features make up a struc-
+tured feature space. With these things in mind, we
+propose linear neighbor regularization, a structured
+regularizer that embeds a small amount of knowl-
+edge into the objective function: that the indicator
+features resulting from the discretization of a sin-
+gle real-valued feature are spatially related. We ex-
+pect similar weights to be given to the indicator fea-
+tures that represent neighboring values of the origi-
+nal real-valued feature such that the resulting trans-
+formation appears somewhat smooth.
+
+To incorporate this knowledge of nearby bins, the
+linear neighbor regularizerRLNR penalizes each fea-
+ture’s weight by the squared amount it differs from
+its neighbors’ midpoint:
+
+RLNR(w, j) =
+(
+
+1
+
+2
+(wj−1 + wj+1)− wj
+
+)2
+(9)
+
+RLNR(w) = β
+|h|−1∑
+
+j=2
+
+RLNR(w, j) (10)
+
+This is a special case of the feature network reg-
+ularizer of Sandler (2010). Unlike traditional regu-
+larizers, we do not hope to reduce the active feature
+count. With the PRO loss l and a `2 regularizater
+R2, our final loss function internal to each iteration
+of PRO is:
+
+L(w) = l(x,y;w) +R2(w) +RLNR(w) (11)
+
+399
+
+
+
+4.3 Monotone Neighbor Regularization
+
+However, as β → ∞, the linear neighbor regular-
+izer RLNR forces a linear arrangement of weights –
+this violates our premise that we should be agnos-
+tic to non-linear transformations. We now describe a
+structured regularizerRMNR whose limiting solution
+is any monotone arrangement of weights. We aug-
+ment RLNR with a smooth damping term D(w, j),
+which has the shape of a bathtub curve with steep-
+ness γ:
+
+D(w, j) = tanh2γ
+1
+2(wj−1 + wj+1)− wj
+
+1
+2(wj−1 − wj+1)
+
+(12)
+
+RMNR(w) = β
+|h|−1∑
+
+j=2
+
+D(w, j)RLNR(w, j) (13)
+
+D is nearly zero whilewj ∈ [wj−1, wj+1] and nearly
+one otherwise. Briefly, the numerator measures how
+far wj is from the midpoint of wj−1 and wj+1 while
+the denominator scales that distance by the radius
+from the midpoint to the neighboring weight.
+
+5 Experimental Setup6
+
+Formalism: In our experiments, we use a hierarchi-
+cal phrase-based translation model (Chiang, 2007).
+A corpus of parallel sentences is first word-aligned,
+and then phrase translations are extracted heuristi-
+cally. In addition, hierarchical grammar rules are
+extracted where phrases are nested. In general, our
+choice of formalism is rather unimportant – our
+techniques should apply to most common phrase-
+based and chart-based paradigms including Hiero
+and syntactic systems.
+Decoder: For decoding, we will use cdec (Dyer et
+al., 2010), a multi-pass decoder that supports syn-
+tactic translation models and sparse features.
+Optimizer: Optimization is performed using PRO
+(Hopkins and May, 2011) as implemented by the
+cdec decoder. We run PRO for 30 iterations as sug-
+gested by Hopkins and May (2011). The PRO opti-
+mizer internally uses a L-BFGS optimizer with the
+default `2 regularization implemented in cdec. Any
+additional regularization is explicitly noted.
+Baseline Features: We use the baseline features
+produced by Lopez’ suffix array grammar extrac-
+tor (Lopez, 2008), which is distributed with cdec.
+
+6All code at http://github.com/jhclark/cdec
+
+Bidirectional lexical log-probabilities, the coher-
+ent phrasal translation log-probability, target word
+count, glue rule count, source OOV count, tar-
+get OOV count, and target language model log-
+probability. Note that these features may be sim-
+plified or removed as specified in each experimental
+condition.
+
+Zh→En Ar→En Cz→En
+Train 303K 5.4M 1M
+WeightTune 1664 1797 3000
+HyperTune 1085 1056 2000
+Test 1357 1313 2000
+
+Table 1: Corpus statistics: number of parallel sentences.
+
+Chinese Resources: For the Chinese→English ex-
+periments, including the completed work presented
+in this proposal, we train on the Foreign Broadcast
+Information Service (FBIS) corpus of approximately
+300,000 sentence pairs with about 9.4 million En-
+glish words. We tune weights on the NIST MT 2006
+dataset, tune hyperparameters on NIST MT05, and
+test on NIST MT 2008.
+Arabic Resources: We build an Arabic→English
+system, training on the large NIST MT 2009 con-
+strained training corpus of approximately 5 mil-
+lion sentence pairs with about 181 million English
+words. We tune weights on the NIST MT 2006
+dataset, tune hyperparameters on NIST MT 2005,
+and test on NIST MT 2008.
+Czech resources: We also construct a
+Czech→English system based on the CzEng
+1.0 data (Bojar et al., 2012). First, we lowercased
+and performed sentence-level deduplication of the
+data.7 Then, we uniformly sampled a training set of
+1M sentences (sections 1 – 97) along with a weight-
+tuning set (section 98), hyperparameter-tuning
+(section 99), and test set (section 99) from the
+paraweb domain contained of CzEng.8 Sentences
+less than 5 words were discarded due to noise.
+Evaluation: We quantify increases in translation
+quality using case-insensitive BLEU (Papineni et al.,
+2002). We control for test set variation and opti-
+mizer instability by averaging over multiple opti-
+mizer replicas (Clark et al., 2011).9
+
+7CzEng is distributed deduplicated at the document level,
+leading to very high sentence-level overlap.
+
+8The section splits recommended by Bojar et al. (2012).
+9MultEval 0.5.1: github.com/jhclark/multeval
+
+400
+
+
+
+Bits 4 8 12
+Features 101 1302 12,910
+Test BLEU 36.4 36.6 36.8
+
+Table 2: Translation quality for Cz→En system with
+varying bits for discretization. For all other experiments,
+we tune the number of bits on held-out data.
+
+Condition Zh→En Ar→En Cz→En
+P 20.8? (-2.7) 44.3? (-3.6) 36.5? (-1.1)
+log P 23.5† 47.9† 37.6†
+
+Disc P 23.4† (-0.1) 47.2† (-0.7) 36.8? (-0.8)
+Over. P 20.7? (-2.8) 44.6? (-3.3) 36.6? (-1.0)
+LNR P 23.1?† (-0.4) 48.0† (+0.1) 37.3 (-0.3)
+MNR P 23.8† (+0.3) 48.7?† (+0.8) 37.6† (±)
+MNR C 23.6† (±) 48.7?† (+0.8) 37.4† (-0.2)
+
+Table 3: Top: Translation quality for systems with and
+without the typical log transform. Bottom: Transla-
+tion quality for systems using discretization and struc-
+tured regularization with probabilities P or counts C as
+the input of discretization. MNR P consistently recovers
+or outperforms a state-of-the-art system, but without any
+assumptions about how to transform the initial features.
+All scores are averaged over 3 end-to-end optimizer repli-
+cations. ? denotes significantly different than log probs
+(row2) with p(CHANCE) < 0.01 under Clark et al. (2011)
+and † is likewise used with regard to P (row 1).
+
+6 Results
+
+6.1 Does Non-Linearity Matter?
+
+In our first set of experiments, we seek to answer
+“Does non-linearity matter?” by starting with our
+baseline system of 7 typical features (the log Prob-
+ability system) and we then remove the log trans-
+form from all of the log probability features in our
+grammar (the Probs. system). The results are shown
+in Table 3 (rows 1, 2). If a naı̈ve feature engi-
+neer were to remove the non-linear log transform,
+the systems would degrade between 1.1 BLEU and
+3.6 BLEU. From this, we conclude that non-linearity
+does affect translation quality. This is a potential pit-
+fall for any real-valued feature including probability
+features, count features, similarity measures, etc.
+
+6.2 Learning Non-Linear Transformations
+
+Next, we evaluate the effects of discretization
+(Disc), overlapping bins (Over.), linear neighbor
+regularization (LNR), and monotone neighbor reg-
+ularization (MNR) on three language pairs: a small
+
+Zh→En system, a large Ar→En system and a large
+Cz→En system. In the first row of Table 3, we use
+raw probabilities rather than log probabilities for
+pcoherent(t|s), plex(t|s), and plex(s|t). In rows 3 –
+7, all translation model features (without the log-
+transformed features) are then discretized into indi-
+cator features.10 The number of bins and the struc-
+tured regularization strength were tuned on the hy-
+perparameter tuning set.
+
+Discretization alone does not consistently recover
+the performance of the log transformed features
+(row 3). The naı̈ve overlap strategy in fact degrades
+performance (row 4). Linear neighbor regularization
+(row 5) behaves more consistently than discretiza-
+tion alone, but is consistently outperformed by the
+monotone neighbor regularizer (row 6), which is
+able to meet or significantly exceed the performance
+of the log transformed system. Importantly, this
+is done without any knowledge of the correct non-
+linear transformation. In the final row, we go a
+step further by removing pcoherent(t|s) altogether and
+replacing it with simple count features: c(s) and
+c(s, t), with slight to no degradation in quality.11 We
+take this as evidence that a feature engineer develop-
+ing a new real-valued feature may find discretization
+and monotone neighbor regularization useful.
+
+We also observe that different data sets benefit
+from non-linear feature transformation in to differ-
+ent degrees (Table 3, rows 1, 2). We noticed that dis-
+cretization with monotone neighbor regularization is
+able to improve over a log transform (rows 2, 6) in
+proportion to the improvement of a log transform
+over probability-based features (rows 1, 2).
+
+To provide insight into how translation quality can
+be affected by the number of bits for discretization,
+we offer Table 2.
+
+In Figure 7, we present the weights learned by the
+Ar→En system for probability-based features. We
+see that even without a bias toward a log transform,
+a log-like shape still emerges for many SMT fea-
+tures based only on the criteria of optimizing BLEU
+and a preference for monotonicity. However, the op-
+timizer chooses some important variations on the log
+curve, especially for low probabilities, that lead to
+
+10We also keep a real-valued copy of the word penalty to help
+normalize the language model.
+
+11These features can single-out rules with c(s) =
+1, c(s, t) = 1, subsuming separate low-count features
+
+401
+
+
+
+improvements in translation quality.
+
+0.0 0.2 0.4 0.6 0.8 1.0
+0.0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1.0
+
+0.02 0.04 0.06 0.08 0.10
+Original probability feature value
+
+0.02
+
+0.07
+
+W
+e
+ig
+
+h
+t
+
+0 50 100 150 200 250 300
+Original raw count feature value
+
+0.08
+
+0.07
+
+W
+e
+ig
+
+h
+t
+
+Figure 7: Plots of weights learned for the discretized
+pcoherent(e|f) (top) and c(f) (bottom) for the Ar→En sys-
+tem with 4 bits and monotone neighbor regularization.
+p(e|f) > 0.11 is omitted for exposition as values were
+constant after this point. The gray line fits a log curve to
+the weights. The system learns a shape that deviates from
+the log in several regions. Each non-monotonic segment
+represents the learner choosing to better fit the data while
+paying a strong regularization penalty.
+
+7 Related Work
+
+Previous work on feature discretization in machine
+learning has focused on the conversion of real-
+valued features into discrete values for learners that
+are either incapable of handling real-valued inputs
+or perform suboptimally given real-valued inputs
+(Dougherty et al., 1995; Kotsiantis and Kanellopou-
+los, 2006). Decision trees and random forests have
+been successfully used in language modeling (Je-
+linek et al., 1994; Xu and Jelinek, 2004) and parsing
+(Charniak, 2010; Magerman, 1995).
+
+Kernel methods such as support vector machines
+(SVMs) are often considered when non-linear inter-
+actions between features are desired since they al-
+low for easy usage of non-linear kernels. Wu et al.
+(2004) showed improvements using non-linear ker-
+nel PCA for word sense disambiguation. Taskar
+et al. (2003) describes a method for incorporating
+kernels into structured Markov networks. Tsochan-
+taridis et al. (2004) then proposed a structured SVM
+for grammar learning, named-entity recognition,
+text classification, and sequence alignment. This
+was followed by a structured SVM with inexact in-
+ference (Finley and Joachims, 2008) and the latent
+structured SVM (Yu and Joachims, 2009). Even
+within kernel methods, learning non-linear map-
+pings with kernels remains an open area of research;
+
+For example, Cortes et al. (2009) investigated learn-
+ing non-linear combinations of kernels. In MT,
+Giménez and Màrquez (2007) used a SVM to an-
+notate a phrase table with binary features indicating
+whether or not a phrase translation was appropriate
+in context. Nguyen et al. (2007) also applied non-
+linear features for SMT n-best reranking.
+
+Toutanova and Ahn (2013) use a form of regres-
+sion decision trees to induce locally non-linear fea-
+tures in a n-best reranking framework. He and Deng
+(2012) directly optimize the lexical and phrasal fea-
+tures using expected BLEU. Nelakanti et al. (2013)
+use tree-structured `p regularizers to train language
+models and improve perplexity over Kneser-Ney.
+
+Learning parameters under weak order restric-
+tions has also been studied for regression. Isotonic
+regression (Barlow et al., 1972; Robertson et al.,
+1988; Silvapulle and Sen, 2005) fits a curve to a set
+of data points such that each point in the fitted curve
+is greater than or equal to the previous point in the
+curve. Nearly isotonic regression allows violations
+in monotonicity (Tibshirani et al., 2011).
+
+8 Conclusion
+
+In the absence of highly refined knowledge about
+a feature, discretization with structured regulariza-
+tion enables higher quality impact of new feature
+sets that contain non-linearities. In our experiments,
+we observed that discretization out-performed naı̈ve
+features lacking a good non-linear transformation by
+up to 4.4 BLEU and that it can outperform a baseline
+by up to 0.8 BLEU while dropping the log transform
+of the lexical probabilities and removing the phrasal
+probabilities in favor of counts. Looking beyond this
+basic feature set, non-linear transformations could
+be the difference between showing quality improve-
+ments or not for novel features. As researchers in-
+clude more real-valued features including counts,
+similarity measures, and separately-trained models
+with millions of features, we suspect this will be-
+come an increasingly relevant issue. We conclude
+that non-linear responses play an important role in
+SMT, even for a commonly-used feature set, an ob-
+servation that we hope will inform feature engineers.
+
+402
+
+
+
+Acknowledgments
+
+This work was supported by Google Faculty Re-
+search grants 2011 R2 705 and 2012 R2 10 and by
+the NSF-sponsored XSEDE computing resources
+program under grant TG-CCR110017.
+
+References
+Michael Auli, Michel Galley, Chris Quirk, and Geoffrey
+
+Zweig. 2013. Joint Language and Translation Mod-
+eling with Recurrent Neural Networks. In Empirical
+Methods in Natural Language Processing, number Oc-
+tober, pages 1044–1054.
+
+R. E. Barlow, D. Bartholomew, J. M. Bremner, and H. D.
+Brunk. 1972. Statistical inference under order restric-
+tions; the theory and application of isotonic regres-
+sion. Wiley.
+
+Ondej Bojar, Zdeněk Žabokrtský, Ondej Dušek, Pe-
+tra Galuščáková, Martin Majliš, David Mareček, Jiı́
+Maršı́k, Michal Novák, Martin Popel, and Aleš Tam-
+chyna. 2012. The Joy of Parallelism with CzEng 1 .0.
+In Proceedings of LREC2012, Istanbul, Turkey. Euro-
+pean Language Resources Association.
+
+Peter E Brown, Stephen A Della Pietra, Vincent J Della
+Pietra, and Robert L Mercer. 1993. The Mathematics
+of Statistical Machine Translation : Parameter Estima-
+tion. Computational Linguistics, 10598.
+
+Eugene Charniak. 2010. Top-Down Nearly-Context-
+Sensitive Parsing. In Empirical Methods in Natural
+Language Processing, number October, pages 674–
+683.
+
+Colin Cherry and George Foster. 2012. Batch Tuning
+Strategies for Statistical Machine Translation. In Pro-
+ceedings of the North American Association for Com-
+putational Linguistics, pages 427–436.
+
+David Chiang, Yuval Marton, and Philip Resnik. 2008.
+Online large-margin training of syntactic and struc-
+tural translation features. In Proceedings of the Con-
+ference on Empirical Methods in Natural Language
+Processing - EMNLP ’08, pages 224–233, Morris-
+town, NJ, USA. Association for Computational Lin-
+guistics.
+
+David Chiang. 2007. Hierarchical Phrase-Based Trans-
+lation. Computational Linguistics, 33(2):201–228,
+June.
+
+David Chiang. 2012. Hope and fear for discriminative
+training of statistical translation models. Journal of
+Machine Learning Research, 13:1159–1187.
+
+Jonathan H Clark, Chris Dyer, Alon Lavie, and Noah A
+Smith. 2011. Better Hypothesis Testing for Statistical
+Machine Translation: Controlling for Optimizer Insta-
+bility. In Association for Computational Linguistics.
+
+Corinna Cortes, Mehryar Mohri, and Afshin Ros-
+tamizadeh. 2009. Learning Non-Linear Combinations
+of Kernels. In Advances in Neural Information Pro-
+cessing Systems (NIPS 2009), pages 1–9, Vancouver,
+Canada.
+
+James Dougherty, Ron Kohavi, and Mehran Sahami.
+1995. Supervised and Unsupervised Discretization of
+Continuous Features. In Proceedings of the Twelfth
+International Conference on Machine Learning, pages
+194–202, San Francisco, CA.
+
+Chris Dyer, Jonathan Weese, Adam Lopez, Vladimir Ei-
+delman, Phil Blunsom, and Philip Resnik. 2010. cdec:
+A Decoder, Alignment, and Learning Framework for
+Finite-State and Context-Free Translation Models. In
+Association for Computational Linguistics, number
+July, pages 7–12.
+
+Thomas Finley and Thorsten Joachims. 2008. Training
+structural SVMs when exact inference is intractable.
+In Proceedings of the International Conference on Ma-
+chine Learning, pages 304–311, New York, New York,
+USA. ACM Press.
+
+Jeffrey Flanigan, Chris Dyer, and Jaime Carbonell. 2013.
+Large-Scale Discriminative Training for Statistical
+Machine Translation Using Held-Out Line Search. In
+North American Association for Computational Lin-
+guistics, number June, pages 248–258.
+
+Michel Galley, Chris Quirk, Colin Cherry, and Kristina
+Toutanova. 2013. Regularized Minimum Error Rate
+Training. In Empirical Methods in Natural Language
+Processing.
+
+Juri Ganitkevitch, Yuan Cao, Jonathan Weese, Matt Post,
+and Chris Callison-Burch. 2012. Joshua 4.0: Pack-
+ing, PRO, and Paraphrases. In Workshop on Statistical
+Machine Translation, pages 283–291.
+
+Jesús Giménez and Lluı́s Màrquez. 2007. Context-
+aware Discriminative Phrase Selection for Statistical
+Machine Translation. In Workshop on Statistical Ma-
+chine Translation, number June, pages 159–166.
+
+Kevin Gimpel and Noah A Smith. 2009. Feature-Rich
+Translation by Quasi-Synchronous Lattice Parsing. In
+Empirical Methods in Natural Language Processing.
+
+Kevin Gimpel and Noah A Smith. 2012. Structured
+Ramp Loss Minimization for Machine Translation. In
+North American Association for Computational Lin-
+guistics.
+
+Xiaodong He and Li Deng. 2012. Maximum Expected
+BLEU Training of Phrase and Lexicon Translation
+Models. In Proceedings of the Association for Com-
+putational Linguistics, Jeju Island, Korea. Microsoft
+Research.
+
+Mark Hopkins and Jonathan May. 2011. Tuning as
+Ranking. Computational Linguistics, pages 1352–
+1362.
+
+403
+
+
+
+Frederick Jelinek, John Lafferty, David Magerman,
+Robert Mercer, Adwait Ratnaparkhi, and Salim
+Roukos. 1994. Decision Tree Parsing using a Hidden
+Derivation Model. In Workshop on Human Language
+Technologies (HLT).
+
+Nal Kalchbrenner and Phil Blunsom. 2013. Recurrent
+Continuous Translation Models. In Empirical Meth-
+ods in Natural Language Processing.
+
+Sotiris Kotsiantis and Dimitris Kanellopoulos. 2006.
+Discretization Techniques : A recent survey. In
+GESTS International Transactions on Computer Sci-
+ence and Engineering, volume 32, pages 47–58.
+
+Lemao Liu, Taro Watanabe, Eiichiro Sumita, and Tiejun
+Zhao. 2013a. Additive Neural Networks for Statistical
+Machine Translation. In Proceedings of the Associa-
+tion for Computational Linguistics.
+
+Lemao Liu, Tiejun Zhao, Taro Watanabe, and Eiichiro
+Sumita. 2013b. Tuning SMT with A Large Number
+of Features via Online Feature Grouping. In Proceed-
+ings of the International Joint Conference on Natural
+Language Processing.
+
+Adam Lopez. 2008. Tera-Scale Translation Models
+via Pattern Matching. In Association for Computa-
+tional Linguistics Computational Linguistics, number
+August, pages 505–512.
+
+David M Magerman. 1995. Statistical Decision-Tree
+Models for Parsing. In Association for Computational
+Linguistics, pages 276–283.
+
+Anil Nelakanti, Cedric Archambeau, Julien Mairal, Fran-
+cis Bach, and Guillaume Bouchard. 2013. Structured
+Penalties for Log-linear Language Models. In Empiri-
+cal Methods in Natural Language Processing, Seattle,
+WA.
+
+Patrick Nguyen, Milind Mahajan, Xiaodong He, and Mi-
+crosoft Way. 2007. Training Non-Parametric Features
+for Statistical Machine Translation. In Association for
+Computational Linguistics.
+
+Franz Josef Och and Hermann Ney. 2002. Discrimi-
+native training and maximum entropy models for sta-
+tistical machine translation. In Proceedings of the
+Association for Computational Linguistics, number
+July, page 295, Morristown, NJ, USA. Association for
+Computational Linguistics.
+
+Franz J Och. 2003. Minimum Error Rate Training in Sta-
+tistical Machine Translation. In Association for Com-
+putational Linguistics, number July, pages 160–167.
+
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+jing Zhu. 2002. BLEU : a Method for Automatic
+Evaluation of Machine Translation. In Computational
+Linguistics, number July, pages 311–318.
+
+Tim Robertson, F. T. Wright, and R. L. Dykstra. 1988.
+Order Restricted Statistical Inference. Wiley.
+
+S Ted Sandler. 2010. Regularized Learning with Feature
+Networks. Ph.D. thesis, University of Pennsylvania.
+
+Holger Schwenk. 2012. Continuous Space Translation
+Models for Phrase-Based Statistical Machine Transla-
+tion. In International Conference on Computational
+Linguistics (COLING), number December 2012, pages
+1071–1080, Mumbai, India.
+
+Mervyn J. Silvapulle and Pranab K. Sen. 2005. Con-
+strained Statistical Inference: Order, Inequality, and
+Shape Constraints. Wiley.
+
+Artem Sokolov, Guillaume Wisniewski, and François
+Yvon. 2012. Non-linear N-best List Reranking with
+Few Features. In Association for Machine Translation
+in the Americas.
+
+Jun Suzuki and Masaaki Nagata. 2013. Supervised
+Model Learning with Feature Grouping based on a
+Discrete Constraint. In Proceedings of the Association
+for Computational Linguistics, pages 18–23.
+
+Ben Taskar, Carlos Guestrin, and Daphne Koller. 2003.
+Max-Margin Markov Networks. In Neural Informa-
+tion Processing Systems.
+
+Ryan J Tibshirani, Holger Hoefling, and Robert Tibshi-
+rani. 2011. Nearly-Isotonic Regression. Technomet-
+rics, 53(1):54–61.
+
+Kristina Toutanova and Byung-Gyu Ahn. 2013. Learn-
+ing Non-linear Features for Machine Translation Us-
+ing Gradient Boosting Machines. In Proceedings of
+the Association for Computational Linguistics.
+
+Ioannis Tsochantaridis, Thomas Hofmann, Thorsten
+Joachims, and Yasemin Altun. 2004. Support Vector
+Machine Learning for Interdependent and Structured
+Output Spaces. In International Conference on Ma-
+chine Learning (ICML).
+
+Zhuoran Wang, John Shawe-Taylor, and Sandor Szed-
+mak. 2007. Kernel Regression Based Machine Trans-
+lation. In North American Association for Compu-
+tational Linguistics, number April, pages 185–188,
+Rochester, N.
+
+Dekai Wu, Weifeng Su, and Marine Carpuat. 2004. A
+Kernel PCA Method for Superior Word Sense Disam-
+biguation. In Association for Computational Linguis-
+tics, Barcelona.
+
+Peng Xu and Frederick Jelinek. 2004. Random Forests in
+Language Modeling. In Empirical Methods in Natural
+Language Processing.
+
+Chun-Nam John Yu and Thorsten Joachims. 2009.
+Learning structural SVMs with latent variables. In
+Proceedings of the 26th Annual International Confer-
+ence on Machine Learning - ICML ’09, pages 1–8,
+New York, New York, USA. ACM Press.
+
+404
+
+

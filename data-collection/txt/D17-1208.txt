@@ -1,0 +1,1392 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Unfolding and Shrinking Neural Machine Translation Ensembles
+
+
+Proceedings of the 2017 Conference on Empirical Methods in Natural Language Processing, pages 1946–1956
+Copenhagen, Denmark, September 7–11, 2017. c©2017 Association for Computational Linguistics
+
+Unfolding and Shrinking Neural Machine Translation Ensembles
+
+Felix Stahlberg and Bill Byrne
+{fs439,wjb31}@cam.ac.uk
+
+Department of Engineering
+University of Cambridge, UK
+
+Abstract
+
+Ensembling is a well-known technique in
+neural machine translation (NMT) to im-
+prove system performance. Instead of a
+single neural net, multiple neural nets with
+the same topology are trained separately,
+and the decoder generates predictions by
+averaging over the individual models. En-
+sembling often improves the quality of the
+generated translations drastically. How-
+ever, it is not suitable for production sys-
+tems because it is cumbersome and slow.
+This work aims to reduce the runtime to be
+on par with a single system without com-
+promising the translation quality. First, we
+show that the ensemble can be unfolded
+into a single large neural network which
+imitates the output of the ensemble sys-
+tem. We show that unfolding can already
+improve the runtime in practice since more
+work can be done on the GPU. We pro-
+ceed by describing a set of techniques to
+shrink the unfolded network by reducing
+the dimensionality of layers. On Japanese-
+English we report that the resulting net-
+work has the size and decoding speed of a
+single NMT network but performs on the
+level of a 3-ensemble system.
+
+1 Introduction
+
+The top systems in recent machine translation
+evaluation campaigns on various language pairs
+use ensembles of a number of NMT systems (Bo-
+jar et al., 2016; Sennrich et al., 2016a; Chung
+et al., 2016; Neubig, 2016; Wu et al., 2016;
+Cromieres et al., 2016; Durrani et al., 2017). En-
+sembling (Dietterich, 2000; Hansen and Salamon,
+1990) of neural networks is a simple yet very ef-
+fective technique to improve the accuracy of NMT.
+
+The decoder makes use of K NMT networks
+which are either trained independently (Sutskever
+et al., 2014; Chung et al., 2016; Neubig, 2016; Wu
+et al., 2016) or share some amount of training iter-
+ations (Sennrich et al., 2016b,a; Cromieres et al.,
+2016; Durrani et al., 2017). The ensemble decoder
+computes predictions from each of the individual
+models which are then combined using the arith-
+metic average (Sutskever et al., 2014) or the geo-
+metric average (Cromieres et al., 2016).
+
+Ensembling consistently outperforms single
+NMT by a large margin. However, the decod-
+ing speed is significantly worse since the decoder
+needs to apply K NMT models rather than only
+one. Therefore, a recent line of research transfers
+the idea of knowledge distillation (Bucilu et al.,
+2006; Hinton et al., 2014) to NMT and trains a
+smaller network (the student) by minimizing the
+cross-entropy to the output of the ensemble system
+(the teacher) (Kim and Rush, 2016; Freitag et al.,
+2017). This paper presents an alternative to knowl-
+edge distillation as we aim to speed up decoding
+to be comparable to single NMT while retaining
+the boost in translation accuracy from the ensem-
+ble. In a first step, we describe how to construct
+a single large neural network which imitates the
+output of an ensemble of multiple networks with
+the same topology. We will refer to this process as
+unfolding. GPU-based decoding with the unfolded
+network is often much faster than ensemble decod-
+ing since more work can be done on the GPU. In a
+second step, we explore methods to reduce the size
+of the unfolded network. This idea is justified by
+the fact that ensembled neural networks are often
+over-parameterized and have a large degree of re-
+dundancy (LeCun et al., 1989; Hassibi et al., 1993;
+Srinivas and Babu, 2015). Shrinking the unfolded
+network leads to a smaller model which consumes
+less space on the disk and in the memory; a crucial
+factor on mobile devices. More importantly, the
+
+1946
+
+
+
+(a) Single network 1. (b) Single network 2. (c) Unfolded network.
+
+Figure 1: Unfolding mimics the output of the ensemble of two single layer feedforward networks.
+
+decoding speed on all platforms benefits greatly
+from the reduced number of neurons. We find that
+the dimensionality of linear embedding layers in
+the NMT network can be reduced heavily by low-
+rank matrix approximation based on singular value
+decomposition (SVD). This suggest that high di-
+mensional embedding layers may be needed for
+training, but do not play an important role for de-
+coding. The NMT network, however, also consists
+of complex layers like gated recurrent units (Cho
+et al., 2014, GRUs) and attention (Bahdanau et al.,
+2015). Therefore, we introduce a novel algorithm
+based on linear combinations of neurons which
+can be applied either during training (data-bound)
+or directly on the weight matrices without using
+training data (data-free). We report that with a
+mix of the presented shrinking methods we are
+able to reduce the size of the unfolded network to
+the size of the single NMT network while keep-
+ing the boost in BLEU score from the ensemble.
+Depending on the aggressiveness of shrinking, we
+report either a gain of 2.2 BLEU at the same de-
+coding speed, or a 3.4× CPU decoding speed up
+with only a minor drop in BLEU compared to the
+original single NMT system. Furthermore, it is
+often much easier to stage a single NMT system
+than an ensemble in a commercial MT workflow,
+and it is crucial to be able to optimize quality at
+specific speed and memory constraints. Unfolding
+and shrinking address these problems directly.
+
+2 Unfolding K Networks into a Single
+Large Neural Network
+
+The first concept of our approach is called unfold-
+ing. Unfolding is an alternative to ensembling of
+multiple neural networks with the same topology.
+Rather than averaging their predictions, unfolding
+constructs a single large neural net out of the indi-
+
+vidual models which has the same number of in-
+put and output neurons but larger inner layers. Our
+main motivation for unfolding is to obtain a single
+network with ensemble level performance which
+can be shrunk with the techniques in Sec. 3.
+
+Suppose we ensemble two single layer feed-
+forward neural nets as shown in Fig. 1. Nor-
+mally, ensembling is implemented by performing
+an isolated forward pass through the first network
+(Fig. 1(a)), another isolated forward pass through
+the second network (Fig. 1(b)), and averaging the
+activities in the output layers of both networks.
+This can be simulated by merging both networks
+into a single large network as shown in Fig. 1(c).
+The first neurons in the hidden layer of the com-
+bined network correspond to the hidden layer in
+the first single network, and the others to the hid-
+den layer of the second network. A single pass
+through the combined network yields the same
+output as the ensemble if the output layer is lin-
+ear (up to a factor 2). The weight matrices in the
+unfolded network can be constructed by stacking
+the corresponding weight matrices (either horizon-
+tally or vertically) in network 1 and 2. This kind
+of aggregation of multiple networks with the same
+topology is not only possible for single-layer feed-
+forward architectures but also for complex net-
+works consisting of multiple GRU layers and at-
+tention.
+
+For a formal description of unfolding we ad-
+dress layers with indices d = 0, 1, . . . , D. The
+special layer 0 has a single neuron for modelling
+bias vectors. Layer 1 holds the input neurons and
+layer D is the output layer. We denote the size
+of a layer in the individual models as s(d). When
+combining K networks, the layer size s′(d) in the
+unfolded network is increased by factor K if d is
+an inner layer, and equal to s(d) if d is the in-
+
+1947
+
+
+
+W ′(d1, d2) =
+
+
+
+
+W1(d1, d2) 0 · · · 0
+
+0 W2(d1, d2)
+...
+
+...
+... · · · . . . 0
+0 · · · WK(d1, d2)
+
+ if d1 ∈ InnerLayers and d2 ∈ InnerLayers
+
+1
+K
+
+
+W1(d1, d2)
+
+...
+WK(d1, d2)
+
+ if d1 ∈ InnerLayers and d2 /∈ InnerLayers(
+W1(d1, d2) · · · WK(d1, d2)
+
+)
+if d1 /∈ InnerLayers and d2 ∈ InnerLayers
+
+Figure 2: General formula for unfolding weight matrices. The set InnerLayers := [2, D− 1] includes all
+layers except the input, output, and bias layer.
+
+put or output layer. We denote the weight ma-
+trix between two layers d1, d2 ∈ [0, D] in the k-th
+individual model (k ∈ [1,K]) as Wk(d1, d2) ∈
+Rs(d1)×s(d2), and the corresponding weight ma-
+trix in the unfolded network as W ′(d1, d2) ∈
+Rs′(d1)×s′(d2). We explicitly allow d1 and d2 to be
+non-consecutive or reversed to be able to model
+recurrent networks. We use the zero-matrix if lay-
+ers d1 and d2 are not connected. The construc-
+tion of the unfolded weight matrix W ′(d1, d2)
+from the individual matrices Wk(d1, d2) depends
+on whether the connected layers are inner layers
+or not. The complete formula is listed in Fig. 2.
+
+Unfolded NMT networks approximate but do
+not exactly match the output of the ensemble due
+to two reasons. First, the unfolded network syn-
+chronizes the attentions of the individual models.
+Each decoding step in the unfolded network com-
+putes a single attention weight vector. In contrast,
+ensemble decoding would compute one attention
+weight vector for each of the K input models.
+A second difference is that the ensemble decoder
+first applies the softmax at the output layer, and
+then averages the prediction probabilities. The un-
+folded network averages the neuron activities (i.e.
+the logits) first, and then applies the softmax func-
+tion. Interestingly, as shown in Sec. 4, these differ-
+ences do not have any impact on the BLEU score
+but yield potential speed advantages of unfolding
+since the computationally expensive softmax layer
+is only applied once.
+
+3 Shrinking the Unfolded Network
+
+After constructing the weight matrices of the un-
+folded network we reduce the size of it by iter-
+atively shrinking layer sizes. In this section we
+denote the incoming weight matrix of the layer to
+
+shrink as U ∈ Rmin×m and the outgoing weight
+matrix as V ∈ Rm×mout . Our procedure is in-
+spired by the method of Srinivas and Babu (2015).
+They propose a criterion for removing neurons in
+inner layers of the network based on two intu-
+itions. First, similarly to Hebb’s learning rule,
+they detect redundancy by the principle neurons
+which fire together, wire together. If the incom-
+ing weight vectors U:,i and U:,j are exactly the
+same for two neurons i and j, we can remove the
+neuron j and add its outgoing connections to neu-
+ron i (Vi,: ← Vi,: + Vj,:) without changing the
+output.1 This holds since the activity in neuron
+j will always be equal to the activity in neuron
+i. In practice, Srinivas and Babu use a distance
+measure based on the difference of the incoming
+weight vectors to search for similar neurons as ex-
+act matches are very rare.
+
+The second intuition of the criterion used by
+Srinivas and Babu (2015) is that neurons with
+small outgoing weights contribute very little over-
+all. Therefore, they search for a pair of neurons
+i, j ∈ [1,m] according the following term and re-
+move the j-th neuron.2
+
+arg min
+i,j∈[1,m]
+
+||U:,i − U:,j ||22||Vj,:||22 (1)
+
+Neuron j is selected for removal if (1) there is
+another neuron i which has a very similar set of
+incoming weights and if (2) j has a small outgoing
+weight vector. Their criterion is data-free since
+
+1We denote the i-th row vector of a matrix A with Ai,:
+and the i-th column vector as A:,i.
+
+2Note that the criterion in Eq. 1 generalizes the criterion of
+Srinivas and Babu (2015) to multiple outgoing weights. Also
+note that Srinivas and Babu (2015) propose some heuristic
+improvements to this criterion. However, these heuristics did
+not work well in our NMT experiments.
+
+1948
+
+
+
+it does not require any training data. For further
+details we refer to Srinivas and Babu (2015).
+
+3.1 Data-Free Neuron Removal
+
+Srinivas and Babu (2015) propose to add the out-
+going weights of j to the weights of a similar neu-
+ron i to compensate for the removal of j. However,
+we have found that this approach does not work
+well on NMT networks. We propose instead to
+compensate for the removal of a neuron by a lin-
+ear combination of the remaining neurons in the
+layer. Data-free shrinking assumes for the sake of
+deriving the update rule that the neuron activation
+function is linear. We now ask the following ques-
+tion: How can we compensate as well as possible
+for the loss of neuron j such that the impact on the
+output of the whole network is minimized? Data-
+free shrinking represents the incoming weight vec-
+tor of neuron j (U:,j) as linear combination of the
+incoming weight vectors of the other neurons. The
+linear factors can be found by satisfying the fol-
+lowing linear system:
+
+U:,¬jλ = U:,j (2)
+
+where U:,¬j is matrix U without the j-th col-
+umn. In practice, we use the method of ordi-
+nary least squares to find λ because the system
+may be overdetermined. The idea is that if we
+mix the outputs of all neurons in the layer by the
+λ-weights, we get the output of the j-th neuron.
+The row vector Vj,: contains the contributions of
+the j-th neuron to each of the neurons in the next
+layer. Rather than using these connections, we
+approximate their effect by adding some weight
+to the outgoing connections of the other neurons.
+How much weight depends on λ and the outgoing
+weights Vj,:. The factor Dk,l which we need to
+add to the outgoing connection of the k-th neuron
+to compensate for the loss of the j-th neuron on
+the l-th neuron in the next layer is:
+
+Dk,l = λkVj,l (3)
+
+Therefore, the update rule for V is:
+
+V ← V +D (4)
+In the remainder we will refer to this method
+
+as data-free shrinking. Note that we recover the
+update rule of Srinivas and Babu (2015) by setting
+λ to the i-th unit vector. Also note that the error
+introduced by our shrinking method is due to the
+
+fact that we ignore the non-linearity, and that the
+solution for λ may not be exact. The method is
+error-free on linear layers as long as the residuals
+of the least-squares analysis in Eq. 2 are zero.
+
+GRU layers The terminology of neurons needs
+some further elaboration for GRU layers which
+rather consist of update and reset gates and
+states (Cho et al., 2014). On GRU layers, we treat
+the states as neurons, i.e. the j-th neuron refers to
+the j-th entry in the GRU state vector. Input con-
+nections to the gates are included in the incoming
+weight matrix U for estimating λ in Eq. 2. Re-
+moving neuron j in a GRU layer means deleting
+the j-th entry in the states and both gate vectors.
+
+3.2 Data-Bound Neuron Removal
+Although we find our data-free approach to be
+a substantial improvement over the methods of
+Srinivas and Babu (2015) on NMT networks, it
+still leads to a non-negligible decline in BLEU
+score when applied to recurrent GRU layers. Our
+data-free method uses the incoming weights to
+identify similar neurons, i.e. neurons expected to
+have similar activities. This works well enough
+for simple layers, but the interdependencies be-
+tween the states and the gates inside gated layers
+like GRUs or LSTMs are complex enough that re-
+dundancies cannot be found simply by looking for
+similar weights. In the spirit of Babaeizadeh et
+al. (2016), our data-bound version records neuron
+activities during training to estimate λ. We com-
+pensate for the removal of the j-th neuron by us-
+ing a linear combination of the output of remain-
+ing neurons with similar activity patterns. In each
+layer, we prune 40 neurons each 450 training it-
+erations until the target layer size is reached. Let
+A be the matrix which holds the records of neu-
+ron activities in the layer since the last removal.
+For example, for the decoder GRU layer, a batch
+size of 80, and target sentence lengths of 20,A has
+20 · 80 · 450 = 720K rows and m (the number of
+neurons in the layer) columns.3 Similarly to Eq. 2
+we find interpolation weights λ using the method
+of least squares on the following linear system.
+
+A:,¬jλ = A:,j (5)
+
+The update rule for the outgoing weight matrix
+is the same as for our data-free method (Eq. 4).
+
+3In practice, we use a random sample of 50K rows rather
+than the full matrix to keep the complexity of the least-
+squares analysis under control.
+
+1949
+
+
+
+The key difference between data-free and data-
+bound shrinking is the way λ is estimated. Data-
+free shrinking uses the similarities between in-
+coming weights, and data-bound shrinking uses
+neuron activities recorded during training. Once
+we select a neuron to remove, we estimate λ,
+compensate for the removal, and proceed with the
+shrunk network. Both methods are prior to any de-
+coding and result in shrunk parameter files which
+are then loaded to the decoder. Both methods re-
+move neurons rather than single weights.
+
+The data-bound algorithm runs gradient-based
+optimization on the unfolded network. We use the
+AdaGrad (Duchi et al., 2011) step rule, a small
+learning rate of 0.0001, and aggressive step clip-
+ping at 0.05 to avoid destroying useful weights
+which were learned in the individual networks
+prior to the construction of the unfolded network.
+
+Our data-bound algorithm uses a data-bound
+version of the neuron selection criterion in Eq. 1
+which operates on the activity matrix A. We
+search for the pair i, j ∈ [1,m] according the fol-
+lowing term and remove neuron j.
+
+arg min
+i,j∈[1,m]
+
+||A:,i −A:,j ||22||A:,j ||22 (6)
+
+3.3 Shrinking Embedding Layers with SVD
+The standard attention-based NMT network archi-
+tecture (Bahdanau et al., 2015) includes three lin-
+ear layers: the embedding layer in the encoder, and
+the output and feedback embedding layers in the
+decoder. We have found that linear layers are par-
+ticularly easy to shrink using low-rank matrix ap-
+proximation. As before we denote the incoming
+weight matrix as U ∈ Rmin×m and the outgoing
+weight matrix as V ∈ Rm×mout . Since the layer
+is linear, we could directly connect the previous
+layer with the next layer using the product of both
+weight matrices X = U · V . However, X may
+be very large. Therefore, we approximate X as a
+product of two low rank matrices Y ∈ Rmin×m′
+and Z ∈ Rm′×mout (X ≈ Y Z) where m′ � m
+is the desired layer size. A very common way to
+find such a matrix factorization is using truncated
+singular value decomposition (SVD). The layer is
+eventually shrunk by replacing U with Y and V
+with Z.
+
+4 Results
+
+The individual NMT systems we use as source for
+constructing the unfolded networks are trained us-
+
+ing AdaDelta (Zeiler, 2012) on the Blocks/Theano
+implementation (van Merriënboer et al., 2015;
+Bastien et al., 2012) of the standard attention-
+based NMT model (Bahdanau et al., 2015) with:
+1000 dimensional GRU layers (Cho et al., 2014)
+in both the decoder and bidrectional encoder; a
+single maxout output layer (Goodfellow et al.,
+2013); and 620 dimensional embedding layers.
+We follow Sennrich et al. (2016b) and use sub-
+word units based on byte pair encoding rather
+than words as modelling units. Our SGNMT de-
+coder (Stahlberg et al., 2017)4 with a beam size of
+12 is used in all experiments. Our primary cor-
+pus is the Japanese-English (Ja-En) ASPEC data
+set (Nakazawa et al., 2016). We select a sub-
+set of 500K sentence pairs to train our models
+as suggested by Neubig et al. (2015). We re-
+port cased BLEU scores calculated with Moses’
+multi-bleu.pl to be strictly comparable to
+the evaluation done in the Workshop of Asian
+Translation (WAT). We also apply our method to
+the WMT data set for English-German (En-De),
+using the news-test2014 as a development set, and
+keeping news-test2015 and news-test2016 as test
+sets. En-De BLEU scores are computed using
+mteval-v13a.pl as in the WMT evaluation.
+We set the vocabulary sizes to 30K for Ja-En and
+50K for En-De. We also report the size factor for
+each model which is the total number of model
+parameters (sum of all weight matrix sizes) di-
+vided by the number of parameters in the original
+NMT network (86M for Ja-En and 120M for En-
+De). We choose a widely used, simple ensembling
+method (prediction averaging) as our baseline. We
+feel that the prevalence of this method makes it a
+reasonable baseline for our experiments.
+
+Shrinking the Unfolded Network First, we in-
+vestigate which shrinking methods are effective
+for which layers. Tab. 1 summarizes our results
+on a 2-unfold network for Ja-En, i.e. two separate
+NMT networks are combined in a single large net-
+work as described in Sec. 2. The layers in the com-
+bined network are shrunk to the size of the original
+networks using the methods discussed in Sec. 3.
+
+Shrinking the linear embedding layers with
+SVD (Sec. 3.3) is very effective. The unfolded
+model with shrunk embedding layers performs at
+the same level as the ensemble (compare rows
+(b) and (c)). In our initial experiments, we ap-
+plied the method of Srinivas and Babu (2015) to
+
+4‘vanilla’ decoding strategy
+
+1950
+
+
+
+Shrinking Methods
+Base Encoder Attention Decoder Size BLEU
+
+Embed. GRUs Match GRU Maxout Embeds. Factor dev test
+(a) Single - - - - - - 1.00 20.8 23.5
+(b) 2-Ens. - - - - - - 2×1.00 22.7 25.2
+(c) 2-Unfold SVD - - - - SVD 1.85 22.7 25.1
+(d) 2-Unfold SVD - Data-Free - - SVD 1.77 22.7 25.1
+(e) 2-Unfold SVD Data-Free Data-Free Data-Free - SVD 1.05 21.6 24.2
+(f) 2-Unfold SVD Data-Bound Data-Free Data-Bound - SVD 1.05 22.4 25.3
+(g) 2-Unfold SVD Data-Bound Data-Free Data-Bound Data-Free SVD 1.00 16.9 19.3
+(h) 2-Unfold SVD Data-Bound Data-Free Data-Bound Data-Bound SVD 1.00 21.9 24.6
+
+Table 1: Shrinking layers of the unfolded network on Ja-En to their original size.
+
+shrink the other layers, but their approach per-
+formed very poorly on this kind of network: the
+BLEU score dropped down to 15.5 on the devel-
+opment set when shrinking all layers except the
+decoder maxout and embedding layers, and to 9.9
+BLEU when applying their method only to em-
+bedding layers.5 Row (e) in Tab. 1 shows that our
+data-free algorithm from Sec. 3.1 is better suited
+for shrinking the GRU and attention layers, lead-
+ing to a drop of only 1 BLEU point compared to
+the ensemble (b) (i.e. 0.8 BLEU better than the
+single system (a)). However, using the data-bound
+version of our shrinking algorithm (Sec. 3.2) for
+the GRU layers performs best.6 The shrunk model
+yields about the same BLEU score as the ensemble
+on the test set (25.2 in (b) and 25.3 in (f)). Shrink-
+ing the maxout layer remains more of a challenge
+(rows (g) and (h)), but the number of parameters in
+this layer is small. Therefore, shrinking all layers
+except the maxout layer leads to almost the same
+number of parameters (factor 1.05 in row (f)) as
+the original NMT network (a), and thus to a sim-
+ilar storage size, memory consumption, and de-
+coding speed, but with a 1.8 BLEU gain. Based
+on these results we fix the shrinking method used
+for each layer for all remaining experiments as fol-
+lows: We shrink linear embedding layers with our
+SVD-based method, GRU layers with our data-
+bound method, the attention layer with our data-
+free method, and do not shrink the maxout layer.
+
+Our data-bound algorithm from Sec. 3.2 has two
+mechanisms to compensate for the removal of a
+neuron. First, we use a linear combination of the
+remaining neurons to update the outgoing weight
+matrix by imitating its activations (Eq. 4). Second,
+stochastic gradient descent (SGD) fine-tunes all
+
+5Results with the original method of Srinivas and
+Babu (2015) are not included in Tab. 1.
+
+6If we apply different methods to different layers of the
+same network, we first apply SVD-based shrinking, then the
+data-free method, and finally the data-bound method.
+
+Compensation Method BLEU
+Linear Combination SGD dev test
+
+(a) 16.3 18.0
+(b) X 22.1 24.3
+(c) X 21.7 24.4
+(d) X X 22.4 25.3
+
+Table 2: Compensating for neuron removal in
+the data-bound algorithm. Row (d) corresponds
+to row (f) in Tab. 1.
+
+weights during this process. Tab. 2 demonstrates
+that both mechanisms are crucial for minimizing
+the effect of shrinking on the BLEU score.
+
+Decoding Speed Our testing environment is an
+Ubuntu 16.04 with Linux 4.4.0 kernel, 32 GB
+RAM, an Intel R© Core i7-6700 CPU at 3.40 GHz
+and an Nvidia GeForce GTX Titan X GPU. CPU
+decoding uses a single thread. We used the first
+500 sentences of the Ja-En WAT development set
+for the time measurements.
+
+Our results in Tab. 3 show that decoding with
+ensembles (rows (b) and (e)) is slow: combin-
+ing the predictions of the individual models on
+the CPU is computationally expensive, and en-
+semble decoding requires K passes through the
+softmax layer which is also computationally ex-
+pensive. Unfolding the ensemble into a single net-
+work and shrinking the embedding and attention
+layers improves the runtimes on the GPU signifi-
+cantly without noticeable impact on BLEU (rows
+(c) and (f)). This can be attributed to the fact that
+unfolding can reduce the communication overhead
+between CPU and GPU. Comparing rows (d) and
+(g) with row (a) reveals that shrinking the un-
+folded networks even further speeds up CPU and
+GPU decoding almost to the level of single sys-
+tem decoding. However, more aggressive shrink-
+ing yields a BLEU score of 25.3 when combining
+three systems (row (g)) – 1.8 BLEU better than
+the single system, but 0.6 BLEU worse than the 3-
+
+1951
+
+
+
+System Words/Min. Size BLEU
+CPU GPU Factor dev test
+
+(a) Single 323.4 2993.6 1.00 20.8 23.5
+(b) 2-Ensemble 163.7 1641.1 2 × 1.00 22.7 25.2
+(c) 2-Unfold, shrunk embed.& attention 157.2 2592.2 1.77 22.7 25.1
+(d) 2-Unfold, shrunk all except maxout 308.3 2961.4 1.05 22.4 25.3
+(e) 3-Ensemble 110.9 1158.2 3 × 1.00 23.4 25.9
+(f) 3-Unfold, shrunk embed.& attention 95.4 2182.1 2.99 23.2 25.9
+(g) 3-Unfold, shrunk all except maxout 301.6 3024.4 1.09 22.2 25.3
+
+Table 3: Time measurements on Ja-En. Layers are shrunk to their size in the original NMT model.
+
+20.5
+
+21.0
+
+21.5
+
+22.0
+
+22.5
+
+ 10% 20% 30% 40% 50% 60% 70% 80% 90%100%
+
+Single system
+
+B
+L
+
+E
+U
+
+Layer size relative to original model
+
+Encoder Embed.
+Encoder GRUs
+Attention Layer
+
+Decoder GRU
+Decoder Embeds.
+
+Figure 3: Impact of shrinking on the BLEU score.
+
+Single 3-Unfold
+Normal Small Tiny
+
+Enc. Embed. 620 410 310 170
+Enc. GRUs 1000 1300 580 580
+Attention 1000 100 100 100
+Dec. GRU 1000 1350 590 590
+Dec. Maxout 500 1500 1500 1500
+Dec. Embeds. 620 430 320 170
+Size Factor 1.00 1.00 0.50 0.33
+
+Table 4: Layer sizes of our setups for Ja-En.
+
+ensemble. Therefore, we will investigate the im-
+pact of shrinking on the different layers in the next
+sections more thoroughly.
+
+Degrees of Redundancy in Different Layers
+We applied our shrinking methods to isolated lay-
+ers in the 2-Unfold network of Tab. 1 (f). Fig. 3
+plots the BLEU score when isolated layers are
+shrunk even below their size in the original NMT
+network. The attention layer is very robust against
+shrinking and can be reduced to 100 neurons (10%
+of the original size) without impacting the BLEU
+score. The embedding layers can be reduced to
+60% but are sensitive to more aggressive pruning.
+Shrinking the GRU layers affects the BLEU score
+the most but still outperforms the single system
+when the GRU layers are shrunk to 30%.
+
+Adjusting the Target Sizes of Layers Based on
+our previous experiments we revise our approach
+to shrink the 3-Unfold system in Tab. 3. Instead
+
+System Words/Min. BLEU
+CPU GPU dev test
+
+(a) Single 323.4 2993.6 20.8 23.5
+(b) 3-Ensemble 110.9 1158.2 23.4 25.9
+(c) 3-Unfold-Normal 445.2 3071.1 22.9 25.7
+(d) 3-Unfold-Small 946.1 3572.0 21.7 23.9
+(e) 3-Unfold-Tiny 1102.5 3483.7 20.6 23.2
+
+Table 5: Our best models on Ja-En.
+
+of shrinking all layers except the maxout layer to
+the same degree, we adjust the aggressiveness of
+shrinking for each layer. We suggest three dif-
+ferent setups (Normal, Small, and Tiny) with the
+layer sizes specified in Tab. 4. 3-Unfold-Normal
+has the same number of parameters as the orig-
+inal NMT networks (size factor: 1.0), 3-Unfold-
+Small is only half their size (size factor: 0.5), and
+3-Unfold-Tiny reduces the size by two thirds (size
+factor: 0.33). When comparing rows (a) and (c) in
+Tab. 5 we observe that 3-Unfold-Normal yields a
+gain of 2.2 BLEU with respect to the original sin-
+gle system and a slight improvement in decoding
+speed at the same time.7 Networks with the size
+factor 1.0 like 3-Unfold-Normal are very likely to
+yield about the same decoding speed as the Sin-
+gle network regardless of the decoder implementa-
+tion, machine learning framework, and hardware.
+Therefore, we think that similar results are possi-
+ble on other platforms as well.
+
+CPU decoding speed directly benefits even
+more from smaller setups – 3-Unfold-Tiny is only
+0.3 BLEU worse than Single but decoding on a
+single CPU is 3.4 times faster (row (a) vs. row (e)
+in Tab. 5). This is of great practical use: batch de-
+coding with only two CPU threads surpasses pro-
+duction speed which is often set to 2000 words per
+minute (Beck et al., 2016). Our initial experiments
+in Tab. 6 suggest that the Normal setup is appli-
+cable to En-De as well, with substantial improve-
+
+7To validate that the gains come from ensembling and un-
+folding and not from the layer sizes in 3-Unfold-Normal we
+trained a network from scratch with the same dimensions.
+This network performed similarly to our Single system.
+
+1952
+
+
+
+System Wrds/Min. BLEU on news-test*
+(GPU) 2014 2015 2016
+
+Single 2128.7 19.6 21.9 24.6
+2-Ensemble 1135.3 20.5 22.9 26.1
+2-Unfold-Norm. 2099.1 20.7 23.1 25.8
+
+Table 6: Our best models on En-De.
+
+ments in BLEU compared to Single with about the
+same decoding speed.
+
+5 Related Work
+
+The idea of pruning neural networks to improve
+the compactness of the models dates back more
+than 25 years (LeCun et al., 1989). The literature
+is therefore vast (Augasta and Kathirvalavakumar,
+2013). One line of research aims to remove unim-
+portant network connections. The connections
+can be selected for deletion based on the second-
+derivative of the training error with respect to the
+weight (LeCun et al., 1989; Hassibi et al., 1993),
+or by a threshold criterion on its magnitude (Han
+et al., 2015). See et al. (2016) confirmed a high
+degree of weight redundancy in NMT networks.
+
+In this work we are interested in removing neu-
+rons rather than single connections since we strive
+to shrink the unfolded network such that it resem-
+bles the layout of an individual model. We ar-
+gued in Sec. 4 that removing neurons rather than
+connections does not only improve the model size
+but also the memory footprint and decoding speed.
+As explained in Sec. 3.1, our data-free method
+is an extension of the approach by Srinivas and
+Babu (2015); our extension performs significantly
+better on NMT networks. Our data-bound method
+(Sec. 3.2) is inspired by Babaeizadeh et al. (2016)
+as we combine neurons with similar activities dur-
+ing training, but we use linear combinations of
+multiple neurons to compensate for the loss of a
+neuron rather than merging pairs of neurons.
+
+Using low rank matrices for neural net-
+work compression, particularly approximations
+via SVD, has been studied widely in the litera-
+ture (Denil et al., 2013; Denton et al., 2014; Xue
+et al., 2013; Prabhavalkar et al., 2016; Lu et al.,
+2016). These approaches often use low rank matri-
+ces to approximate a full rank weight matrix in the
+original network. In contrast, we shrink an entire
+linear layer by applying SVD on the product of the
+incoming and outgoing weight matrices (Sec. 3.3).
+
+In this paper we mimicked the output of the high
+performing but cumbersome ensemble by con-
+structing a large unfolded network, and shrank this
+
+network afterwards. Another approach, known as
+knowledge distillation, uses the large model (the
+teacher) to generate soft training labels for the
+smaller student network (Bucilu et al., 2006; Hin-
+ton et al., 2014). The student network is trained by
+minimizing the cross-entropy to the teacher. This
+idea has been applied to sequence modelling tasks
+such as machine translation and speech recogni-
+tion (Wong and Gales, 2016; Kim and Rush, 2016;
+Freitag et al., 2017). Our approach can be compu-
+tationally more efficient as the training set does not
+have to be decoded by the large teacher network.
+
+Junczys-Dowmunt et al. (2016a; 2016b) re-
+ported gains from averaging the weight matrices
+of multiple checkpoints of the same training run.
+However, our attempts to replicate their approach
+were not successful. Averaging might work well
+when the behaviour of corresponding units is sim-
+ilar across networks, but that cannot be guaranteed
+when networks are trained independently.
+
+6 Conclusion
+
+We have described a generic method for improv-
+ing the decoding speed and BLEU score of single
+system NMT. Our approach involves unfolding an
+ensemble of multiple systems into a single large
+neural network and shrinking this network by re-
+moving redundant neurons. Our best results on
+Japanese-English either yield a gain of 2.2 BLEU
+compared to the original single NMT network at
+about the same decoding speed, or a 3.4×CPU de-
+coding speed up with only a minor drop in BLEU.
+
+The current formulation of unfolding works for
+networks of the same topology as the concatena-
+tion of layers is only possible for analogous layers
+in different networks. Unfolding and shrinking di-
+verse networks could be possible, for example by
+applying the technique only to the input and out-
+put layers or by some other scheme of finding as-
+sociations between units in different models, but
+we leave this investigation to future work as mod-
+els in NMT ensembles in current research usually
+have the same topology (Bojar et al., 2016; Sen-
+nrich et al., 2016a; Chung et al., 2016; Neubig,
+2016; Wu et al., 2016; Durrani et al., 2017).
+
+Acknowledgments
+
+This work was supported by the U.K. Engineering
+and Physical Sciences Research Council (EPSRC
+grant EP/L027623/1).
+
+1953
+
+
+
+Appendix: Probabilistic Interpretation of
+Data-Free and Data-Bound Shrinking
+
+Data-free and data-bound shrinking can be inter-
+preted as setting the expected difference between
+network outputs before and after a removal opera-
+tion to zero under different assumptions.
+
+For simplicity, we focus our probabilistic treat-
+ment of shrinking on single layer feedforward net-
+works. Such a network maps an input x ∈ Rmin
+to an output y ∈ Rmout . The l-th output yl is com-
+puted according the following equation
+
+yl =
+∑
+
+k∈[1,m]
+σ(xuTk )Vk,l (7)
+
+where uk ∈ Rmin is the incoming weight vec-
+tor of the k-th hidden neuron (denoted as U:,k in
+the main paper) and V ∈ Rm×mout the outgoing
+weight matrix of the m-dimensional hidden layer.
+We now remove the j-th neuron in the hidden layer
+and modify the outgoing weights to compensate
+for the removal:
+
+y′l =
+∑
+
+k∈[1,m]\{j}
+σ(xuTk )V
+
+′
+k,l (8)
+
+where y′l is the output after the removal operation
+and V ′ ∈ Rm×mout are the modified outgoing
+weights. Our goal is to choose V ′ such that the
+expected error introduced by removing neuron j
+is zero:
+
+Ex(yl − y′l) = 0 (9)
+
+Data-free shrinking Data-free shrinking makes
+two assumptions to satisfy Eq. 9. First, we assume
+that the incoming weight vector uj can be repre-
+sented as linear combination of the other weight
+vectors.
+
+uj =
+∑
+
+k∈[1,m]\{j}
+λkuk (10)
+
+Second, it assumes that the neuron activation
+function σ(·) is linear. Starting with Eqs. 7 and 8
+we can write Ex(yl − y′l) as
+
+Ex
+(
+σ(xuTj )Vj,l +
+
+∑
+k∈[1,m]\{j}
+
+σ(xuTk )(Vk,l − V ′k,l)︸ ︷︷ ︸
+:=R
+
+)
+
+Eq. 10
+= Ex
+
+(
+σ(x(
+
+∑
+k∈[1,m]\{j}
+
+λkuk)T )Vj,l +R
+)
+
+σ(·) lin.
+= Ex
+
+( ∑
+k∈[1,m]\{j}
+
+σ(xuTk )λkVj,l +R
+)
+
+=
+∑
+
+k∈[1,m]\{j}
+Ex
+(
+σ(xuTk )
+
+)
+(Vk,l − V ′k,l + λkVj,l)
+
+We set this term to zero (and thus satisfy Eq. 9)
+by setting each component of the sum to zero.
+
+∀k ∈ [1,m] \ {j} : V ′k,l = Vk,l + λkVj,l (11)
+This condition is directly implemented by the up-
+date rule in our shrinking algorithm (Eq. 3 and 4).
+
+Data-bound shrinking Data-bound shrinking
+does not require linearity in σ(·). It rather assumes
+that the expected value of the neuron activity j is
+a linear combination of the expected values of the
+other activities:
+
+Ex(σ(xuTj )) =
+∑
+
+k∈[1,m]\{j}
+λkEx(σ(xuTk )) (12)
+
+Ex(·) is estimated using importance sampling:
+
+Êx(σ(xuTk );X ) =
+1
+|X |
+
+∑
+x′∈X
+
+σ(x′uTk ) (13)
+
+In practice, the samples inX are collected in the
+activity matrix A from Sec. 3.2. We can satisfy
+Eq. 9 by using the λ-values from Eq. 12, so that
+Ex(yl − y′l) becomes
+
+Eqs. 7,8
+= Ex
+
+(
+σ(xuTj )Vj,l
+
++
+∑
+
+k∈[1,m]\{j}
+σ(xuTk )(Vk,l − V ′k,l)
+
+)
+= Ex(σ(xuTj )Vj,l)
+
++
+∑
+
+k∈[1,m]\{j}
+Ex(σ(xuTk ))(Vk,l − V ′k,l)
+
+Eq. 12
+=
+
+∑
+k∈[1,m]\{j}
+
+Ex(σ(xuTk ))(Vk,l − V ′k,l + λkVj,l)
+
+Again, we set this to zero using Eq. 11.
+
+1954
+
+
+
+References
+
+M. Gethsiyal Augasta and Thangairulappan Kathir-
+valavakumar. 2013. Pruning algorithms of neural
+networks – a comparative study. Central European
+Journal of Computer Science, 3(3):105–115.
+
+Mohammad Babaeizadeh, Paris Smaragdis, and Roy H.
+Campbell. 2016. NoiseOut: A simple way to prune
+neural networks. In Proceedings of the 1st Interna-
+tional Workshop on Efficient Methods for Deep Neu-
+ral Networks (EMDNN).
+
+Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Ben-
+gio. 2015. Neural machine translation by jointly
+learning to align and translate. In ICLR, Toulon,
+France.
+
+Frédéric Bastien, Pascal Lamblin, Razvan Pascanu,
+James Bergstra, Ian Goodfellow, Arnaud Bergeron,
+Nicolas Bouchard, David Warde-Farley, and Yoshua
+Bengio. 2012. Theano: new features and speed im-
+provements. In NIPS, South Lake Tahoe, Nevada,
+USA.
+
+Daniel Beck, Adrià de Gispert, Gonzalo Iglesias,
+Aurelien Waite, and Bill Byrne. 2016. Speed-
+constrained tuning for statistical machine translation
+using Bayesian optimization. In Proceedings of the
+2016 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies, pages 856–865, San
+Diego, California. Association for Computational
+Linguistics.
+
+Ondřej Bojar, Rajen Chatterjee, Christian Federmann,
+Yvette Graham, Barry Haddow, Matthias Huck,
+Antonio Jimeno Yepes, Philipp Koehn, Varvara
+Logacheva, Christof Monz, Matteo Negri, Aure-
+lie Neveol, Mariana Neves, Martin Popel, Matt
+Post, Raphael Rubino, Carolina Scarton, Lucia Spe-
+cia, Marco Turchi, Karin Verspoor, and Marcos
+Zampieri. 2016. Findings of the 2016 conference
+on machine translation. In Proceedings of the First
+Conference on Machine Translation, pages 131–
+198, Berlin, Germany. Association for Computa-
+tional Linguistics.
+
+Cristian Bucilu, Rich Caruana, and Alexandru
+Niculescu-Mizil. 2006. Model compression. In
+Proceedings of the 12th ACM SIGKDD interna-
+tional conference on Knowledge discovery and data
+mining, pages 535–541. ACM.
+
+Kyunghyun Cho, Bart van Merrienboer, Caglar Gul-
+cehre, Dzmitry Bahdanau, Fethi Bougares, Holger
+Schwenk, and Yoshua Bengio. 2014. Learning
+phrase representations using RNN encoder–decoder
+for statistical machine translation. In Proceedings of
+the 2014 Conference on Empirical Methods in Nat-
+ural Language Processing (EMNLP), pages 1724–
+1734, Doha, Qatar. Association for Computational
+Linguistics.
+
+Junyoung Chung, Kyunghyun Cho, and Yoshua Ben-
+gio. 2016. A character-level decoder without ex-
+plicit segmentation for neural machine translation.
+In Proceedings of the 54th Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers), pages 1693–1703, Berlin, Germany.
+Association for Computational Linguistics.
+
+Fabien Cromieres, Chenhui Chu, Toshiaki Nakazawa,
+and Sadao Kurohashi. 2016. Kyoto university par-
+ticipation to WAT 2016. In Proceedings of the 3rd
+Workshop on Asian Translation (WAT2016), pages
+166–174, Osaka, Japan. The COLING 2016 Orga-
+nizing Committee.
+
+Misha Denil, Babak Shakibi, Laurent Dinh, Nando
+de Freitas, et al. 2013. Predicting parameters in deep
+learning. In Advances in Neural Information Pro-
+cessing Systems, pages 2148–2156.
+
+Emily L. Denton, Wojciech Zaremba, Joan Bruna,
+Yann LeCun, and Rob Fergus. 2014. Exploiting lin-
+ear structure within convolutional networks for effi-
+cient evaluation. In Advances in Neural Information
+Processing Systems, pages 1269–1277.
+
+Thomas G. Dietterich. 2000. Ensemble methods in ma-
+chine learning. In International workshop on multi-
+ple classifier systems, pages 1–15. Springer.
+
+John Duchi, Elad Hazan, and Yoram Singer. 2011.
+Adaptive subgradient methods for online learning
+and stochastic optimization. Journal of Machine
+Learning Research, pages 2121–2159.
+
+Nadir Durrani, Fahim Dalvi, Hassan Sajjad, and
+Stephan Vogel. 2017. QCRI machine transla-
+tion systems for IWSLT 16. arXiv preprint
+arXiv:1701.03924.
+
+Markus Freitag, Yaser Al-Onaizan, and Baskaran
+Sankaran. 2017. Ensemble distillation for
+neural machine translation. arXiv preprint
+arXiv:1702.01802.
+
+Ian Goodfellow, David Warde-Farley, Mehdi Mirza,
+Aaron Courville, and Yoshua Bengio. 2013. Max-
+out networks. In ICML, pages 1319–1327.
+
+Song Han, Jeff Pool, John Tran, and William Dally.
+2015. Learning both weights and connections for
+efficient neural network. In Advances in Neural In-
+formation Processing Systems, pages 1135–1143.
+
+Lars Kai Hansen and Peter Salamon. 1990. Neu-
+ral network ensembles. IEEE transactions on pat-
+tern analysis and machine intelligence, 12(10):993–
+1001.
+
+Babak Hassibi, David G. Stork, et al. 1993. Second
+order derivatives for network pruning: Optimal brain
+surgeon. Advances in neural information processing
+systems, pages 164–164.
+
+Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. 2014.
+Distilling the knowledge in a neural network. In
+NIPS Deep Learning Workshop.
+
+1955
+
+
+
+Marcin Junczys-Dowmunt, Tomasz Dwojak, and Hieu
+Hoang. 2016a. Is neural machine translation ready
+for deployment? A case study on 30 translation di-
+rections. In International Workshop on Spoken Lan-
+guage Translation IWSLT.
+
+Marcin Junczys-Dowmunt, Tomasz Dwojak, and Rico
+Sennrich. 2016b. The AMU-UEDIN submission to
+the WMT16 news translation task: Attention-based
+NMT models as feature functions in phrase-based
+SMT. In Proceedings of the First Conference on
+Machine Translation, pages 319–325, Berlin, Ger-
+many. Association for Computational Linguistics.
+
+Yoon Kim and Alexander M. Rush. 2016. Sequence-
+level knowledge distillation. In Proceedings of the
+2016 Conference on Empirical Methods in Natu-
+ral Language Processing, pages 1317–1327, Austin,
+Texas. Association for Computational Linguistics.
+
+Yann LeCun, John S. Denker, Sara A. Solla, Richard E.
+Howard, and Lawrence D. Jackel. 1989. Optimal
+brain damage. In NIPS, volume 2, pages 598–605.
+
+Zhiyun Lu, Vikas Sindhwani, and Tara N. Sainath.
+2016. Learning compact recurrent neural net-
+works. In Acoustics, Speech and Signal Processing
+(ICASSP), 2016 IEEE International Conference on,
+pages 5960–5964. IEEE.
+
+Bart van Merriënboer, Dzmitry Bahdanau, Vincent Du-
+moulin, Dmitriy Serdyuk, David Warde-Farley, Jan
+Chorowski, and Yoshua Bengio. 2015. Blocks and
+Fuel: Frameworks for deep learning. CoRR.
+
+Toshiaki Nakazawa, Manabu Yaguchi, Kiyotaka Uchi-
+moto, Masao Utiyama, Eiichiro Sumita, Sadao
+Kurohashi, and Hitoshi Isahara. 2016. ASPEC:
+Asian scientific paper excerpt corpus. In LREC,
+pages 2204–2208, Portoroz, Slovenia.
+
+Graham Neubig. 2016. Lexicons and minimum risk
+training for neural machine translation: NAIST-
+CMU at WAT2016. In Proceedings of the 3rd Work-
+shop on Asian Translation (WAT2016), pages 119–
+125, Osaka, Japan. The COLING 2016 Organizing
+Committee.
+
+Graham Neubig, Makoto Morishita, and Satoshi Naka-
+mura. 2015. Neural reranking improves subjective
+quality of machine translation: NAIST at WAT2015.
+In Workshop on Asian Translation, pages 35–41.
+
+Rohit Prabhavalkar, Ouais Alsharif, Antoine Bruguier,
+and Lan McGraw. 2016. On the compression of
+recurrent neural networks with an application to
+LVCSR acoustic modeling for embedded speech
+recognition. In Acoustics, Speech and Signal Pro-
+cessing (ICASSP), 2016 IEEE International Confer-
+ence on, pages 5970–5974. IEEE.
+
+Abigail See, Minh-Thang Luong, and D. Christopher
+Manning. 2016. Compression of neural machine
+translation models via pruning. In Proceedings
+of The 20th SIGNLL Conference on Computational
+Natural Language Learning, pages 291–301. Asso-
+ciation for Computational Linguistics.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016a. Edinburgh neural machine translation sys-
+tems for WMT 16. In Proceedings of the First
+Conference on Machine Translation, pages 371–
+376, Berlin, Germany. Association for Computa-
+tional Linguistics.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016b. Neural machine translation of rare words
+with subword units. In Proceedings of the 54th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1715–
+1725, Berlin, Germany. Association for Computa-
+tional Linguistics.
+
+Suraj Srinivas and R. Venkatesh Babu. 2015. Data-free
+parameter pruning for deep neural networks. In Pro-
+ceedings of the British Machine Vision Conference
+(BMVC), pages 31.1–31.12. BMVA Press.
+
+Felix Stahlberg, Eva Hasler, Danielle Saunders, and
+Bill Byrne. 2017. SGNMT – A flexible NMT de-
+coding platform for quick prototyping of new mod-
+els and search strategies. In Proceedings of the 2017
+Conference on Empirical Methods in Natural Lan-
+guage Processing. Association for Computational
+Linguistics.
+
+Ilya Sutskever, Oriol Vinyals, and Quoc V. Le. 2014.
+Sequence to sequence learning with neural net-
+works. In Proceedings of the 27th International
+Conference on Neural Information Processing Sys-
+tems, pages 3104–3112. MIT Press.
+
+Jeremy HM. Wong and Mark JF. Gales. 2016. Se-
+quence student-teacher training of deep neural net-
+works. Interspeech 2016, pages 2761–2765.
+
+Yonghui Wu, Mike Schuster, Zhifeng Chen, Quoc V
+Le, Mohammad Norouzi, Wolfgang Macherey,
+Maxim Krikun, Yuan Cao, Qin Gao, Klaus
+Macherey, et al. 2016. Google’s neural ma-
+chine translation system: Bridging the gap between
+human and machine translation. arXiv preprint
+arXiv:1609.08144.
+
+Jian Xue, Jinyu Li, and Yifan Gong. 2013. Restruc-
+turing of deep neural network acoustic models with
+singular value decomposition. In Interspeech, pages
+2365–2369.
+
+Matthew D. Zeiler. 2012. ADADELTA: an adap-
+tive learning rate method. arXiv preprint
+arXiv:1212.5701.
+
+1956
+
+

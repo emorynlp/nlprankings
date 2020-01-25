@@ -1,0 +1,1306 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Large-scale discriminative language model reranking for voice-search
+
+
+NAACL-HLT 2012 Workshop: Will We Ever Really Replace the N-gram Model? On the Future of Language Modeling for HLT, pages 41–49,
+Montréal, Canada, June 8, 2012. c©2012 Association for Computational Linguistics
+
+Large-scale discriminative language model reranking for voice-search
+
+Preethi Jyothi
+The Ohio State University
+
+Columbus, OH
+jyothi@cse.ohio-state.edu
+
+Leif Johnson
+UT Austin
+Austin, TX
+
+leif@cs.utexas.edu
+
+Ciprian Chelba and Brian Strope
+Google
+
+Mountain View, CA
+{ciprianchelba,bps}@google.com
+
+Abstract
+
+We present a distributed framework for large-
+scale discriminative language models that can
+be integrated within a large vocabulary con-
+tinuous speech recognition (LVCSR) system
+using lattice rescoring. We intentionally
+use a weakened acoustic model in a base-
+line LVCSR system to generate candidate hy-
+potheses for voice-search data; this allows
+us to utilize large amounts of unsupervised
+data to train our models. We propose an ef-
+ficient and scalable MapReduce framework
+that uses a perceptron-style distributed train-
+ing strategy to handle these large amounts of
+data. We report small but significant improve-
+ments in recognition accuracies on a standard
+voice-search data set using our discriminative
+reranking model. We also provide an analy-
+sis of the various parameters of our models in-
+cluding model size, types of features, size of
+partitions in the MapReduce framework with
+the help of supporting experiments.
+
+1 Introduction
+
+The language model is a critical component of an
+automatic speech recognition (ASR) system that as-
+signs probabilities or scores to word sequences. It
+is typically derived from a large corpus of text via
+maximum likelihood estimation in conjunction with
+some smoothing constraints. N-gram models have
+become the most dominant form of LMs in most
+ASR systems. Although these models are robust,
+scalable and easy to build, we illustrate a limita-
+tion with the following example from voice-search.
+We expect a low probability for an ungrammatical
+
+or implausible word sequence. However, for a tri-
+gram like “a navigate to”, a backoff trigram LM
+gives a fairly large LM log probability of -0.266 be-
+cause both “a” and “navigate to” are popular words
+in voice-search! Discriminative language models
+(DLMs) attempt to directly optimize error rate by
+rewarding features that appear in low error hypothe-
+ses and penalizing features in misrecognized hy-
+potheses. The trigram “a navigate to” receives a
+fairly large negative weight of -6.5 thus decreasing
+its chances of appearing as an ASR output. There
+have been numerous approaches towards estimat-
+ing DLMs for large vocabulary continuous speech
+recognition (LVCSR) (Roark et al., 2004; Gao et al.,
+2005; Zhou et al., 2006).
+
+There are two central issues that we discuss re-
+garding DLMs. Firstly, DLM training requires large
+amounts of parallel data (in the form of correct tran-
+scripts and candidate hypotheses output by an ASR
+system) to be able to effectively compete with n-
+gram LMs trained on large amounts of text. This
+data could be simulated using voice-search logs that
+are confidence-filtered from a baseline ASR sys-
+tem to obtain reference transcripts. However, this
+data is perfectly discriminated by first pass features
+and leaves little room for learning. We propose a
+novel training strategy of using lattices generated
+with a weaker acoustic model (henceforth referred
+to as weakAM) than the one used to generate ref-
+erence transcripts for the unsupervised parallel data
+(referred to as the strongAM). This provides us with
+enough errors to derive large numbers of potentially
+useful word features; this is akin to using a weak LM
+in discriminative acoustic modeling to give more
+
+41
+
+
+
+room for diversity in the word lattices resulting in
+better generalization (Schlüter et al., 1999). We con-
+duct experiments to verify whether these weakAM-
+trained models will provide performance gains on
+rescoring lattices from a standard test set generated
+using strongAM (discussed in Section 3.3).
+
+The second issue is that discriminative estima-
+tion of LMs is computationally more intensive than
+regular N-gram LM estimation. The advent of dis-
+tributed learning algorithms (Mann et al., 2009; Mc-
+Donald et al., 2010; Hall et al., 2010) and support-
+ing parallel computing infrastructure like MapRe-
+duce (Ghemawat and Dean, 2004) has made it in-
+creasingly feasible to use large amounts of paral-
+lel data to train DLMs. We implement a distributed
+training strategy for the perceptron algorithm (intro-
+duced by McDonald et al. (2010) using the MapRe-
+duce framework. Our design choices for the MapRe-
+duce implementation are specified in Section 2.2
+along with its modular nature thus enabling us to
+experiment with different variants of the distributed
+structured perceptron algorithm. Some of the de-
+scriptions in this paper have been adapted from pre-
+vious work (Jyothi et al., 2012).
+
+2 The distributed DLM framework:
+Training and Implementation details
+
+2.1 Learning algorithm
+
+We aim to allow the estimation of large scale dis-
+tributed models, similar in size to the ones in Brants
+et al. (2007). To this end, we make use of a dis-
+tributed training strategy for the structured percep-
+tron to train our DLMs (McDonald et al., 2010). Our
+model consists of a high-dimensional feature vector
+function Φ that maps an (utterance, hypothesis) pair
+(x, y) to a vector in Rd, and a vector of model pa-
+rameters, w ∈ Rd. Our goal is to find model pa-
+rameters such that given x, and a set of candidate
+hypotheses Y (typically, as a word lattice or an N-
+best list that is obtained from a first pass recognizer),
+argmaxy∈Y w · Φ(x, y) would be the y ∈ Y that
+minimizes the error rate between y and the correct
+hypothesis for x. For our experiments, the feature
+vector Φ(x, y) consists of AM and LM costs for y
+from the lattice Y for x), as well as “word features”
+which count the number of times different N-grams
+(of order up to 5 in our experiments) occur in y.
+
+In principle, such a model can be trained us-
+ing the conventional structured perceptron algo-
+rithm (Collins, 2002). This is an online learning
+algorithm which continually updates w as it pro-
+cesses the training instances one at a time, over
+multiple training epochs. Given a training utter-
+ance {xi, yi} (yi ∈ Yi has the lowest error rate
+with respect to the reference transcription for xi,
+among all hypotheses in the lattice Yi for xi), if
+ỹ∗i := argmaxy∈Yi w · Φ(xi, y) is not yi, w is up-
+dated to increase the weights corresponding to fea-
+tures in yi and decrease the weights of features in ỹ∗i .
+During evaluation, we use parameters averaged over
+all utterances and over all training epochs. This was
+shown to give substantial improvements in previous
+work (Collins, 2002; Roark et al., 2004).
+
+Unfortunately, the conventional perceptron algo-
+rithm takes impractically long for the amount of
+training examples we have. We make use of a
+distributed training strategy for the structured per-
+ceptron that was first introduced in McDonald et
+al. (2010). The iterative parameter mixing strategy
+used in this paradigm can be explained as follows:
+the training data T = {xi, yi}Ni=1 is suitably parti-
+tioned into C disjoint sets T1, . . . , TC . Then, a struc-
+tured perceptron model is trained on each data set in
+parallel. After one training epoch, the parameters in
+the C sets are mixed together (using a “mixture coef-
+ficient” µi for each set Ti) and returned to each per-
+ceptron model for the next training epoch where the
+parameter vector is initialized with these new mixed
+weights. This is formally described in Algorithm 1;
+we call it “Distributed Perceptron”. We also exper-
+iment with two other variants of distributed percep-
+tron training, “Naive Distributed Perceptron” and
+“Averaged Distributed Perceptron”. These models
+easily lend themselves to be implemented using the
+distributed infrastructure provided by the MapRe-
+duce framework. The following section describes
+this infrastructure in greater detail.
+
+2.2 MapReduce implementation details
+
+We propose a distributed infrastructure using
+MapReduce (Ghemawat and Dean, 2004) to train
+our large-scale DLMs on terabytes of data. The
+MapReduce (Ghemawat and Dean, 2004) paradigm,
+adapted from a specialized functional programming
+construct, is specialized for use over clusters with
+
+42
+
+
+
+Algorithm 1 Distributed Perceptron (McDonald et
+al., 2010)
+
+Require: Training samples T = {xi, yi}Ni=1
+1: w0 := [0, . . . , 0]
+2: Partition T into C parts, T1, . . . , TC
+3: [µ1, . . . , µC ] := [
+
+1
+C , . . . ,
+
+1
+C ]
+
+4: for t := 1 to T do
+5: for c := 1 to C do
+6: w := wt−1
+
+7: for j := 1 to |Tc| do
+8: ỹtc,j := argmaxy w ·Φ(xc,j , y)
+9: δ := Φ(xc,j , yc,j)−Φ(xc,j , ỹtc,j)
+
+10: w := w + δ
+11: end for
+12: wtc := w
+13: end for
+14: wt :=
+
+∑C
+c=1 µcw
+
+t
+c
+
+15: end for
+16: return wT
+
+a large number of nodes. Chu et al. (2007) have
+demonstrated that many standard machine learning
+algorithms can be phrased as MapReduce tasks, thus
+illuminating the versatility of this framework. In
+relation to language models, Brants et al. (2007)
+recently proposed a distributed MapReduce infras-
+tructure to build Ngram language models having up
+to 300 billion n-grams. We take inspiration from
+this evidence of being able to build very large mod-
+els and use the MapReduce infrastructure for our
+DLMs. Also, the MapReduce paradigm allows us to
+easily fit different variants of our learning algorithm
+in a modular fashion by only making small changes
+to the MapReduce functions.
+
+In the MapReduce framework, any computation
+is expressed as two user-defined functions: Map and
+Reduce. The Map function takes as input a key/value
+pair and processes it using user-defined functions to
+generate a set of intermediate key/value pairs. The
+Reduce function receives all intermediate pairs that
+are associated with the same key value. The dis-
+tributed nature of this framework comes from the
+ability to invoke the Map function on different parts
+of the input data simultaneously. Since the frame-
+work assures that all the values corresponding to a
+given key will be accummulated at the end of all
+
+SSTable 
+Feature-
+Weights: 
+
+Epoch t+1
+
+SSTable 
+Feature-
+Weights: 
+Epoch t
+
+SSTable 
+Utterances
+
+SSTableService
+
+Rerank-Mappers
+
+Identity-Mappers
+
+Reducers
+
+Cache
+(per Map chunk)
+
+Figure 1: MapReduce implementation of reranking using
+discriminative language models.
+
+the Map invocations on the input data, different ma-
+chines can simultaneously execute the Reduce to op-
+erate on different parts of the intermediate data.
+
+Any MapReduce application typically imple-
+ments Mapper/Reducer interfaces to provide the de-
+sired Map/Reduce functionalities. For our models,
+we use two different Mappers (as illustrated in Fig-
+ure 1) to compute feature weights for one training
+epoch. The Rerank-Mapper receives as input a set
+of training utterances and also requests for feature
+weights computed in the previous training epoch.
+Rerank-Mapper then computes feature updates for
+the given training data (the subset of the training data
+received by a single Rerank-Mapper instance will be
+henceforth referred to as a “Map chunk”). We also
+have a second Identity-Mapper that receives feature
+weights from the previous training epoch and di-
+rectly maps the inputs to outputs which are provided
+to the Reducer. The Reducer combines the outputs
+from both Rerank-Mapper and Identity-Mapper and
+outputs the feature weights for the current training
+epoch. These output feature weights are persisted
+on disk in the form of SSTables that are an efficient
+abstraction to store large numbers of key-value pairs.
+
+The features corresponding to a Map chunk at the
+end of training epoch need to be made available to
+Rerank-Mapper in the subsequent training epoch.
+Instead of accessing the features on demand from
+the SSTables that store these feature weights, every
+Rerank-Mapper stores the features needed for the
+current Map chunk in a cache. Though the number
+
+43
+
+
+
+wt-1
+
+Rerank-Mapper
+
+Reducer
+
+1 utt1
+2 utt2
+
+Nc uttNc
+
+Feat1 wt1
+Feat2 wt2
+
+FeatM wtM
+
+:
+
+:
+
+U
+
+Cache of wt-1 maintained by the Mapper
+
+wcurr := wt-1, Δ := 0
+For each (key,utt) in U:
+
+Map(key,utt) {
+Rerank(utt.Nbest,wcurr)
+δ := FeatureDiff(utt)
+wcurr:= wcurr + δ
+Δ := Update(Δ,δ)
+
+}
+
+wt
+
+Reduce(Feat,V[0..n]) {
+//V contains all pairs 
+//with primary key=Feat
+
+//first key=Feat:0
+wold := V[0]
+
+//aggregate Δ from rest
+//of V (key=Feat:1)
+Δ* := Aggregate(V[1..n])
+
+wt[Feat] :=
+Combine(wold,Δ*)
+
+}
+
+For each Feat in 1 to M:
+
+Map(Feat,wt-1[Feat]) {
+Emit(Feat:0,wt-1[Feat])
+
+}
+
+Identity-Mapper
+
+For each Feat in 1 to M:
+Emit(Feat:1,Δ[Feat])
+
+Figure 2: Details of the Mapper and Reducer.
+
+Naive Distributed Perceptron:
+- Update(∆, δ) returns ∆ + δ.
+- Aggregate([∆t1, . . . ,∆
+
+t
+C ]) returns ∆
+
+∗ =
+∑C
+
+c=1 ∆
+t
+c.
+
+- Combine(wt−1NP ,∆
+∗) returns wt−1NP + ∆
+
+∗.
+Distributed Perceptron:
+
+- Update and Combine are as for the Naive Distributed Perceptron.
+- Aggregate([∆t1, . . . ,∆
+
+t
+C ]) returns ∆
+
+∗ =
+∑C
+
+c=1 µc∆
+t
+c.
+
+Averaged Distributed Perceptron: Here, wt = (wtAV , w
+t
+DP ), and ∆ = (β,α) contain pairs of values; α
+
+is used to maintain wtDP and β, both of which in turn are used to maintain w
+t
+AV (α
+
+t
+c plays the role of ∆
+
+t
+c in
+
+Distributed Perceptron). Only wtAV is used in the final evaluation and only w
+t
+DP is used during training.
+
+- Update((β,α), δ) returns (β + α + δ,α + δ).
+- Aggregate([∆t1, . . . ,∆
+
+t
+C ]) where ∆
+
+t
+c = (β
+
+t
+c,α
+
+t
+c), returns ∆
+
+∗ = (β∗,α∗) where β∗ =
+∑C
+
+c=1 β
+t
+c, and
+
+α∗ =
+∑C
+
+c=1 µcα
+t
+c.
+
+- Combine((wt−1AV , w
+t−1
+DP ), (β
+
+∗,α∗)) returns ( t−1t w
+t−1
+AV +
+
+1
+tw
+
+t−1
+DP +
+
+1
+N tβ
+
+∗, wt−1DP + α
+∗).
+
+Figure 3: Update, Aggregate and Combine procedures for the three variants of the Distributed Perceptron algorithm.
+
+of features stored in the SSTables are determined by
+the total number of training utterances, the number
+of features that are accessed by a Rerank-Mapper
+instance are only proportional to the chunk size and
+can be cached locally. This is an important imple-
+mentation choice because it allows us to estimate
+very large distributed models: the bottleneck is no
+longer the total model size but rather the cache size
+that is in turn controlled by the Map chunk size.
+Section 3.2 discusses in more detail about different
+model sizes and the effects of varying Map chunk
+
+size on recognition performance.
+
+Figure 1 is a schematic diagram of our entire
+framework; Figure 2 shows a more detailed repre-
+sentation of a single Rerank-Mapper, an Identity-
+Mapper and a Reducer, with the pseudocode of
+these interfaces shown inside their respective boxes.
+Identity-Mapper gets feature weights from the pre-
+vious training epoch as input (wt) and passes them
+to the output unchanged. Rerank-Mapper calls the
+function Rerank that takes an N-best list of a training
+utterance (utt.Nbest) and the current feature weights
+
+44
+
+
+
+(wcurr) as input and reranks the N-best list to ob-
+tain the best scoring hypothesis. If this differs from
+the correct transcript for utt, FeatureDiff computes
+the difference in feature vectors corresponding to
+the two hypotheses (we call it δ) and wcurr is in-
+cremented with δ. Emit is the output function of
+a Mapper that outputs a processed key/value pair.
+For every feature Feat, both Identity-Mapper and
+Rerank-Mapper also output a secondary key (0 or 1,
+respectively); this is denoted as Feat:0 and Feat:1.
+At the Reducer, its inputs arrive sorted according to
+the secondary key; thus, the feature weight corre-
+sponding to Feat from the previous training epoch
+produced by Identity-Mapper will necessarily ar-
+rive before Feat’s current updates from the Rerank-
+Mapper. This ensures that wt+1 is updated correctly
+starting with wt. The functions Update, Aggregate
+and Combine are explained in the context of three
+variants of the distributed perceptron algorithm in
+Figure 3.
+
+2.2.1 MapReduce variants of the distributed
+perceptron algorithm
+
+Our MapReduce setup described in the previ-
+ous section allows for different variants of the dis-
+tributed perceptron training algorithm to be imple-
+mented easily. We experimented with three slightly
+differing variants of a distributed training strategy
+for the structured perceptron, Naive Distributed Per-
+ceptron, Distributed Perceptron and Averaged Dis-
+tributed Perceptron; these are defined in terms of
+Update, Aggregate and Combine in Figure 3 where
+each variant can be implemented by plugging in
+these definitions from Figure 3 into the pseudocode
+shown in Figure 2. We briefly describe the func-
+tionalities of these three variants. The weights at
+the end of a training epoch t for a single feature f
+are (wtNP , w
+
+t
+DP , w
+
+t
+AV ) corresponding to Naive Dis-
+
+tributed Perceptron, Distributed Perceptron and Av-
+eraged Distributed Perceptron, respectively; φ(·, ·)
+correspond to feature f ’s value in Φ from Algorithm
+1. Below, δtc,j = φ(xc,j , yc,j) − φ(xc,j , ỹtc,j) and
+Nc = number of utterances in Map chunk Tc.
+Naive Distributed Perceptron: At the end of epoch
+t, the weight increments in that epoch from all map
+chunks are added together and added to wt−1NP to ob-
+tain wtNP .
+Distributed Perceptron: Here, instead of adding
+
+increments from the map chunks, at the end of epoch
+t, they are averaged together using weights µc, c = 1
+to C, and used to increment wt−1DP to wtDP .
+Averaged Distributed Perceptron: In this vari-
+ant, firstly, all epochs are carried out as in the Dis-
+tributed Perceptron algorithm above. But at the end
+of t epochs, all the weights encountered during the
+whole process, over all utterances and all chunks, are
+averaged together to obtain the final weight wtAV .
+Formally,
+
+wtAV =
+1
+
+N · t
+
+t∑
+t′=1
+
+C∑
+c=1
+
+Nc∑
+j=1
+
+wt
+′
+
+c,j ,
+
+where wtc,j refers to the current weight for map
+chunk c, in the tth epoch after processing j utter-
+ances and N is the total number of utterances. In
+our implementation, we maintain only the weight
+wt−1DP from the previous epoch, the cumulative incre-
+ment γtc,j =
+
+∑j
+k=1 δ
+
+t
+c,k so far in the current epoch,
+
+and a running average wt−1AV . Note that, for all c, j,
+wtc,j = w
+
+t−1
+DP + γ
+
+t
+c,j , and hence
+
+N t · wtAV = N (t− 1)wt−1AV +
+C∑
+
+c=1
+
+Nc∑
+j=1
+
+wtc,j
+
+= N (t− 1)wt−1AV +Nw
+t−1
+DP +
+
+C∑
+c=1
+
+βtc
+
+where βtc =
+∑Nc
+
+j=1 γ
+t
+c,j . Writing β
+
+∗ =
+∑C
+
+c=1 β
+t
+c, we
+
+have wtAV =
+t−1
+
+t w
+t−1
+AV +
+
+1
+tw
+
+t−1
+DP +
+
+1
+N tβ
+
+∗.
+
+3 Experiments and Results
+
+Our DLMs are evaluated in two ways: 1) we ex-
+tract a development set (weakAM-dev) and a test
+set (weakAM-test) from the speech data that is re-
+decoded with a weakAM to evaluate our learning
+setup, and 2) we use a standard voice-search test
+set (v-search-test) (Strope et al., 2011) to evaluate
+actual ASR performance on voice-search. More de-
+tails regarding our experimental setup along with a
+discussion of our experiments and results are de-
+scribed in the rest of the section.
+
+3.1 Experimental setup
+We generate training lattices using speech data that
+is re-decoded with a weakAM acoustic model and
+
+45
+
+
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+0 50 100 150 200
+
+10
+20
+
+30
+40
+
+50
+
+N
+
+E
+rr
+
+or
+ R
+
+at
+e
+
+● weakAM−dev SER
+weakAM−dev WER
+v−search−test SER
+v−search−test WER
+
+Figure 4: Oracle error rates at word/sentence level for
+weakAM-dev with the weak AM and v-search-test with
+the baseline AM.
+
+a baseline language model. We use maximum
+likelihood trained single mixture Gaussians for our
+weakAM. And, we use a sufficiently small base-
+line LM (∼21 million n-grams) to allow for sub-
+real time lattice generation on the training data
+with a small memory footprint, without compromis-
+ing on its strength. Chelba et al. (2010) demon-
+strate that it takes much larger LMs to get a sig-
+nificant relative gain in WER. Our largest models
+are trained on 87,000 hours of speech, or ∼350
+million words (weakAM-train) obtained by filtering
+voice-search logs at 0.8 confidence, and re-decoding
+the speech data with a weakAM to generate N-best
+lists. We set aside a part of this weakAM-train
+data to create weakAM-dev and weakAM-test: these
+data sets consist of 328,460/316,992 utterances, or
+1,182,756/1,129,065 words, respectively. We use
+a manually-transcribed, standard voice-search test
+set (v-search-test (Strope et al., 2011)) consisting
+of 27,273 utterances, or 87,360 words to evaluate
+actual ASR performance using our weakAM-trained
+models. All voice-search data used in the experi-
+ments is anonymized.
+
+Figure 4 shows oracle error rates, both at the sen-
+tence and word level, using N-best lists of utterances
+in weakAM-dev and v-search-test. These error rates
+are obtained by choosing the best of the top N hy-
+potheses that is either an exact match (for sentence
+error rate) or closest in edit distance (for word er-
+ror rate) to the correct transcript. The N-best lists
+for weakAM-dev are generated using a weak AM
+and N-best lists for v-search-test are generated us-
+
+ing the baseline (strong) AM. Figure 4 shows these
+error rates plotted against a varying threshold N for
+the N-best lists. Note there are sufficient word errors
+in the weakAM data to train DLMs; also, we observe
+that the plot flattens out after N=100, thus informing
+us that N=100 is a reasonable threshold to use when
+training our DLMs.
+
+Experiments in Section 3.2 involve evaluating
+our learning setup using weakAM-dev/test. We
+then investigate whether improvements on weakAM-
+dev/test translate to v-search-test where N-best are
+generated using the strongAM, and scored against
+manual transcripts using fully fledged text normal-
+ization instead of the string edit distance used in
+training the DLM. More details about the impli-
+cations of this text normalization on WER can be
+found in Section 3.3.
+
+3.2 Evaluating our DLM rescoring framework
+on weakAM-dev/test
+
+Improvements on weakAM-dev using different
+variants of training for the DLMs
+We evaluate the performance of all the variants of
+the distributed perceptron algorithm described in
+Section 2.2 over ten training epochs using a DLM
+trained on ∼20,000 hours of speech with trigram
+word features. Figure 5 shows the drop in WER
+for all the three variants. We observe that the Naive
+Distributed Perceptron gives modest improvements
+in WER compared to the baseline WER of 32.5%.
+However, averaging over the number of Map chunks
+as in the Distributed Perceptron or over the total
+number of utterances and training epochs as in the
+Averaged Distributed Perceptron significantly im-
+proves recognition performance; this is in line with
+the findings reported in Collins (2002) and McDon-
+ald et al. (2010) of averaging being an effective way
+of adding regularization to the perceptron algorithm.
+
+Our best-performing Distributed Perceptron
+model gives a 4.7% absolute (∼15% relative)
+improvement over the baseline WER of 1-best
+hypotheses in weakAM-dev. This, however, could
+be attributed to a combination of factors: the use
+of large amounts of additional training data for the
+DLMs or the discriminative nature of the model.
+In order to isolate the improvements brought upon
+mainly by the second factor, we build an ML
+trained backoff trigram LM (ML-3gram) using the
+
+46
+
+
+
+●
+
+● ● ● ● ● ● ● ● ●
+
+2 4 6 8 10
+
+20
+25
+
+30
+35
+
+Training epochs
+
+W
+or
+
+d 
+Er
+
+ro
+r R
+
+at
+e(
+
+W
+ER
+
+)
+
+● Perceptron
+AveragedPerceptron
+DistributedPerceptron
+
+Naive Distributed-Perceptron
+Distributed-Perceptron
+Averaged Distributed-Perceptron
+
+●
+
+● ● ● ● ● ● ● ● ●
+
+2 4 6 8 10
+
+20
+25
+
+30
+35
+
+Training epochs
+
+W
+or
+
+d 
+Er
+
+ro
+r R
+
+at
+e(
+
+W
+ER
+
+)
+
+● Perceptron
+AveragedPerceptron
+DistributedPerceptron
+
+Figure 5: Word error rates on weakAM-dev using Per-
+ceptron, Distributed Perceptron and AveragedPerceptron
+models.
+
+reference transcripts of all the utterances used to
+train the DLMs. The N-best lists in weakAM-dev
+are reranked using ML-3gram probabilities linearly
+interpolated with the LM probabilities from the
+lattices. We also experiment with a log-linear
+interpolation of the models; this performs slightly
+worse than rescoring with linear interpolation.
+
+Table 1: WERs on weakAM-dev using the baseline 1-best
+system, ML-3gram and DLM-1/2/3gram.
+
+Data set Baseline
+(%)
+
+ML-
+3gram
+(%)
+
+DLM-
+1gram
+(%)
+
+DLM-
+2gram
+(%)
+
+DLM-
+3gram
+(%)
+
+weakAM-
+dev
+
+32.5 29.8 29.5 28.3 27.8
+
+Impact of varying orders of N-gram features
+Table 1 shows that our best performing model
+(DLM-3gram) gives a significant ∼2% absolute
+(∼6% relative) improvement over ML-3gram. We
+
+Table 2: WERs on weakAM-dev using DLM-3gram,
+DLM-4gram and DLM-5gram of six training epochs.
+
+Iteration DLM-
+3gram
+(%)
+
+DLM-
+4gram
+(%)
+
+DLM-
+5gram
+(%)
+
+1 32.53 32.53 32.53
+2 29.52 29.47 29.46
+3 29.26 29.23 29.22
+4 29.11 29.08 29.06
+5 29.01 28.98 28.96
+6 28.95 28.90 28.87
+
+also observe that most of the improvements come
+from the unigram and bigram features. We do not
+expect higher order N-gram features to significantly
+help recognition performance; we further confirm
+this by building DLM-4gram and DLM-5gram that
+use up to 4-gram and 5-gram word features, re-
+spectively. Table 2 gives the progression of WERs
+for six epochs using DLM-3gram, DLM-4gram and
+DLM-5gram showing minute improvements as we
+increase the order of Ngram features from 3 to 5.
+
+Impact of model size on WER
+We experiment with varying amounts of train-
+
+ing data to build our DLMs and assess the impact
+of model size on WER. Table 3 shows each model
+along with its size (measured in total number of
+word features), coverage on weakAM-test in percent
+of tokens (number of word features in weakAM-test
+that are in the model) and WER on weakAM-test. As
+expected, coverage increases with increasing model
+size with a corresponding tiny drop in WER as the
+model size increases. To give an estimate of the time
+complexity of our MapReduce, we note that Model1
+was trained in ≈1 hour on 200 mappers with a Map
+chunk size of 2GB. “Larger models”, built by in-
+creasing the number of training utterances used to
+train the DLMs, do not yield significant gains in ac-
+curacy. We need to find a good way of adjusting the
+model capacity with increasing amounts of data.
+
+Impact of varying Map chunk sizes
+We also experiment with varying Map chunk sizes to
+determine its effect on WER. Figure 6 shows WERs
+on weakAM-dev using our best Distributed Percep-
+tron model with different Map chunk sizes (64MB,
+512MB, 2GB). For clarity, we examine two limit
+cases: a) using a single Map chunk for the entire
+training data is equivalent to the conventional struc-
+tured perceptron and b) using a single training in-
+
+Table 3: WERs on weakAM-test using DLMs of varying
+sizes.
+
+Model Size (in
+millions)
+
+Coverage
+(%)
+
+WER
+(%)
+
+Baseline 21M - 39.08
+Model1 65M 74.8 34.18
+Model2 135M 76.9 33.83
+Model3 194M 77.8 33.74
+Model4 253M 78.4 33.68
+
+47
+
+
+
+●
+
+●
+● ● ● ●
+
+1 2 3 4 5 6
+
+20
+25
+
+30
+35
+
+Training epochs
+
+W
+or
+
+d 
+E
+
+rr
+or
+
+ R
+at
+
+e(
+W
+
+E
+R
+
+)
+
+● Map chunk size 64MB
+Map chunk size 512MB
+Map chunk size 2GB
+
+Figure 6: Word error rates on weakAM-dev using varying
+Map chunk sizes of 64MB, 512MB and 2GB.
+
+stance per Map chunk is equivalent to batch training.
+We observe that moving from 64MB to 512MB sig-
+nificantly improves WER and the rate of improve-
+ment in WER decreases when we increase the Map
+chunk size further to 2GB. We attribute these reduc-
+tions in WER with increasing Map chunk size to
+on-line parameter updates being done on increasing
+amounts of training samples in each Map chunk.
+
+3.3 Evaluating ASR performance on
+v-search-test using DLM rescoring
+
+We evaluate our best Distributed Perceptron DLM
+model on v-search-test lattices that are generated
+using a strong AM. We hope that the large rel-
+ative gains on weakAM-dev/test translate to simi-
+lar gains on this standard voice-search data set as
+well. Table 4 shows the WERs on both weakAM-
+test and v-search-test using Model 1 (from Table
+3)1. We observe a small but statistically significant
+(p < 0.05) reduction (∼2% relative) in WER on
+v-search-test over reranking with a linearly interpo-
+lated ML-3gram. This is encouraging because we
+attain this improvement using training lattices that
+were generated using a considerably weaker AM.
+
+Table 4: WERs on weakAM-test and v-search-test.
+
+Data set Baseline
+(%)
+
+ML-3gram
+(%)
+
+DLM-3gram
+(%)
+
+weakAM-test 39.1 36.7 34.2
+v-search-test 14.9 14.6 14.3
+
+It is instructive to analyze why the relative gains in
+1We also experimented with the larger Model 4 and saw sim-
+
+ilar improvements on v-search-test as with Model 1.
+
+performance on weakAM-dev/test do not translate to
+v-search-test. Our DLMs are built using N-best out-
+puts from the recognizer that live in the “spoken do-
+main” (SD) and the manually transcribed v-search-
+data transcripts live in the “written domain” (WD).
+The normalization of training data from WD to SD
+is as described in Chelba et al. (2010); inverse text
+normalization (ITN) undoes most of that when mov-
+ing text from SD to WD, and it is done in a heuris-
+tic way. There is ∼2% absolute reduction in WER
+when we move the N-best from SD to WD via ITN;
+this is how WER on v-search-test is computed by
+the voice-search evaluation code. Contrary to this,
+in DLM training we compute WERs using string
+edit distance between test data transcripts and the
+N-best hypotheses and thus we ignore the mismatch
+between domains WD and SD. It is quite likely that
+part of what the DLM learns is to pick N-best hy-
+potheses that come closer to WD, but may not truly
+result in WER gains after ITN. This would explain
+part of the mismatch between the large relative gains
+on weakAM-dev/test compared to the smaller gains
+on v-search-test. We could correct for this by apply-
+ing ITN to the N-best lists from SD to move to WD
+before computing the oracle best in the list. An even
+more desirable solution is to build the LM directly
+on WD text; text normalization would be employed
+for pronunciation generation, but ITN is not needed
+anymore (the LM picks the most likely WD word
+string for homophone queries at recognition).
+
+4 Conclusions
+
+In this paper, we successfully build large-scale dis-
+criminative N-gram language models with lattices
+regenerated using a weak AM and derive small but
+significant gains in recognition performance on a
+voice-search task where the lattices are generated
+using a stronger AM. We use a very simple weak
+AM and this suggests that there is room for im-
+provement if we use a slightly better “weak AM”.
+Also, we have a scalable and efficient MapReduce
+implementation that is amenable to adapting mi-
+nor changes to the training algorithm easily and al-
+lows for us to train large LMs. The latter function-
+ality will be particularly useful if we generate the
+contrastive set by sampling from text instead of re-
+decoding logs (Jyothi and Fosler-Lussier, 2010).
+
+48
+
+
+
+References
+Thorsten Brants, Ashok C. Popat, Peng Xu, Franz J. Och,
+
+and Jeffrey Dean. 2007. Large language models in
+machine translation. In Proc. of EMNLP, pages 858–
+867.
+
+C. Chelba, J. Schalkwyk, T. Brants, V. Ha, B. Harb,
+W. Neveitt, C. Parada, and P. Xu. 2010. Query lan-
+guage modeling for voice search. In Proc. of SLT.
+
+C.T. Chu, S.K. Kim, Y.A. Lin, Y.Y. Yu, G. Bradski, A.Y.
+Ng, and K. Olukotun. 2007. Map-reduce for machine
+learning on multicore. Proc. NIPS, 19:281.
+
+M. Collins. 2002. Discriminative training methods for
+hidden markov models: Theory and experiments with
+perceptron algorithms. In Proc. EMNLP.
+
+J. Gao, H. Yu, W. Yuan, and P. Xu. 2005. Minimum
+sample risk methods for language modeling. In Proc.
+of EMNLP.
+
+S. Ghemawat and J. Dean. 2004. Mapreduce: Simplified
+data processing on large clusters. In Proc. OSDI.
+
+K.B. Hall, S. Gilpin, and G. Mann. 2010. MapRe-
+duce/Bigtable for distributed optimization. In NIPS
+LCCC Workshop.
+
+P. Jyothi and E. Fosler-Lussier. 2010. Discriminative
+language modeling using simulated ASR errors. In
+Proc. of Interspeech.
+
+P. Jyothi, L. Johnson, C. Chelba, and B. Strope.
+2012. Distributed discriminative language models for
+Google voice-search. In Proc. of ICASSP.
+
+G. Mann, R. McDonald, M. Mohri, N. Silberman, and
+D. Walker. 2009. Efficient large-scale distributed
+training of conditional maximum entropy models.
+Proc. NIPS.
+
+R. McDonald, K. Hall, and G. Mann. 2010. Distributed
+training strategies for the structured perceptron. In
+Proc. NAACL.
+
+B. Roark, M. Saraçlar, M. Collins, and M. Johnson.
+2004. Discriminative language modeling with condi-
+tional random fields and the perceptron algorithm. In
+Proc. ACL.
+
+R. Schlüter, B. Müller, F. Wessel, and H. Ney. 1999. In-
+terdependence of language models and discriminative
+training. In Proc. ASRU.
+
+B. Strope, D. Beeferman, A. Gruenstein, and X. Lei.
+2011. Unsupervised testing strategies for ASR. In
+Proc. of Interspeech.
+
+Z. Zhou, J. Gao, F.K. Soong, and H. Meng. 2006.
+A comparative study of discriminative methods for
+reranking LVCSR N-best hypotheses in domain adap-
+tation and generalization. In Proc. ICASSP.
+
+49
+
+

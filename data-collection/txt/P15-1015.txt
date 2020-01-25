@@ -1,0 +1,1177 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Learning Dynamic Feature Selection for Fast Sequential Prediction
+
+
+Proceedings of the 53rd Annual Meeting of the Association for Computational Linguistics
+and the 7th International Joint Conference on Natural Language Processing, pages 146–155,
+
+Beijing, China, July 26-31, 2015. c©2015 Association for Computational Linguistics
+
+Learning Dynamic Feature Selection for Fast Sequential Prediction
+
+Emma Strubell Luke Vilnis Kate Silverstein Andrew McCallum
+College of Information and Computer Sciences
+
+University of Massachusetts Amherst
+Amherst, MA, 01003, USA
+
+{strubell, luke, ksilvers, mccallum}@cs.umass.edu
+
+Abstract
+
+We present paired learning and inference
+algorithms for significantly reducing com-
+putation and increasing speed of the vector
+dot products in the classifiers that are at the
+heart of many NLP components. This is
+accomplished by partitioning the features
+into a sequence of templates which are or-
+dered such that high confidence can of-
+ten be reached using only a small fraction
+of all features. Parameter estimation is
+arranged to maximize accuracy and early
+confidence in this sequence. Our approach
+is simpler and better suited to NLP than
+other related cascade methods. We present
+experiments in left-to-right part-of-speech
+tagging, named entity recognition, and
+transition-based dependency parsing. On
+the typical benchmarking datasets we can
+preserve POS tagging accuracy above 97%
+and parsing LAS above 88.5% both with
+over a five-fold reduction in run-time, and
+NER F1 above 88 with more than 2x in-
+crease in speed.
+
+1 Introduction
+
+Many NLP tasks such as part-of-speech tagging,
+parsing and named entity recognition have become
+sufficiently accurate that they are no longer solely
+an object of research, but are also widely deployed
+in production systems. These systems can be run
+on billions of documents, making the efficiency
+of inference a significant concern—impacting not
+only wall-clock running time but also computer
+hardware budgets and the carbon footprint of data
+centers.
+
+This paper describes a paired learning and infer-
+ence approach for significantly reducing computa-
+tion and increasing speed while preserving accu-
+racy in the linear classifiers typically used in many
+
+NLP tasks. The heart of the prediction computa-
+tion in these models is a dot-product between a
+dense parameter vector and a sparse feature vec-
+tor. The bottleneck in these models is then often
+a combination of feature extraction and numeri-
+cal operations, each of which scale linearly in the
+size of the feature vector. Feature extraction can
+be even more expensive than the dot products, in-
+volving, for example, walking sub-graphs, lexicon
+lookup, string concatenation and string hashing.
+We note, however, that in many cases not all of
+these features are necessary for accurate predic-
+tion. For example, in part-of-speech tagging if we
+see the word “the,” there is no need to perform a
+large dot product or many string operations; we
+can accurately label the word a DETERMINER us-
+ing the word identity feature alone. In other cases
+two features are sufficient: when we see the word
+“hits” preceded by a CARDINAL (e.g. “two hits”)
+we can be confident that it is a NOUN.
+
+We present a simple yet novel approach to im-
+prove processing speed by dynamically determin-
+ing on a per-instance basis how many features are
+necessary for a high-confidence prediction. Our
+features are divided into a set of feature templates,
+such as current-token or previous-tag in the case of
+POS tagging. At training time, we determine an
+ordering on the templates such that we can approx-
+imate model scores at test time by incrementally
+calculating the dot product in template ordering.
+We then use a running confidence estimate for the
+label prediction to determine how many terms of
+the sum to compute for a given instance, and pre-
+dict once confidence reaches a certain threshold.
+
+In similar work, cascades of increasingly com-
+plex and high-recall models have been used for
+both structured and unstructured prediction. Viola
+and Jones (2001) use a cascade of boosted mod-
+els to perform face detection. Weiss and Taskar
+(2010) add increasingly higher-order dependen-
+cies to a graphical model while filtering the out-
+
+146
+
+
+
+put domain to maintain tractable inference. While
+most traditional cascades pass instances down to
+layers with increasingly higher recall, we use a
+single model and accumulate the scores from each
+additional template until a label is predicted with
+sufficient confidence, in a stagewise approxima-
+tion of the full model score. Our technique applies
+to any linear classifier-based model over feature
+templates without changing the model structure or
+decreasing prediction speed.
+
+Most similarly to our work, Weiss and Taskar
+(2013) improve performance for several structured
+vision tasks by dynamically selecting features at
+runtime. However, they use a reinforcement learn-
+ing approach whose computational tradeoffs are
+better suited to vision problems with expensive
+features. Obtaining a speedup on tasks with com-
+paratively cheap features, such as part-of-speech
+tagging or transition-based parsing, requires an
+approach with less overhead. In fact, the most at-
+tractive aspect of our approach is that it speeds up
+methods that are already among the fastest in NLP.
+
+We apply our method to left-to-right part-of-
+speech tagging in which we achieve accuracy
+above 97% on the Penn Treebank WSJ corpus
+while running more than five times faster than our
+97.2% baseline. We also achieve a five-fold in-
+crease in transition-based dependency parsing on
+the WSJ corpus while achieving an LAS just 1.5%
+lower than our 90.3% baseline. Named entity
+recognition also shows significant speed increases.
+We further demonstrate that our method can be
+tuned for 2.5 � 3.5x multiplicative speedups with
+nearly no loss in accuracy.
+
+2 Classification and Structured
+Prediction
+
+Our algorithm speeds up prediction for multiclass
+classification problems where the label set can be
+tractably enumerated and scored, and the per-class
+scores of input features decompose as a sum over
+multiple feature templates. Frequently, classifica-
+tion problems in NLP are solved through the use of
+linear classifiers, which compute scores for input-
+label pairs using a dot product. These meet our ad-
+ditive scoring criteria, and our acceleration meth-
+ods are directly applicable.
+
+However, in this work we are interested
+in speeding up structured prediction problems,
+specifically part-of-speech (POS) tagging and de-
+pendency parsing. We apply our classification
+
+algorithms to these problems by reducing them
+to sequential prediction (Daumé III et al., 2009).
+For POS tagging, we describe a sentence’s part of
+speech annotation by the left-to-right sequence of
+tagging decisions for individual tokens (Giménez
+and Màrquez, 2004). Similarly, we implement our
+parser with a classifier that generates a sequence
+of shift-reduce parsing transitions (Nivre, 2009).
+
+The use of sequential prediction to solve these
+problems and others has a long history in prac-
+tice as well as theory. Searn (Daumé III et al.,
+2009) and DAgger (Ross et al., 2011) are two pop-
+ular principled frameworks for reducing sequen-
+tial prediction to classification by learning a clas-
+sifier on additional synthetic training data. How-
+ever, as we do in our experiments, practitioners of-
+ten see good results by training on the gold stan-
+dard labels with an off-the-shelf classification al-
+gorithm, as though classifying IID data (Bengtson
+and Roth, 2008; Choi and Palmer, 2012).
+
+Classifier-based approaches to structured pre-
+diction are faster than dynamic programming
+since they consider only a subset of candidate out-
+put structures in a greedy manner. For exam-
+ple, the Stanford CoreNLP classifier-based part-
+of-speech tagger provides a 6.5x speed advantage
+over their dynamic programming-based model,
+with little reduction in accuracy. Because our
+methods are designed for the greedy sequential
+prediction regime, we can provide further speed
+increases to the fastest inference methods in NLP.
+
+3 Linear models
+
+Our base classifier for sequential prediction tasks
+will be a linear model. Given an input x 2 X , a set
+of labels Y , a feature map �(x, y), and a weight
+vector w, a linear model predicts the highest-
+scoring label
+
+y⇤ = arg max
+y2Y
+
+w · �(x, y). (1)
+
+The parameter w is usually learned by minimizing
+a regularized (R) sum of loss functions (`) over the
+training examples indexed by i
+
+w⇤ = arg min
+w
+
+X
+i
+
+`(xi, yi,w) + R(w).
+
+In this paper, we partition the features into a set
+of feature templates, so that the weights, feature
+function, and dot product factor as
+
+w · �(x, y) =
+X
+
+j
+
+wj · �j(x, y) (2)
+
+147
+
+
+
+for some set of feature templates {�j(x, y)}.
+Our goal is to approximate the dot products in
+
+(1) sufficiently for purposes of prediction, while
+using as few terms of the sum in (2) as possible.
+
+4 Method
+
+We accomplish this goal by developing paired
+learning and inference procedures for feature-
+templated classifiers that optimize both accuracy
+and inference speed, using a process of dynamic
+feature selection. Since many decisions are easy
+to make in the presence of strongly predictive fea-
+tures, we would like our model to use fewer tem-
+plates when it is more confident. For a fixed,
+learned ordering of feature templates, we build up
+a vector of class scores incrementally over each
+prefix of the sequence of templates, which we call
+the prefix scores. Once we reach a stopping crite-
+rion based on class confidence (margin), we stop
+computing prefix scores, and predict the current
+highest scoring class. Our aim is to train each pre-
+fix to be as good a classifier as possible without
+the following templates, minimizing the number
+of templates needed for accurate predictions.
+
+Given this method for performing fast inference
+on an ordered set of feature templates, it remains
+to choose the ordering. In Section 4.5, we de-
+velop several methods for picking template order-
+ings, based on ideas from group sparsity (Yuan and
+Lin, 2006; Swirszcz et al., 2009), and other tech-
+niques for feature subset-selection (Kohavi and
+John, 1997).
+
+4.1 Definitions
+Given a model that computes scores additively
+over template-specific scoring functions as in (2),
+parameters w, and an observation x 2 X , we can
+define the i’th prefix score for label y 2 Y as:
+
+Pi,y(x,w) =
+iX
+
+j=1
+
+wj · �j(x, y),
+
+or Pi,y when the choice of observations and
+weights is clear from context. Abusing notation
+we also refer to the vector containing all i’th prefix
+scores for observation x associated to each label in
+Y as Pi(x,w), or Pi when this is unambiguous.
+
+Given a parameter m > 0, called the margin,
+we define a function h on prefix scores:
+
+h(Pi, y) = max{0, max
+y0 6=y
+
+Pi,y0 � Pi,y + m}
+
+Algorithm 1 Inference
+
+Input: template parameters {wi}ki=1, margin m
+and optional (for train time) true label y
+Initialize: i = 1
+while l > 0 ^ i  k do
+
+l = maxy0 h(Pi, y0) (test) or h(Pi, y) (train)
+i i + 1
+
+end while
+return {Pj}ij=1 (train) or maxy0 Pi,y0 (test)
+
+Algorithm 2 Parameter Learning
+
+Input: examples {(xi, yi)}Ni , margin m
+Initialize: parameters w0 = 0, i = 1
+while i  N do
+
+prefixes  Infer(xi, yi, wi, m)
+gi  ComputeGradient(prefixes)
+wi+1  UpdateParameters(wi, gi)
+i i + 1
+
+end while
+return wN
+
+This is the familiar structured hinge loss func-
+tion as in structured support vector machines
+(Tsochantaridis et al., 2004), which has a mini-
+mum at 0 if and only if class y is ranked ahead of
+all other classes by at least m.
+
+Using this notation, the condition that some la-
+bel y be ranked first by a margin can be writ-
+ten as h(Pi, y) = 0, and the condition that any
+class be ranked first by a margin can be written as
+maxy0 h(Pi, y0) = 0.
+
+4.2 Inference
+
+As described in Algorithm 1, at test time we com-
+pute prefixes until some label is ranked ahead of
+all other labels with a margin m, then predict with
+that label. At train time, we predict until the cor-
+rect label is ranked ahead with margin m, and re-
+turn the whole set of prefixes for use by the learn-
+ing algorithm. If no prefix scores have a margin,
+then we predict with the final prefix score involv-
+ing all the feature templates.
+
+4.3 Learning
+
+We split learning into two subproblems: first,
+given an ordered sequence of feature templates
+and our inference procedure, we wish to learn pa-
+rameters that optimize accuracy while using as few
+of those templates as possible. Second, given a
+method for training feature templated classifiers,
+
+148
+
+
+
+we want to learn an ordering of templates that op-
+timizes accuracy.
+
+We wish to optimize several different objec-
+tives during learning: template parameters should
+have strong predictive power on their own, but also
+work well when combined with the scores from
+later templates. Additionally, we want to encour-
+age well-calibrated confidence scores that allow us
+to stop prediction early without significant reduc-
+tion in generalization ability.
+
+4.4 Learning the parameters
+To learn parameters that encourage the use of few
+feature templates, we look at the model as out-
+putting not a single prediction but a sequence of
+prefix predictions {Pi}. For each training ex-
+ample, each feature template receives a number
+of hinge-loss gradients equal to its distance from
+the index where the margin requirement is finally
+reached. This is equivalent to treating each prefix
+as its own model for which we have a hinge loss
+function, and learning all models simultaneously.
+Our high-level approach is described in Algorithm
+2.
+
+Concretely, for k feature templates we opti-
+mize the following structured max-margin objec-
+tive (with the dependence of P ’s on w written ex-
+plicitly where helpful):
+
+w⇤ = arg min
+w
+
+X
+(x,y)
+
+`(x, y, w)
+
+`(x, y, w) =
+i⇤yX
+
+i=1
+
+h(Pi(x, w), y)
+
+i⇤y = min
+i2{1..k}
+
+i s.t. h(Pi, y) = 0
+
+The per-example gradient of this objective for
+weights wj corresponding to feature template �j
+then corresponds to
+
+@`
+
+@wj
+=
+
+i⇤yX
+i=j
+
+�j(x, yloss(Pi, y))� �j(x, y).
+
+where we define
+
+yloss(Pi, y) = arg max
+y0
+
+Pi,y0 �m · I(y0 = y),
+
+where I is an indicator function of the label y, used
+to define loss-augmented inference.
+
+We add an `2 regularization term to the objec-
+tive, and tune the margin m and the regularization
+
+strength to tradeoff between speed and accuracy.
+In our experiments, we used a development set to
+choose a regularizer and margin that reduced test-
+time speed as much as possible without decreasing
+accuracy. We then varied the margin for that same
+model at test time to achieve larger speed gains at
+the cost of accuracy. In all experiments, the mar-
+gin with which the model was trained corresponds
+to the largest margin reported, i.e. that with the
+highest accuracy.
+
+4.5 Learning the template ordering
+
+We examine three approaches to learning the tem-
+plate ordering.
+
+4.5.1 Group Lasso and Group Orthogonal
+Matching Pursuit
+
+The Group Lasso regularizer (Yuan and Lin, 2006)
+penalizes the sum of `2-norms of weights of fea-
+ture templates (different from what is commonly
+called “`2” regularization, penalizing squared `2
+norms),
+
+P
+i cikwik2, where ci is a weight for
+
+each template. This regularizer encourages entire
+groups of weights to be set to 0, whose templates
+can then be discarded from the model. By vary-
+ing the strength of the regularizer, we can learn an
+ordering of the importance of each template for a
+given model. The included groups for a given reg-
+ularization strength are nearly always subsets of
+one another (technical conditions for this to be true
+are given in Hastie et al. (2007)). The sequence
+of solutions for varied regularization strength is
+called the regularization path, and by slight abuse
+of terminology we use this to refer to the induced
+template ordering.
+
+An alternative and related approach to learn-
+ing template orderings is based on the Group Or-
+thogonal Matching Pursuit (GOMP) algorithm for
+generalized linear models (Swirszcz et al., 2009;
+Lozano et al., 2011), with a few modifications for
+the setting of high-dimensional, sparse NLP data
+(described in Appendix B). Orthogonal matching
+pursuit algorithms are a set of stagewise feature
+selection techniques similar to forward stagewise
+regression (Hastie et al., 2007) and LARS (Efron
+et al., 2004). At each stage, GOMP effectively
+uses each feature template to perform a linear re-
+gression to fit the gradient of the loss function.
+This attempts to find the correlation of each fea-
+ture subset with the residual of the model. It then
+adds the feature template that best fits this gradi-
+ent, and retrains the model. The main weakness of
+
+149
+
+
+
+this method is that it fits the gradient of the training
+error which can rapidly overfit for sparse, high-
+dimensional data. Ultimately, we would prefer to
+use a development set for feature selection.
+
+4.5.2 Wrapper Method
+The wrapper method (Kohavi and John, 1997)
+is a meta-algorithm for feature selection, usually
+based on a validation set. We employ it in a stage-
+wise approach to learning a sequence of templates.
+Given an ordering of the initial sub-sequence and
+a learning procedure, we add each remaining tem-
+plate to our ordering and estimate parameters, se-
+lecting as the next template the one that gives the
+highest increase in development set performance.
+We begin the procedure with no templates, and re-
+peat the procedure until we have a total ordering
+over the set of feature templates. When learning
+the ordering we use the same hyperparameters as
+will be used during final training.
+
+While simpler than the Lasso and Matching
+Pursuit approaches, we empirically found this ap-
+proach to outperform the others, due to the neces-
+sity of using a development set to select features
+for our high-dimensional application areas.
+
+5 Related Work
+
+Our work is primarily inspired by previous re-
+search on cascades of classifiers; however, it dif-
+fers significantly by approximating the score of a
+single linear model—scoring as few of its features
+as possible to obtain sufficient confidence.
+
+We pose and address the question of whether a
+single, interacting set of parameters can be learned
+such that they efficiently both (1) provide high ac-
+curacy and (2) good confidence estimates through-
+out their use in the lengthening prefixes of the
+feature template sequence. (These two require-
+ments are both incorporated into our novel param-
+eter estimation algorithm.) In contrast, other work
+(Weiss and Taskar, 2013; He et al., 2013) learns
+a separate classifier to determine when to add fea-
+tures. Such heavier-weight approaches are unsuit-
+able for our setting, where the core classifier’s fea-
+tures and scoring are already so cheap that adding
+complex decision-making would cause too much
+computational overhead.
+
+Other previous work on cascades uses a se-
+ries of increasingly complex models, such as the
+Viola-Jones face detection cascade of classifiers
+(2001), which applies boosted trees trained on
+
+subsets of features in increasing order of complex-
+ity as needed, aiming to reject many sub-image
+windows early in processing. We allow scores
+from each layer to directly affect the final predic-
+tion, avoiding duplicate incorporation of evidence.
+
+Our work is also related to the field of learn-
+ing and inference under test-time budget con-
+straints (Grubb and Bagnell, 2012; Trapeznikov
+and Saligrama, 2013). However, common ap-
+proaches to this problem also employ auxiliary
+models to rank which feature to add next, and
+are generally suited for problems where features
+are expensive to compute (e.g vision) and the ex-
+tra computation of an auxiliary pruning-decision
+model is offset by substantial reduction in fea-
+ture computations (Weiss and Taskar, 2013). Our
+method uses confidence scores directly from the
+model, and so requires no additional computation,
+making it suitable for speeding up classifier-based
+NLP methods that are already very fast and have
+relatively cheap features.
+
+Some cascaded approaches strive at each stage
+to prune the number of possible output structures
+under consideration, whereas in our case we fo-
+cus on pruning the input features. For example,
+Xu et al. (2013) learn a tree of classifiers that sub-
+divides the set of classes to minimize average test-
+time cost. Chen et al. (2012) similarly use a linear
+cascade instead of a tree. Weiss and Taskar (2010)
+prune output labels in the context of structured
+prediction through a cascade of increasingly com-
+plex models, and Rush and Petrov (2012) success-
+fully apply these structured prediction cascades to
+the task of graph-based dependency parsing.
+
+In the context of NLP, He et al. (2013) describe
+a method for dynamic feature template selection
+at test time in graph-based dependency parsing.
+Their technique is particular to the parsing task—
+making a binary decision about whether to lock in
+edges in the dependency graph at each stage, and
+enforcing parsing-specific, hard-coded constraints
+on valid subsequent edges. Furthermore, as de-
+scribed above, they employ an auxiliary model to
+select features.
+
+He and Eisner (2012) share our goal to speed
+test time prediction by dynamically selecting fea-
+tures, but they also learn an additional model on
+top of a fixed base model, rather than using the
+training objective of the model itself.
+
+While our comparisons above focus on other
+methods of dynamic feature selection, there also
+
+150
+
+
+
+exists related work in the field of general (static)
+feature selection. The most relevant results come
+from the applications of group sparsity, such as
+the work of Martins et al. (2011) in Group Lasso
+for NLP problems. The Group Lasso regularizer
+(Yuan and Lin, 2006) sparsifies groups of feature
+weights (e.g. feature templates), and has been
+used to speed up test-time prediction by remov-
+ing entire templates from the model. The key dif-
+ference between this work and ours is that we se-
+lect our templates based on the test-time difficulty
+of the inference problem, while the Group Lasso
+must do so at train time. In Appendix A, we com-
+pare against Group Lasso and show improvements
+in accuracy and speed.
+
+Note that non-grouped approaches to selecting
+sparse feature subsets, such as boosting and `1 reg-
+ularization, do not achieve our goal of fast test-
+time prediction in NLP models, as they would
+not zero-out entire templates, and still require the
+computation of a feature for every template for ev-
+ery test instance.
+
+6 Experimental Results
+
+We present experiments on three NLP tasks
+for which greedy sequence labeling has been
+a successful solution: part-of-speech tagging,
+transition-based dependency parsing and named
+entity recognition. In all cases our method
+achieves multiplicative speedups at test time with
+little loss in accuracy.
+
+6.1 Part-of-speech tagging
+
+We conduct our experiments on classifier-based
+greedy part-of-speech tagging. Our baseline tag-
+ger uses the same features described in Choi and
+Palmer (2012). We evaluate our models on the
+Penn Treebank WSJ corpus (Marcus et al., 1993),
+employing the typical split of sections used for
+part-of-speech tagging: 0-18 train, 19-21 devel-
+opment, 22-24 test. The parameters of our mod-
+els are learned using AdaGrad (Duchi et al., 2011)
+with `2 regularization via regularized dual averag-
+ing (Xiao, 2009), and we used random search on
+the development set to select hyperparameters.
+
+This baseline model (baseline) tags at a rate
+of approximately 23,000 tokens per second on a
+2010 2.1GHz AMD Opteron machine with ac-
+curacy comparable to similar taggers (Giménez
+and Màrquez, 2004; Choi and Palmer, 2012;
+Toutanova et al., 2003). On the same machine
+
+Model/m Tok. Unk. Feat. Speed
+
+Baseline 97.22 88.63 46 1x
+Stagewise 96.54 83.63 9.50 2.74
+Fixed 89.88 56.25 1 16.16x
+Fixed 94.66 60.59 3 9.54x
+Fixed 96.16 87.09 5 7.02x
+Fixed 96.88 88.81 10 3.82x
+Dynamic/15 96.09 83.12 1.92 10.36x
+Dynamic/35 97.02 88.26 4.33 5.22x
+Dynamic/45 97.16 88.84 5.87 3.97x
+Dynamic/50 97.21 88.95 6.89 3.41x
+
+Table 1: Comparison of our models using differ-
+ent margins m, with speeds measured relative to
+the baseline. We train a model as accurate as the
+baseline while tagging 3.4x tokens/sec, and in an-
+other model maintain > 97% accuracy while tag-
+ging 5.2x, and > 96% accuracy with a speedup of
+10.3x.
+
+the greedy Stanford CoreNLP left3words part-of-
+speech tagger also tags at approximately 23,000
+tokens per second. Significantly higher absolute
+speeds for all methods can be attained on more
+modern machines.
+
+We include additional baselines that divide the
+features into templates, but train the templates’ pa-
+rameters more simply than our algorithm. The
+stagewise baseline learns the model parameters
+for each of the templates in order, starting with
+only one template—once each template has been
+trained for a fixed number of iterations, that tem-
+plate’s parameters are fixed and we add the next
+one. We also create a separately-trained baseline
+model for each fixed prefix of the feature templates
+(fixed). This shows that our speedups are not sim-
+ply due to superfluous features in the later tem-
+plates.
+
+Our main results are shown in Table 1. We in-
+crease the speed of our baseline POS tagger by a
+factor of 5.2x without falling below 97% test ac-
+curacy. By tuning our training method to more
+aggressively prune templates, we achieve speed-
+ups of over 10x while providing accuracy higher
+than 96%. It is worth noting that the results for
+our method (dynamic) are all obtained from a
+single trained model (with hyperparameters opti-
+mized for m = 50, which we observed gave a
+good speedup with nearly no lossin accuracy on
+the development set), the only difference being
+
+151
+
+
+
+Figure 1: Left-hand plot depicts test accuracy as a function of the average number of templates used
+to predict. Right-hand plot shows speedup as a function of accuracy. Our model consistently achieves
+higher accuracy while using fewer templates resulting in the best ratio of speed to accuracy.
+
+that we varied the margin at test time. Superior
+results for m 6= 50 could likely be obtained by op-
+timizing hyperparameters for the desired margin.
+
+Results show our method (dynamic) learns to
+dynamically select the number of templates, often
+using only a small fraction. The majority of test
+tokens can be tagged using only the first few tem-
+plates: just over 40% use one template, and 75%
+require at most four templates, while maintaining
+97.17% accuracy. On average 6.71 out of 46 tem-
+plates are used, though a small set of complicated
+instances never surpass the margin and use all 46
+templates. The right hand plot of Figure 1 shows
+speedup vs. accuracy for various settings of the
+confidence margin m.
+
+The left plot in Figure 1 depicts accuracy as a
+function of the number of templates used at test
+time. We present results for both varying the
+number of templates directly (dashed) and margin
+(solid). The baseline model trained on all tem-
+plates performs very poorly when using margin-
+based inference, since its training objective does
+not learn to predict with only prefixes. When pre-
+dicting using a fixed subset of templates, we use a
+different baseline model for each one of the 46 to-
+tal template prefixes, learned with only those fea-
+tures; we then compare the test accuracy of our
+dynamic model using template prefix i to the base-
+line model trained on the fixed prefix i. Our model
+performs just as well as these separately trained
+models, demonstrating that our objective learns
+weights that allow each prefix to act as its own
+high-quality classifier.
+
+6.1.1 Learning the template ordering
+
+As described in Section 4.5, we experimented on
+part-of-speech tagging with three different algo-
+rithms for learning an ordering of feature tem-
+plates: Group Lasso, Group Orthogonal Matching
+Pursuit (GOMP), and the wrapper method. For
+the case of Group Lasso, this corresponds to the
+experimental setup used when evaluating Group
+Lasso for NLP in Martins et al. (2011). As detailed
+in the part-of-speech tagging experiments of Ap-
+pendix A, we found the wrapper method to work
+best in our dynamic prediction setting. Therefore,
+we use it in our remaining experiments in pars-
+ing and named entity recognition. Essentially, the
+Group Lasso picks small templates too early in
+the ordering by penalizing template norms, and
+GOMP picks large templates too early by overfit-
+ting the train error.
+
+6.2 Transition-based dependency parsing
+
+We base our parsing experiments on the greedy,
+non-projective transition-based dependency parser
+described in Choi and Palmer (2011). Our model
+uses a total of 60 feature templates based mainly
+on the word form, POS tag, lemma and assigned
+head label of current and previous input and stack
+tokens, and parses about 300 sentences/second on
+a modest 2.1GHz AMD Opteron machine.
+
+We train our parser on the English Penn Tree-
+Bank, learning the parameters using AdaGrad and
+the parsing split, training on sections 2–21, testing
+on section 23 and using section 22 for develop-
+ment and the Stanford dependency framework (de
+
+152
+
+
+
+Figure 2: Parsing speedup as a function of accu-
+racy. Our model achieves the highest accuracy
+while using the fewest feature templates.
+
+Marneffe and Manning, 2008). POS tags were au-
+tomatically generated via 10-way jackknifing us-
+ing the baseline POS model described in the pre-
+vious section, trained with AdaGrad using `2 reg-
+ularization, with parameters tuned on the develop-
+ment set to achieve 97.22 accuracy on WSJ sec-
+tions 22-24. Lemmas were automatically gener-
+ated using the ClearNLP morphological analyzer.
+We measure accuracy using labeled and unlabeled
+attachment scores excluding punctuation, achiev-
+ing a labeled score of 90.31 and unlabeled score
+of 91.83, which are comparable to similar greedy
+parsers (Choi and Palmer, 2011; Honnibal and
+Goldberg, 2013).
+
+Our experimental setup is the same as for part-
+of-speech tagging. We compare our model (dy-
+namic) to both a single baseline model trained on
+all features, and a set of 60 models each trained
+on a prefix of feature templates. Our experiments
+vary the margin used during prediction (solid) as
+well as the number of templates used (dashed).
+
+As in part-of-speech tagging, we observe sig-
+nificant test-time speedups when applying our
+method of dynamic feature selection to depen-
+dency parsing. With a loss of only 0.04 labeled at-
+tachment score (LAS), our model produces parses
+2.7 times faster than the baseline. As listed in Ta-
+ble 2, with a more aggressive margin our model
+can parse more than 3 times faster while remain-
+ing above 90% LAS, and more than 5 times faster
+while maintaining accuracy above 88.5%.
+
+In Figure 2 we see not only that our dynamic
+model consistently achieves higher accuracy while
+
+Model/m LAS UAS Feat. Speed
+
+Baseline 90.31 91.83 60 1x
+Fixed 65.99 70.78 1 27.5x
+Fixed 86.87 88.81 10 5.51x
+Fixed 88.76 90.51 20 2.83x
+Fixed 89.04 90.71 30 1.87x
+Dynamic/6.5 88.63 90.36 7.81 5.16x
+Dynamic/7.1 89.07 90.73 8.57 4.66x
+Dynamic/10 90.16 91.70 13.27 3.17x
+Dynamic/11 90.27 91.80 15.83 2.71x
+
+Table 2: Comparison of our baseline and tem-
+plated models using varying margins m and num-
+bers of templates.
+
+using fewer templates, but also that our model (dy-
+namic, dashed) performs exactly as well as sep-
+arate models trained on each prefix of templates
+(baseline, dashed), demonstrating again that our
+training objective is successful in learning a single
+model that can predict as well as possible using
+any prefix of feature templates while successfully
+selecting which of these prefixes to use on a per-
+example basis.
+
+6.3 Named entity recognition
+We implement a greedy left-to-right named entity
+recognizer based on Ratinov and Roth (2009) us-
+ing a total of 46 feature templates, including sur-
+face features such as lemma and capitalization,
+gazetteer look-ups, and each token’s extended pre-
+diction history, as described in (Ratinov and Roth,
+2009). Training, tuning, and evaluation are per-
+formed on the CoNLL 2003 English data set with
+the BILOU encoding to denote label spans.
+
+Our baseline model achieves F1 scores of 88.35
+and 93.37 on the test and development sets, re-
+spectively, and tags at a rate of approximately
+5300 tokens per second on the hardware described
+in the experiments above. We achieve a 2.3x
+speedup while maintaining F1 score above 88 on
+the test set.
+
+7 Conclusions and Future Work
+
+By learning to dynamically select the most predic-
+tive features at test time, our algorithm provides
+significant speed improvements to classifier-based
+structured prediction algorithms, which them-
+selves already comprise the fastest methods in
+NLP. Further, these speed gains come at very lit-
+
+153
+
+
+
+Model/m Test F1 Feat. Speed
+
+Baseline 88.35 46 1x
+Fixed 65.05 1 19.08x
+Fixed 85.00 10 2.14x
+Fixed 85.81 13 1.87x
+Dynamic/3.0 87.62 7.23 2.59x
+Dynamic/4.0 88.20 9.45 2.32x
+Dynamic/5.0 88.23 12.96 1.96x
+
+Table 3: Comparison of our baseline and tem-
+plated NER models using varying margin m and
+number of templates.
+
+tle extra implementation cost and can easily be
+combined with existing state-of-the-art systems.
+Future work will remove the fixed ordering for
+feature templates, and dynamically add additional
+features based on the current scores of different la-
+bels.
+
+8 Acknowledgements
+
+This work was supported in part by the Center
+for Intelligent Information Retrieval, in part by
+DARPA under agreement number FA8750-13-2-
+0020, and in part by NSF grant #CNS-0958392.
+The U.S. Government is authorized to reproduce
+and distribute reprint for Governmental purposes
+notwithstanding any copyright annotation thereon.
+Any opinions, findings and conclusions or recom-
+mendations expressed in this material are those of
+the authors and do not necessarily reflect those of
+the sponsor.
+
+References
+Eric Bengtson and Dan Roth. 2008. Understanding the
+
+value of features for coreference resolution. In Pro-
+ceedings of the Conference on Empirical Methods in
+Natural Language Processing, pages 294–303. As-
+sociation for Computational Linguistics.
+
+Minmin Chen, Zhixiang “Eddie” Xu, Kilian Q Wein-
+berger, Olivier Chappele, and Dor Kedem. 2012.
+Classifier cascade for minimizing feature evaluation
+cost. In AISTATS.
+
+Jinho Choi and Martha Palmer. 2011. Getting the Most
+out of Transition-based Dependency Parsing. Asso-
+ciation for Computational Linguistics, pages 687–
+692.
+
+Jinho Choi and Martha Palmer. 2012. Fast and robust
+part-of-speech tagging using dynamic model selec-
+tion. In Association for Computational Linguistics.
+
+Hal Daumé III, John Langford, and Daniel Marcu.
+2009. Search-based structured prediction. Machine
+Learning, 75(3):297–325.
+
+Marie-Catherine de Marneffe and Christopher D. Man-
+ning. 2008. The stanford typed dependencies rep-
+resentation. In COLING 2008 Workshop on Cross-
+framework and Cross-domain Parser Evaluation.
+
+John Duchi, Elad Hazan, and Yoram Singer. 2011.
+Adaptive Subgradient Methods for Online Learning
+and Stochastic Optimization. JMLR, 12:2121–2159.
+
+Bradley Efron, Trevor Hastie, Iain Johnstone, Robert
+Tibshirani, et al. 2004. Least angle regression. The
+Annals of Statistics, 32(2):407–499.
+
+Jesús Giménez and Lluı́s Màrquez. 2004. Svmtool: A
+general pos tagger generator based on support vector
+machines. In Proceedings of the 4th LREC, Lisbon,
+Portugal.
+
+Alexander Grubb and J. Andrew Bagnell. 2012.
+SpeedBoost: Anytime Prediction with Uniform
+Near-Optimality. In AISTATS.
+
+Trevor Hastie, Jonathan Taylor, Robert Tibshirani, and
+Guenther Walther. 2007. Forward stagewise regres-
+sion and the monotone lasso. Electronic Journal of
+Statistics, 1:1–29.
+
+He He and Jason Eisner. 2012. Cost-sensitive dynamic
+feature selection. In ICML Workshop on Inferning:
+Interactions between Inference and Learning.
+
+He He, Hal Daumé III, and Jason Eisner. 2013. Dy-
+namic feature selection for dependency parsing. In
+EMNLP.
+
+M Honnibal and Y Goldberg. 2013. A Non-Monotonic
+Arc-Eager Transition System for Dependency Pars-
+ing. CoNLL.
+
+Ron Kohavi and George H John. 1997. Wrappers
+for feature subset selection. Artificial Intelligence,
+97(1):273–324.
+
+Aurélie C Lozano, Grzegorz Swirszcz, and Naoki Abe.
+2011. Group orthogonal matching pursuit for logis-
+tic regression. In International Conference on Arti-
+ficial Intelligence and Statistics, pages 452–460.
+
+Mitchell P. Marcus, Beatrice Santorini, and Mary Ann
+Marcinkiewicz. 1993. Building a Large Annotated
+Corpus of English: The Penn Treebank. Computa-
+tional Linguistics, 19(2):313–330.
+
+André Martins, Noah Smith, Pedro Aguiar, and Mário
+Figueiredo. 2011. Structured sparsity in structured
+prediction. In Proceedings of the Conference on
+Empirical Methods in Natural Language Process-
+ing, pages 1500–1511. Association for Computa-
+tional Linguistics.
+
+154
+
+
+
+Joakim Nivre. 2009. Non-projective dependency pars-
+ing in expected linear time. In Proceedings of the
+Joint Conference of the 47th Annual Meeting of the
+ACL and the 4th International Joint Conference on
+Natural Language Processing of the AFNLP, vol-
+ume 1, pages 351–359. Association for Computa-
+tional Linguistics.
+
+Lev Ratinov and Dan Roth. 2009. Design challenges
+and misconceptions in named entity recognition. In
+Proceedings of the Thirteenth Conference on Com-
+putational Natural Language Learning, pages 147–
+155. Association for Computational Linguistics.
+
+Stéphane Ross, Geoffrey J. Gordon, and Drew Bagnell.
+2011. A reduction of imitation learning and struc-
+tured prediction to no-regret online learning. In Ge-
+offrey J. Gordon, David B. Dunson, and Miroslav
+Dudı́k, editors, AISTATS, volume 15 of JMLR Pro-
+ceedings, pages 627–635.
+
+Alexander M Rush and Slav Petrov. 2012. Vine prun-
+ing for efficient multi-pass dependency parsing. In
+Proceedings of the 2012 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+pages 498–507. Association for Computational Lin-
+guistics.
+
+Grzegorz Swirszcz, Naoki Abe, and Aurelie C Lozano.
+2009. Grouped orthogonal matching pursuit for
+variable selection and prediction. In Advances
+in Neural Information Processing Systems, pages
+1150–1158.
+
+Kristina Toutanova, Dan Klein, Christopher D Man-
+ning, and Yoram Singer. 2003. Feature-rich part-of-
+speech tagging with a cyclic dependency network.
+In HLT-NAACL.
+
+Kirill Trapeznikov and Venkatesh Saligrama. 2013.
+Supervised sequential classification under budget
+constraints. In AISTATS.
+
+Ioannis Tsochantaridis, Thomas Hofmann, Thorsten
+Joachims, and Yasemin Altun. 2004. Support vector
+machine learning for interdependent and structured
+output spaces. In Proceedings of the Twenty-first In-
+ternational Conference on Machine Learning, page
+104.
+
+Paul Viola and Michael Jones. 2001. Rapid object de-
+tection using a boosted cascade of simple features.
+In Proceedings of the 2001 IEEE Computer Society
+Conference on Computer Vision and Pattern Recog-
+nition, volume 1, pages I–511. IEEE.
+
+David Weiss and Ben Taskar. 2010. Structured predic-
+tion cascades. In AISTATS.
+
+David Weiss and Ben Taskar. 2013. Learning adaptive
+value of information for structured prediction. In
+NIPS.
+
+Lin Xiao. 2009. Dual Averaging Method for Regular-
+ized Stochastic Learning and Online Optimization.
+In NIPS.
+
+Zhixiang “Eddie” Xu, Matt J Kusner, Kilian Q Wein-
+berger, and Minmin Chen. 2013. Cost-sensitive tree
+of classifiers. In ICML.
+
+Ming Yuan and Yi Lin. 2006. Model selection and es-
+timation in regression with grouped variables. Jour-
+nal of the Royal Statistical Society: Series B (Statis-
+tical Methodology), 68(1):49–67.
+
+155
+
+

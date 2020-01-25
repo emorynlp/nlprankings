@@ -1,0 +1,896 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Simultaneous Translation with Flexible Policy via Restricted Imitation Learning
+
+
+Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 5816–5822
+Florence, Italy, July 28 - August 2, 2019. c©2019 Association for Computational Linguistics
+
+5816
+
+Simultaneous Translation with Flexible Policy
+via Restricted Imitation Learning
+
+Baigong Zheng 1,∗ Renjie Zheng 2,∗ Mingbo Ma 1,∗ Liang Huang 1,2
+1Baidu Research, Sunnyvale, CA, USA
+
+2Oregon State University, Corvallis, OR, USA
+{baigongzheng, mingboma}@baidu.com zrenj11@gmail.com
+
+Abstract
+
+Simultaneous translation is widely useful but
+remains one of the most difficult tasks in NLP.
+Previous work either uses fixed-latency poli-
+cies, or train a complicated two-staged model
+using reinforcement learning. We propose a
+much simpler single model that adds a “delay”
+token to the target vocabulary, and design a
+restricted dynamic oracle to greatly simplify
+training. Experiments on Chinese↔English
+simultaneous translation show that our work
+leads to flexible policies that achieve better
+BLEU scores and lower latencies compared to
+both fixed and RL-learned policies.
+
+1 Introduction
+
+Simultaneous translation, which translates sen-
+tences before they are finished, is useful in many
+scenarios such as international conferences, sum-
+mits, and negotiations. However, it is widely con-
+sidered one of the most challenging tasks in NLP,
+and one of the holy grails of AI (Grissom II et al.,
+2014). A major challenge in simultaneous trans-
+lation is the word order difference between the
+source and target languages, e.g., between SOV
+languages (German, Japanese, etc.) and SVO lan-
+guages (English, Chinese, etc.).
+
+Simultaneous translation is previously studied
+as a part of real-time speech recognition sys-
+tem (Yarmohammadi et al., 2013; Bangalore et al.,
+2012; Fügen et al., 2007; Sridhar et al., 2013;
+Jaitly et al., 2016; Graves et al., 2013). Re-
+cently, there have been two encouraging efforts in
+this problem with promising but limited success.
+Gu et al. (2017) propose a complicated two-stage
+model that is also trained in two stages. The base
+model, responsible for producing target words, is
+a conventional full-sentence seq2seq model, and
+on top of that, the READ/WRITE (R/W) model
+decides, at every step, whether to wait for an-
+other source word (READ) or to emit a target word
+
+∗These authors contributed equally.
+
+Chinese 我 得到 有关 方面 的 回应
+pinyin wǒ dédào yǒuguān fāngmiàn de huı́yı̀ng
+gloss I receive relevant party ’s response
+wait-1
+policy
+
+I received thanks from relevant parties
+
+wait-5
+policy
+
+I received re-
+sponses from
+relevant parties
+
+adaptive
+policy
+
+I received responses from
+relevant parties
+
+Table 1: A Chinese-to-English translation example.
+Wait-1 policy makes a mistake on guessing thanks from
+while wait-5 policy has high latency. The adaptive
+policy can wait for more information to avoid guesses
+while maintaining low latency.
+
+(WRITE) using the pretrained base model. This
+R/W model is trained by reinforcement learning
+(RL) method without updating the base model.
+Ma et al. (2018), on the other hand, propose a
+much simpler architecture, which only need one
+model and can be trained with end-to-end local
+training method. However, their model follows
+a fixed-latency policy, which inevitably needs to
+guess future content during translation. Table 1
+gives an example which is difficult for the fixed-
+latency (wait-k) policy but easy for adaptive pol-
+icy.
+
+We aim to combine the merits of both ef-
+forts, that is, we design a single model end-to-
+end trained from scratch to perform simultaneous
+translation, as with Ma et al. (2018), which can
+decide on the fly whether to wait or translate as
+in Gu et al. (2017). There are two key ideas to
+achieve this: the first is to add a “delay” token
+(similar to the READ action in Gu et al. (2017),
+the empty token in Press and Smith (2018), and
+the ‘blank’ unit in Connectionist Temporal Classi-
+fication (CTC) (Graves et al., 2006)) to the target-
+side vocabulary, and if the model emits this de-
+lay token, it will read one source word; the second
+idea is to train the model using (restricted) imita-
+tion learning by designing a (restricted) dynamic
+oracle as the expert policy. Table 2 summarizes
+different approaches for simultaneous translation
+using neural machine translation (NMT) model.
+
+
+
+5817
+
+seq-to-seq prefix-to-prefix
+fixed
+policy
+
+static Read-Write
+(Dalvi et al., 2018)
+test-time wait-k
+(Ma et al., 2018)
+
+wait-k (Ma et al.,
+2018)
+
+adaptive
+policy
+
+RL (Gu et al.,
+2017)
+
+imitation learning
+(this work)
+
+Table 2: Different approaches for simultaneous trans-
+lation.
+
+2 Preliminaries
+
+Let x = (x1, . . . , xn) be a sequence of words. For
+an integer 0 ≤ i ≤ n, we denote the sequence
+consisting of the first consecutive i− 1 words in x
+by x<i = (x1, . . . , xi−1). We say such a sequence
+x<i is a prefix of the sequence x, and define s � x
+if sequence s is a prefix of x.
+
+Conventional Machine Translation Given a
+sequence x from the source language, the con-
+ventional machine translation model predicts the
+probability distribution of the next target word yj
+at the j-th step, conditioned on the full source se-
+quence x and previously generated target words
+y<j , that is p(yj | x,y<j). The probability of the
+whole sequence y generated by the model will be
+p(y | x) =
+
+∏|y|
+j=1 p(yj | x,y<j).
+
+To train such a model, we can maximize the
+probability of ground-truth target sequence condi-
+tioned on the corresponding source sequence in a
+parallel datasetD, which is equivalent to minimize
+the following loss:
+
+`(D) = −
+∑
+
+(x,y)∈D log p(y | x). (1)
+
+In this work, we use Transformer (Vaswani
+et al., 2017) as our NMT model, which consists
+of an encoder and a decoder. The encoder works
+in a self-attention fashion and maps a sequence of
+words to a sequence of continuous representations.
+The decoder performs attention over the predicted
+words and the output of the encoder to generate
+next prediction. Both encoder and decoder take as
+input the sum of a word embedding and its corre-
+sponding positional embedding.
+
+Prefix-to-Prefix Framework Previous work
+(Gu et al., 2017; Dalvi et al., 2018) use seq2seq
+models to do simultaneous translation, which are
+trained with full sentence pairs but need to predict
+target words based on partial source sentences.
+Ma et al. (2018) proposed a prefix-to-prefix
+training framework to solve this mismatch. The
+key idea of this framework is to train the model
+
+to predict the next target word conditioned on
+the partial source sequence the model has seen,
+instead of the full source sequence.
+
+As a simple example in this framework, Ma
+et al. (2018) presented a class of policies, called
+wait-k policy, that can be applied with local train-
+ing in the prefix-to-prefix framework. For a pos-
+itive integer k, the wait-k policy will wait for
+the first k source words and then start to alter-
+nate generating a target word with receiving a new
+source word, until there is no more source words,
+when the problem becomes the same as the full-
+sequence translation. The probability of the j-th
+word is pk(yj | x<j+k,y<j), and the probability
+of the whole predicted sequence is pk(y | x) =∏|y|
+j=1 pk(yj | x<j+k,y<j).
+
+3 Model
+
+To obtain a flexible and adaptive policy, we need
+our model to be able to take both READ and
+WRITE actions. Conventional translation model
+already has the ability to write target words, so we
+introduce a “delay” token 〈ε〉 in target vocabulary
+to enable our model to apply the READ action.
+Formally, for the target vocabulary V , we define
+an extended vocabulary
+
+V+ = V ∪ {〈ε〉}. (2)
+
+Each word in this set can be an action, which is
+applied with a transition function δ on a sequence
+pair (s, t) for a given source sequence x where
+s � x. We assume 〈ε〉 cannot be applied with
+the sequence pair (s, t) if s = x, then we have the
+transition function δ as follows,
+
+δ((s, t), a) =
+
+{
+(s ◦ x|s|+1, t) if a = 〈ε〉
+(s, t ◦ a) otherwise
+
+where s ◦ x represents concatenating a sequence s
+and a word x.
+
+Based on this transition function, our model
+can do simultaneous translation as follows. Given
+the currently available source sequence, our model
+continues predicting next target word until it pre-
+dicts a delay token. Then it will read a new source
+word, and continue prediction. Since we use
+Transformer model, the whole available source se-
+quence needs to be encoded again when reading
+in a new source word, but the predicted target se-
+quence will not be changed.
+
+Note that the predicted delay tokens do not pro-
+vide any semantic information, but may introduce
+
+
+
+5818
+
+Target
+
+Source
+
+Target
+
+Source
+
+aggressive  
+
+bound 𝛼
+conserv.  
+
+bound 𝛽
+
+Figure 1: Illustration of our proposed dynamic oracle
+on a prefix grid. The blue right arrow represents choos-
+ing next ground-truth target word, and the red down-
+ward arrow represents choosing the delay token. The
+left figure shows a simple dynamic oracle without delay
+constraint. The right figure shows the dynamic oracle
+with delay constraints.
+
+some noise in attention layer during the translation
+process. So we propose to remove those delay to-
+ken in the attention layers except for the current
+input one. However, this removal may reduce the
+explicit latency information which will affect the
+predictions of the model since the model cannot
+observe previous output delay tokens. Therefore,
+to provide this information explicitly, we embed
+the number of previous delay tokens to a vector
+and add this to the sum of the word embedding and
+position embedding as the input of the decoder.
+
+4 Methods
+
+4.1 Training via Restricted Imitation
+Learning
+
+We first introduce a restricted dynamic ora-
+cle (Cross and Huang, 2016) based on our ex-
+tended vocabulary. Then we show how to use this
+dynamic oracle to train a simultaneous translation
+model via imitation learning. Note that we do not
+need to train this oracle.
+
+Restricted Dynamic Oracle Given a pair of full
+sequences (x,y) in data, the input state of our re-
+stricted dynamic oracle will be a pair of prefixes
+(s, t) where s � x, t � y and (s, t) 6= (x,y).
+The whole action set is V+ defined in the last sec-
+tion. The objective of our dynamic oracle is to
+obtain the full sequence pair (x,y) and maintain a
+reasonably low latency.
+
+For a prefix pair (s, t), the difference of the
+lengths of the two prefixes can be used to mea-
+sure the latency of translation. So we would like to
+bound this difference as a latency constraint. This
+idea can be illustrated in the prefix grid (see Fig-
+ure 1), where we can define a band region and al-
+
+ways keep the translation process in this band. For
+simplicity, we first assume the two full sequences
+have the same lengths, i.e. |x| = |y|. Then we
+can bound the difference d = |s| − |t| by two con-
+stants: α < d < β. The conservative bound (β)
+guarantees relatively small difference and low la-
+tency; while the aggressive bound (α) guarantees
+there are not too many target words predicted be-
+fore seeing enough source words. Formally, this
+dynamic oracle is defined as follows.
+
+π?x,y,α,β(s, t) =
+{〈ε〉} if s 6= x and |s| − |t| ≤ α
+{y|t|+1} if t 6= y and |s| − |t| ≥ β
+{〈ε〉, y|t|+1} otherwise
+
+By this definition, we know that this oracle can
+always find an action sequence to obtain (x,y).
+When the input state does not satisfy any latency
+constraint, then this dynamic oracle will provide
+only one action, applying which will improve the
+length difference. Note that this dynamic oracle is
+restricted in the sense that it is only defined on the
+prefix pair instead of any sequence pair. And since
+we only want to obtain the exact sequence from
+data, this oracle can only choose the next ground-
+truth target word other than 〈ε〉.
+
+In many cases, the assumption |x| = |y| does
+not hold. To overcome this limitation, we can uti-
+lize the length ratio γ = |x|/|y| to modify the
+length difference: d′ = |s| − γ|t|, and use this
+new difference d′ in our dynamic oracle. Although
+we cannot obtain this ratio during testing time, we
+may use the averaged length ratio obtained from
+training data (Huang et al., 2017).
+
+Training with Restricted Dynamic Oracle We
+apply imitation learning to train our translation
+model, using the proposed dynamic oracle as the
+expert policy. Recall that the prediction of our
+model depends on the whole generated prefix
+including 〈ε〉 (as the input contains the embedding
+of the number of 〈ε〉), which is also an action
+sequence. If an action sequence a is obtained
+from our oracle, then applying this sequence will
+result in a prefix pair, say sa and ta, of x and y.
+Let p(a | sa, ta) be the probability of choosing
+action a given the prefix pair obtained by applying
+action sequence a. Then the averaged probability
+of choosing the oracle actions conditioned on the
+action sequence a will be
+
+
+
+5819
+
+f(a, π?x,y,α,β) =
+
+∑
+a∈π?x,y,α,β(sa,ta)
+
+p(a | sa, ta)
+
+|π?x,y,α,β(sa, ta)|
+.
+
+To train a model to learn from the dynamic or-
+acle, we can sample from our oracle to obtain a
+set, say S(x,y), of action sequences for a sentence
+pair (x,y). The loss function for each sampled se-
+quence a ∈ S(x,y) will be
+
+`(a|x,y) = −
+|a|∑
+i=1
+
+log f(a<i, π
+?
+x,y,α,β).
+
+For a parallel text D, the training loss is
+
+`(D) =
+∑
+
+(x,y)∈D
+
+∑
+a∈S(x,y)
+
+1
+|S(x,y)|`(a|x,y).
+
+Directly optimizing the above loss may require
+too much computation resource since for each pair
+of (x,y), the size of S(x,y) (i.e. the number of
+different action sequences) can be exponentially
+large. To reduce the computation cost, we propose
+to use two special action sequences as our sample
+set so that our model can learn to do translation
+within the two latency constraints. Recall that the
+latency constraints of our dynamic oracle π?x,y,α,β
+are defined by two bounds: α and β. For each
+bound, there is a unique action sequence, which
+corresponds to a path in the prefix grid, such that
+following it can generate the most number of pre-
+fix pairs that make this bound tight. Let aα(x,y)
+(aβ(x,y)) be such an action sequence for (x,y) and
+
+α (β). We replace S(x,y) with {aα(x,y),a
+β
+(x,y)},
+
+then the above loss for dataset D becomes
+
+`α,β(D) =
+∑
+
+(x,y)∈D
+
+`(aα
+(x,y)
+
+|x,y)+`(aβ
+(x,y)
+
+|x,y)
+2 .
+
+This is the loss we use in our training process.
+Note that there are some steps where our oracle
+
+will return two actions, so for such steps we will
+have a multi-label classification problem where la-
+bels are the actions from our oracle. In such cases,
+Sigmoid function for each action is more appropri-
+ate than the Softmax function for the actions will
+not compete each other (Ma et al., 2017; Zheng
+et al., 2018; Ma et al., 2019). Therefore, we apply
+Sigmoid for each action instead of using Softmax
+function to generate a distribution for all actions.
+
+4.2 Decoding
+We observed that the model trained on the two
+special action sequences occasionally violates the
+latency constraints and visits states outside of the
+
+designated band in prefix grid. To avoid such case,
+we force the model to choose actions such that it
+will always satisfy the latency constraints. That is,
+if the model reaches the aggressive bound, it must
+choose a target word other than 〈ε〉 with highest
+score, even if 〈ε〉 has higher score; if the model
+reaches the conservative bound, it can only choose
+〈ε〉 at that step. We also apply a temperature con-
+stant et to the score of 〈ε〉, which can implicitly
+control the latency of our model without retrain-
+ing it. This improves the flexibility of our trained
+model so that it can be used in different scenarios
+with different latency requirements.
+
+5 Experiments
+
+To investigate the empirical performance of our
+proposed method, we conduct experiments on
+NIST corpus for Chinese-English. We use NIST
+06 (616 sentence pairs) as our development set
+and NIST 08 (691 sentence pairs) as our testing
+set. We apply tokenization and byte-pair encoding
+(BPE) (Sennrich et al., 2015) on both source and
+target languages to reduce their vocabularies. For
+training data, we only include 1 million sentence
+pairs with length larger than 50. We use Trans-
+former (Vaswani et al., 2017) as our NMT model,
+and our implementation is adapted from PyTorch-
+based OpenNMT (Klein et al., 2017). The archi-
+tecture of our Transformer model is the same as
+the base model in the original paper.
+
+We use BLEU (Papineni et al., 2002) as the
+translation quality metric and Average Lagging
+(AL) introduced by Ma et al. (2018) as our la-
+tency metrics, which measures the average de-
+layed words. AL avoids some limitations of other
+existing metrics, such as insensitivity to actual lag-
+ging like Consecutive Wait (CW) (Gu et al., 2017),
+and sensitivity to input length like Average Pro-
+portion (AP) (Cho and Esipova, 2016) .
+
+Results We tried three different pairs for α and
+β: (1, 5), (3, 5) and (3, 7), and summarize the
+results on testing sets in Figure 2. Figure 2 (a)
+shows the results on Chinese-to-English transla-
+tion. In this direction, our model can always
+achieve higher BLEU scores with the same la-
+tency, compared with the wait-k models and RL
+models. We notice the model prefers conservative
+policy during decoding time when t = 0. So we
+apply negative values of t to encourage the model
+to choose actions other than 〈ε〉. This can ef-
+fectively reduce latency without sacrificing much
+
+
+
+5820
+
+4 6 8
+AL
+
+22
+
+24
+
+26
+
+28
+
+4-
+re
+
+f 
+B
+
+LE
+U
+
+33
+
+(a) Chinese-to-English
+
+2 4 6 8
+AL
+
+10
+
+12
+
+14
+
+1-
+re
+
+f 
+B
+
+LE
+U
+
+44
+
+(b) English-to-Chinese
+
+Figure 2:
+Translation quality (BLEU) against latency (AL)
+on testing sets. Markers : wait-k models for k ∈
+{1, 3, 5, 7}, +: RL with CW = 5, ×: RL with CW
+= 8, F: full-sentence translation. Markers for our
+models are given in the right table.
+
+Training Decoding Policy
+α β wait-α wait-β t = −2 t = −0.5 t = 0 t = 4.5 t = 9
+1 5
+3 5
+3 7
+
+translation quality, implying that our model can
+implicitly control latency during testing time.
+
+Figure 2 (b) shows our results on English-to-
+Chinese translation. Since the English source sen-
+tences are always longer than the Chinese sen-
+tences, we utilize the length ratio γ = 1.25 (de-
+rived from the dev set) during training, which is
+the same as using “catchup” with frequency c =
+0.25 introduced by Ma et al. (2018). Different
+from the other direction, models for this direction
+works better if the difference of α and β is big-
+ger. Another difference is that our model prefers
+aggressive policy instead of conservative policy
+when t = 0. Thus, we apply positive values of t
+to encourage it to choose 〈ε〉, obtaining more con-
+servative policies to improve translation quality.
+
+Example We provide an example from the de-
+velopment set of Chinese-to-English translation in
+Table 3 to compare the behaviours of different
+models. Our model is trained with α = 3, β = 7
+and tested with t = 0. It shows that our model can
+wait for information “Ōuméng” to translates “eu”,
+while the wait-3 model is forced to guess this in-
+formation and made a mistake on the wrong guess
+“us” before seeing “Ōuméng”.
+
+Ablation Study To analyze the effects of pro-
+posed techniques on the performance, we also pro-
+vide an ablation study on those techniques for our
+
+model trained with α = 3 and β = 5 in Chinese-
+to-English translation. The results are given in Ta-
+ble 4, and show that all the techniques are impor-
+tant to the final performance and using Sigmoid
+function is critical to learn adaptive policy.
+
+Model
+Decoding Policy
+
+Wait-3 Wait-5 t=0
+BLEU AL BLEU AL BLEU AL
+
+Wait-3 29.32 4.60 - - - -
+Wait-5 - - 30.97 6.30 - -
+keep 〈ε〉 in
+attention
+
+29.55 4.50 30.68 6.49 30.74 6.53
+
+no 〈ε〉 number
+embedding
+
+30.20 4.76 30.98 6.36 30.65 6.29
+
+use Softmax
+instead of Sigmoid
+
+29.23 5.11 31.46 6.79 29.99 4.79
+
+Full 29.45 4.71 31.72 6.35 31.59 6.28
+
+Table 4: Ablation study on Chinese-to-English devel-
+opment set with α = 3 and β = 5.
+
+6 Conclusions
+
+We have presented a simple model that includes a
+delay token in the target vocabulary such that the
+model can apply both READ and WRITE actions
+during translation process without a explicit policy
+model. We also designed a restricted dynamic or-
+acle for the simultaneous translation problem and
+provided a local training method utilizing this dy-
+namic oracle. The model trained with this method
+can learn a flexible policy for simultaneous trans-
+lation and achieve better translation quality and
+lower latency compared to previous methods.
+
+Chinese 一 名 不 愿 具名 的 欧盟 官员 指出 ...
+pinyin yı̀ mı́ng bú yùan jùmı́ng de Ōuméng gūanyúan zhı̌chū
+gloss a - not willing named ’s EU official point out ...
+wait-3 a us official who declined to be named said that ...
+
+our work a eu official , who declined to be named , pointed out ...
+
+Table 3: A Chinese-to-English development set example. Our model is trained with α = 3 and β = 7.
+
+
+
+5821
+
+References
+Srinivas Bangalore, Vivek Kumar Rangarajan Srid-
+
+har, Prakash Kolan, Ladan Golipour, and Aura
+Jimenez. 2012. Real-time incremental speech-to-
+speech translation of dialogs. In Proc. of NAACL-
+HLT.
+
+Kyunghyun Cho and Masha Esipova. 2016. Can neu-
+ral machine translation do simultaneous translation?
+volume abs/1606.02012.
+
+James Cross and Liang Huang. 2016. Span-based con-
+stituency parsing with a structure-label system and
+provably optimal dynamic oracles. In Proceedings
+of EMNLP.
+
+Fahim Dalvi, Nadir Durrani, Hassan Sajjad, and
+Stephan Vogel. 2018. Incremental decoding and
+training methods for simultaneous translation in
+neural machine translation. In Proceedings of the
+2018 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies, Volume 2 (Short Pa-
+pers), pages 493–499, New Orleans, Louisiana. As-
+sociation for Computational Linguistics.
+
+Christian Fügen, Alex Waibel, and Muntsin Kolss.
+2007. Simultaneous translation of lectures and
+speeches. Machine translation, 21(4):209–252.
+
+Alex Graves, Santiago Fernández, Faustino Gomez,
+and Jürgen Schmidhuber. 2006. Connectionist
+temporal classification: labelling unsegmented se-
+quence data with recurrent neural networks. In Pro-
+ceedings of the 23rd international conference on
+Machine learning, pages 369–376. ACM.
+
+Alex Graves, Abdel-rahman Mohamed, and Geoffrey
+Hinton. 2013. Speech recognition with deep recur-
+rent neural networks. In 2013 IEEE international
+conference on acoustics, speech and signal process-
+ing, pages 6645–6649. IEEE.
+
+Alvin Grissom II, He He, Jordan Boyd-Graber, John
+Morgan, and Hal Daumé III. 2014. Don’t until the
+final verb wait: Reinforcement learning for simul-
+taneous machine translation. In Proceedings of the
+2014 Conference on empirical methods in natural
+language processing (EMNLP), pages 1342–1352.
+
+Jiatao Gu, Graham Neubig, Kyunghyun Cho, and Vic-
+tor O. K. Li. 2017. Learning to translate in real-
+time with neural machine translation. In Proceed-
+ings of the 15th Conference of the European Chap-
+ter of the Association for Computational Linguistics,
+EACL 2017, Valencia, Spain, April 3-7, 2017, Vol-
+ume 1: Long Papers, pages 1053–1062.
+
+Liang Huang, Kai Zhao, and Mingbo Ma. 2017. When
+to finish? optimal beam search for neural text gen-
+eration (modulo beam size). In Proceedings of the
+2017 Conference on Empirical Methods in Natural
+Language Processing, pages 2134–2139.
+
+Navdeep Jaitly, David Sussillo, Quoc V Le, Oriol
+Vinyals, Ilya Sutskever, and Samy Bengio. 2016.
+An online sequence-to-sequence model using par-
+tial conditioning. In Advances in Neural Informa-
+tion Processing Systems, pages 5067–5075.
+
+Guillaume Klein, Yoon Kim, Yuntian Deng, Jean
+Senellart, and Alexander M Rush. 2017. Opennmt:
+Open-source toolkit for neural machine translation.
+arXiv preprint arXiv:1701.02810.
+
+Mingbo Ma, Liang Huang, Bing Xiang, and Bowen
+Zhou. 2017. Group sparse CNNs for question clas-
+sification with answer sets. In Proceedings of the
+55th Annual Meeting of the Association for Compu-
+tational Linguistics (Volume 2: Short Papers), pages
+335–340, Vancouver, Canada. Association for Com-
+putational Linguistics.
+
+Mingbo Ma, Liang Huang, Hao Xiong, Renjie Zheng,
+Kaibo Liu, Baigong Zheng, Chuanqiang Zhang,
+Zhongjun He, Hairong Liu, Xing Li, Hua Wu, and
+Haifeng Wang. 2018. STACL: Simultaneous trans-
+lation with integrated anticipation and controllable
+latency. arXiv preprint arXiv:1810.08398, to ap-
+pear ACL 2019.
+
+Mingbo Ma, Renjie Zheng, and Liang Huang.
+2019. Learning to stop in structured prediction
+for neural machine translation. arXiv preprint
+arXiv:1904.01032, to appear NAACL 2019.
+
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic eval-
+uation of machine translation. In Proceedings of
+ACL, pages 311–318, Philadephia, USA.
+
+Ofir Press and Noah A. Smith. 2018. You may not need
+attention. arXiv preprint arXiv:1810.13409.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2015. Neural machine translation of rare words with
+subword units. arXiv preprint arXiv:1508.07909.
+
+Vivek Kumar Rangarajan Sridhar, John Chen, Srinivas
+Bangalore, Andrej Ljolje, and Rathinavelu Chengal-
+varayan. 2013. Segmentation strategies for stream-
+ing speech translation. In Proceedings of the 2013
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies, pages 230–238.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. In Advances in Neural Information Pro-
+cessing Systems 30.
+
+Mahsa Yarmohammadi, Vivek Kumar Rangara-
+jan Sridhar, Srinivas Bangalore, and Baskaran
+Sankaran. 2013. Incremental segmentation and
+decoding strategies for simultaneous translation.
+In Proceedings of the Sixth International Joint
+Conference on Natural Language Processing.
+
+http://arxiv.org/abs/1606.02012
+http://arxiv.org/abs/1606.02012
+https://doi.org/10.18653/v1/N18-2079
+https://doi.org/10.18653/v1/N18-2079
+https://doi.org/10.18653/v1/N18-2079
+https://aclanthology.info/papers/E17-1099/e17-1099
+https://aclanthology.info/papers/E17-1099/e17-1099
+https://doi.org/10.18653/v1/P17-2053
+https://doi.org/10.18653/v1/P17-2053
+https://arxiv.org/pdf/1810.08398.pdf
+https://arxiv.org/pdf/1810.08398.pdf
+https://arxiv.org/pdf/1810.08398.pdf
+
+
+5822
+
+Renjie Zheng, Mingbo Ma, and Liang Huang. 2018.
+Multi-reference training with pseudo-references for
+neural translation and text generation. In Proceed-
+ings of the 2018 Conference on Empirical Methods
+in Natural Language Processing, pages 3188–3197.
+
+

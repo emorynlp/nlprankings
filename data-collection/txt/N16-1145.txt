@@ -1,0 +1,656 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Simple, Fast Noise-Contrastive Estimation for Large RNN Vocabularies
+
+
+Proceedings of NAACL-HLT 2016, pages 1217–1222,
+San Diego, California, June 12-17, 2016. c©2016 Association for Computational Linguistics
+
+Simple, Fast Noise-Contrastive Estimation for Large RNN Vocabularies
+
+Barret Zoph∗, Ashish Vaswani∗, Jonathan May, and Kevin Knight
+Information Sciences Institute
+
+Department of Computer Science
+University of Southern California
+
+{zoph, avaswani, jonmay, knight}@isi.edu
+
+Abstract
+
+We present a simple algorithm to efficiently
+train language models with noise-contrastive
+estimation (NCE) on graphics processing
+units (GPUs). Our NCE-trained language
+models achieve significantly lower perplexity
+on the One Billion Word Benchmark language
+modeling challenge, and contain one sixth of
+the parameters in the best single model in
+Chelba et al. (2013). When incorporated into
+a strong Arabic-English machine translation
+system they give a strong boost in translation
+quality. We release a toolkit so that others
+may also train large-scale, large vocabulary
+LSTM language models with NCE, paralleliz-
+ing computation across multiple GPUs.
+
+1 Introduction
+
+Language models are used to compute probabili-
+ties of sequences of words. They are crucial for
+good performance in tasks like machine translation,
+speech recognition, and spelling correction. They
+can be classified into two categories: count-based
+and continuous-space language models. The lan-
+guage modeling literature abounds with success-
+ful approaches for learning-count based language
+models: modified Kneser-Ney smoothing, Jelinek-
+Mercer smoothing, etc. In recent years, continuous-
+space language models such as feed-forward neu-
+ral probabilistic language models (NPLMs) and re-
+current neural network language models (RNNs)1
+
+∗Equal contribution.
+1Henceforth we will use terms like ”RNN” and ”LSTM”
+
+with the understanding that we are referring to language models
+that use these formalisms
+
+have outperformed their count-based counterparts
+(Chelba et al., 2013; Zaremba et al., 2014; Mikolov,
+2012). RNNs are more powerful than n-gram lan-
+guage models, as they can exploit longer word con-
+texts to predict words. Long short-term memory lan-
+guage models (LSTMs) are a class of RNNs that
+have been designed to model long histories and are
+easier to train than standard RNNs. LSTMs are cur-
+rently the best performing language models on the
+Penn Treebank (PTB) dataset (Zaremba et al., 2014).
+
+The most common method for training LSTMs,
+maximum likelihood estimation (MLE), is pro-
+hibitively expensive for large vocabularies, as it in-
+volves time-intensive matrix-matrix multiplications.
+Noise-contrastive estimation (NCE) has been a suc-
+cessful alternative to train continuous space lan-
+guage models with large vocabularies (Mnih and
+Teh, 2012; Vaswani et al., 2013). However, NCE
+in its standard form is not suitable for GPUs, as
+the computations are not amenable to dense ma-
+trix operations. In this paper, we present a natu-
+ral modification to the NCE objective function for
+language modeling that allows a very efficient GPU
+implementation. Using our new objective, we train
+large multi-layer LSTMs on the One Billion Word
+benchmark (Chelba et al., 2013), with its full 780k
+word vocabulary. We achieve significantly lower
+perplexities with a single model, while using only
+a sixth of the parameters of a very strong base-
+line model (Chelba et al., 2013). We release our
+toolkit2 to allow researchers to train large-scale,
+large-vocabulary LSTMs with NCE. The contribu-
+tions in this paper are the following:
+
+2www.github.com/isi-nlp/Zoph_RNN
+
+1217
+
+
+
+• A fast and simple approach for handling large
+vocabularies effectively on the GPU.
+• Significantly improved perplexities (43.2) on
+
+the One Billion Word benchmark over Chelba
+et al. (2013)
+• Extrinsic machine translation improvement
+
+over a strong baseline.
+• Fast decoding times because in practice there is
+
+no need to normalize.
+
+2 Long Short Term Memory Language
+Models
+
+In recent years, LSTMs (Hochreiter and Schmid-
+huber, 1997) have achieved state-of-the-art perfor-
+mance in many natural language tasks such as lan-
+guage modeling (Zaremba et al., 2014) and statis-
+tical machine translation (Sutskever et al., 2014;
+Luong et al., 2015). LSTMs were designed to
+have longer memories than standard RNNs, allow-
+ing them to exploit more context to make predic-
+tions. To compute word probabilities, the LSTM
+reads words left-to-right, updating its memory after
+each word and producing a hidden state h, which
+summarizes all of the history. For details on the
+architecture and computations of the LSTM, the
+reader can refer to (Zaremba et al., 2014). In this
+model the probability of word w given history u is
+
+P (w | u) = p(w | u)
+Z(u)
+
+, (1)
+
+where p(w | u) = expDwhT + bw is an unnor-
+malized probability. Dw and bw are the output
+word embedding and biases respectively, which are
+learned during training. The normalization constant
+is Z(u) =
+
+∑
+w∈V
+
+p(w | u), and V is the vocabulary.
+
+3 Noise Contrastive Estimation For
+Training Neural Language Models
+
+The standard approach for estimating neural lan-
+guage models is maximum liklelihood estimation
+(MLE), where we learn the parameters θ∗ that max-
+imize the likelihood of the training data,
+
+θ∗ = arg maxθ
+∑
+w,u
+
+logP (w | u; θ) (2)
+
+However, for each training instance, gradient-based
+approaches for MLE require a summation over all
+units in the output layer, one for each word in V .
+This makes MLE training infeasible for large vocab-
+ularies.
+
+Noise-contrastive estimation (NCE) (Gutmann
+and Hyvärinen, 2010) has been successfully adopted
+for training neural language models with large vo-
+cabularies (Mnih and Teh, 2012; Vaswani et al.,
+2013; Baltescu and Blunsom, 2014; Williams et al.,
+2015). NCE avoids repeated summations by train-
+ing the model to correctly classify between gener-
+ated noise samples and words observed in the train-
+ing data. For each training pair ui, wi, we generate
+k noise samples, w̄i1 . . . , w̄ik from a noise distribu-
+tion q(w), which is known. We label ui, wi as true
+(C = 1), and all ui, w̄ik as false (C = 0). We then
+train the parameters to maximize the binary classifi-
+cation log likelihood,
+
+L =
+∑
+i
+
+(
+logP (C = 1 | ui, wi)+∑
+
+k
+
+logP (C = 0 | u, w̄ik)
+)
+,
+
+(3)
+
+where
+
+P (C = 1 | w,u) =
+p(w|u)
+Z(u)
+
+p(w|u)
+Z(u) + k · q(w)
+
+, (4)
+
+and P (C = 0 | w,u) = 1− P (C = 1 | w,u).
+We learn parameters to maximize this objective
+
+with gradient ascent. In NCE, we treat Z(u) as an-
+other parameter and learn its estimate along with the
+rest of the parameters. Following Mnih and Teh
+(2012) and Vaswani et al. (2013), we freeze Z(u)
+to 1 and the model learns to approximately satisfy
+the constraint. In practice, we find that our mean for
+Z(u) is very close to 1 and the variance is quite small
+(Section 6). For each training instance, we com-
+pute gradients for the observed word and each noise
+word, reducing the time complexity fromO(|V |) for
+MLE to O(k). However, unlike MLE, since we typ-
+ically sample different noise samples for each train-
+ing instance, our gradient computations for the NCE
+objective are not amenable to dense matrix opera-
+tions, making it difficult to benefit from fast dense
+matrix arithmetic on GPUs. In this paper, we present
+
+1218
+
+
+
+a simple solution to this problem: sharing the noise
+samples across all the training instances in a mini-
+batch. Sharing noise samples allows us to describe
+NCE gradients with dense matrix operations, and
+implement them easily on the GPU. In the next sec-
+tion, we describe our NCE implementation on the
+GPU with shared noise samples.
+
+4 Our NCE Modification
+
+In typical Noise-Contrastive Estimation, the objec-
+tive function requires noise samples coming from
+some distribution (in our case, the uniform distri-
+bution). The objective function for NCE is shown
+above in Equation 3, where we must calculate
+P (C = 1 | w,u) for the true word and the noise
+samples generated. There are three components to
+this calculation: p(w | u) , Z(u) , and k · q(w). In
+NCE we fix Z(u) to be one, so we only need to cal-
+culate p(w | u) and k · q(w). The term k · q(w) is
+simply an O(1) lookup, so the only costly operation
+is computing p(w | u) for all k noise samples and
+the true word. The operation to compute p(w | u)
+for a single word w is expDwhT + bw where Dw
+and bw represent the word embedding and bias cor-
+responding to the word we are computing it for.
+
+The main cost in calculating the NCE objective
+function is computing expDwhT + bw, where in
+normal NCE a dense matrix multiplication cannot
+be done. The reason is that the noise samples gen-
+erated per training example will be different. There-
+fore, when we parallelize our algorithm by running
+multiple training examples in parallel (a minibatch),
+theDw we need are different per hT that we are run-
+ning in parallel. If a constraint is set such that the
+noise samples must be the same across all training
+examples in the minibatch, then a matrix multipli-
+cation can be done to compute expDwhT + bw for
+all words across that minibatch. This matrix mul-
+tiplication is DhTM , where h
+
+T
+M is now a matrix of
+
+all the hidden states being used in parallel, whereas
+before hT was just a vector. Additionally, D is the
+matrix of word embedding for the samples that are
+being shared across a minibatch. Before, this was
+not possible as the D matrix would have to be much
+larger, being (minibatch size) · (k + 1) in size, mak-
+ing the algorithm run much slower. An alternative
+is to not restrict the noise samples to be the same,
+
+but then we must use a sparse matrix multiplica-
+tion as in Williams et al. (2015), which is neither
+as fast nor as easy to implement. A comparison be-
+tween these two approaches is shown in Figure 1.
+We find that sharing noise samples across the mini-
+batch gives us significant speedups over a baseline
+of using different noise samples for each word in the
+minibatch. These timings were calculated for a sin-
+gle layer LSTM with 1000 hidden units, a vocab-
+ulary of 350k, and a minibatch of 128. Not sur-
+prisingly, MLE is quite expensive, limiting it’s use
+for large vocabularies. Additionally, the memory
+requirements for NCE are much lower than MLE,
+since we do not need to store the gradient which has
+the same size as the output embedding matrix. For
+this MLE run, we had to distribute the computation
+across two GPUs because of memory limitations.
+
+5 Experiments
+
+We conducted two series of experiments to validate
+the efficiency of our approach and the quality of the
+models we learned using it: An intrinsic study of
+language model perplexity using the standard One
+Billion Word benchmark (Chelba et al., 2013) and
+an extrinsic end-to-end statistical machine transla-
+tion task that uses an LSTM as one of several feature
+functions in re-ranking. Both experiments achieve
+excellent results.
+
+5.1 Language Modeling
+For our language modeling experiment we use the
+One Billion Word benchmark proposed by Chelba et
+al. (2013). In this task there are roughly 0.8 billion
+words of training data. We use perplexity to evalu-
+ate the quality of language models we train on this
+data. We train an LSTM with 4 layers, where each
+layer has 2048 hidden units, with a target vocabulary
+size of 793,471. For training, we also use dropout to
+prevent overfitting. We follow Zaremba et al. (2014)
+for dropout locations, and we use a dropout rate of
+0.2. The training is parallelized across 4 GPUs, such
+that each layer lies on its own GPU and communi-
+cates its activations to the next layer once it finishes
+its computation.
+
+5.2 Statistical Machine Translation
+We incorporate our LSTM as a rescoring feature
+on top of the output of a strong Arabic-English
+
+1219
+
+
+
+syntax-based string-to-tree statistical machine trans-
+lation system (Galley et al., 2006; Galley et al.,
+2004). That system is trained on 208 million words
+of parallel Arabic-English data from a variety of
+sources, much of which is Egyptian discussion fo-
+rum content. The Arabic side is morphologically
+segmented with MADA-ARZ (Habash et al., 2013).
+We use a standard set of features, including two con-
+ventional count-based language models, as well as
+thousands of sparsely-occurring, lexicalized syntac-
+tic features (Chiang et al., 2009). The system addi-
+tionally uses a source-to-target feed-forward neural
+network translation model during decoding, analo-
+gous to the model of (Devlin et al., 2014). These
+features are tuned with MIRA (Chiang et al., 2009)
+on approximately 63,000 words of Arabic discus-
+sion forum text, along with three references. We
+evaluate this baseline on two test sets, each with ap-
+proximately 34,000 words from the same genre used
+in tuning.
+
+We generate n-best lists (n = 1000) of unique
+translations for each sentence in the tuning set and
+re-rank the translations using an approach based on
+MERT (Och, 2003). We collapse all features other
+than language models, text length, and derivation
+size into a single feature, formed by taking the dot
+product of the previously learned feature and weight
+vectors. We then run a single iteration of MERT on
+the n-best lists to determine optimal weights for the
+collapsed feature, the uncollapsed features, and an
+LSTM feature formed by taking the score of the hy-
+pothesis according to the LSTM described in Sec-
+tion 5.1. We use the weights to rerank hypotheses
+from the n-best lists of the two test sets. We re-
+peated this experiment, substituting instead a two-
+layer LSTM trained on the English side of the train-
+ing data.
+
+6 Results
+
+Our two experiments with LSTMs trained with our
+modification of NCE show strong results in their
+corresponding tasks.
+
+Our perplexity results are shown in Table 1, where
+we get significantly lower perplexities than the best
+single model from Chelba et al. (2013), while having
+almost 6 times fewer parameters. We also compute
+the partition function values, log
+
+(
+Z(u)
+
+)
+, for our de-
+
+velopment set and we find that the mean is 0.058 and
+the variance is 0.139, indicating that training has en-
+couraged self-normalization.
+
+Model Parameters Perplexity
+Chelba et al. (2013) 20m 51.3
+NCE (ours) 3.4m 43.2
+
+Table 1: For the One Billion Word Benchmark, our NCE
+method performs significantly better than the best single model
+
+in the baseline, Chelba et al. (2013), while using many fewer
+
+parameters.
+
+Recently, (Józefowicz et al., 2016) achieved state-
+of-the-art language modeling perplexities (30.0) on
+the billion word dataset with a single model, using
+importance sampling to approximate the normaliza-
+tion constant, Z(u).
+
+Independent of our work, they also share noise
+samples across the minibatch. However, they use
+8192 noise samples, while we achieve strong per-
+plexities with 100 noise samples. We also show
+significant improvements in machine translation, ex-
+ploiting self-normalization for fast decoding, in ad-
+dition to releasing a efficient toolkit that practition-
+ers can use.
+
+Table 2 shows our re-scoring experiments. When
+we incorporate only the LSTM trained on the BOLT
+dataset we get a +1.1 BLEU improvement on Tune,
++1.4 on Test 1, and +1.1 on Test 2. When we
+also incorporate the LSTM trained on the One Bil-
+lion Word dataset as a feature, we see another
++0.2 BLEU increase on Tune and Test 2. In
+
+System Tune Test 1 Test 2
+Baseline SMT 38.7 38.9 39.7
+LSTM (BOLT) 39.8 40.3 40.8
+LSTM (1b+BOLT) 40.0 40.3 41.0
+
+Table 2: Our NCE-based language model successfully re-ranks
+Arabic-to-English n-best lists. The baseline is a state-of-the-
+
+art, statistical string-to-tree system. BOLT is a 208m-word, in-
+
+domain English corpus; “1b” refers to the One Billion Word
+
+benchmark corpus.
+
+these re-scoring experiments we simply use the un-
+normalized numerator p(w | u) as our word score,
+which means we never have to compute the costly
+partition function, Z(u). This is because the parti-
+tion function is so close to 1 that the un-normalized
+
+1220
+
+
+
+Th
+ro
+
+ug
+hp
+
+ut
+ (x
+
+ 1
+k 
+
+w
+or
+
+ds
+ p
+
+er
+ s
+
+ec
+on
+
+d)
+
+0
+
+5
+
+10
+
+15
+
+20
+
+Number of noise samples
+
+100 200 500 1000 2000 5000
+
+Shared (NCE) Baseline (NCE) MLE 
+
+Figure 1: Sharing noise samples across the minibatch is at least 4 times faster than a baseline of not sharing them.
+
+scores are very close to the normalized ones.
+
+7 Conclusion
+
+We describe a natural extension to NCE that
+achieves a large speedup on the GPU while also
+achieving good empirical results. LSTM models
+trained with our NCE modification achieve strong
+results on the One Billion Word dataset. Addition-
+ally, we get good BLEU gains when re-ranking n-
+best lists from a strong string-to-tree machine trans-
+lation system. We also release an efficient toolkit for
+training LSTM language models with NCE.
+
+8 Acknowledgments
+
+This work was carried out with funding from
+DARPA (HR0011-15-C-0115) and ARL/ARO
+(W911NF-10-1-0533).
+
+References
+P. Baltescu and P. Blunsom. 2014. Pragmatic neu-
+
+ral language modelling in machine translation. arXiv
+preprint arXiv:1412.7119.
+
+C. Chelba, T. Mikolov, M. Schuster, Q. Ge, T. Brants,
+and P. Koehn. 2013. One billion word benchmark for
+
+measuring progress in statistical language modeling.
+CoRR, abs/1312.3005.
+
+D. Chiang, K. Knight, and W. Wang. 2009. 11,001 new
+features for statistical machine translation. In Proc.
+NAACL.
+
+J. Devlin, R. Zbib, Z. Huang, T. Lamar, R. Schwartz,
+and J. Makhoul. 2014. Fast and robust neural net-
+work joint models for statistical machine translation.
+In Proc. ACL.
+
+M. Galley, M. Hopkins, K. Knight, and D. Marcu. 2004.
+What’s in a translation rule? In Proc. HLT-NAACL.
+
+M. Galley, J. Graehl, K. Knight, D. Marcu, S. DeNeefe,
+W. Wang, and I. Thayer. 2006. Scalable inference and
+training of context-rich syntactic translation models.
+In Proc. ACL-COLING.
+
+M. Gutmann and A. Hyvärinen. 2010. Noise-contrastive
+estimation: A new estimation principle for unnormal-
+ized statistical models. In Proc. AI Stats.
+
+N. Habash, R. Roth, O. Rambow, R. Eskander, and
+N. Tomeh. 2013. Morphological analysis and disam-
+biguation for dialectal arabic. In Proc. NAACL.
+
+S. Hochreiter and J. Schmidhuber. 1997. Long short-
+term memory. Neural Computation, 9(8):1735–1780.
+
+Rafal Józefowicz, Oriol Vinyals, Mike Schuster, Noam
+Shazeer, and Yonghui Wu. 2016. Exploring the limits
+of language modeling. CoRR, abs/1602.02410.
+
+M. Luong, H. Pham, and C. Manning. 2015. Effective
+
+1221
+
+
+
+approaches to attention-based neural machine transla-
+tion. arXiv preprint arXiv:1508.04025.
+
+Tomáš Mikolov. 2012. Statistical language models based
+on neural networks. Presentation at Google, Mountain
+View, 2nd April.
+
+A. Mnih and Y. W. Teh. 2012. A fast and simple algo-
+rithm for training neural probabilistic language mod-
+els. arXiv preprint arXiv:1206.6426.
+
+F. J. Och. 2003. Minimum error rate training in statistical
+machine translation. In Proc. ACL.
+
+I. Sutskever, O. Vinyals, and Q. V. Le. 2014. Sequence
+to sequence learning with neural networks. In Proc.
+NIPS, pages 3104–3112.
+
+A. Vaswani, Y. Zhao, V. Fossum, and D. Chiang. 2013.
+Decoding with large-scale neural language models im-
+proves translation. In Proc. EMNLP.
+
+W. Williams, N. Prasad, D. Mrva, T. Ash, and T. Robin-
+son. 2015. Scaling recurrent neural network language
+models. CoRR, abs/1502.00512.
+
+W. Zaremba, I. Sutskever, and O. Vinyals. 2014. Re-
+current neural network regularization. arXiv preprint
+arXiv:1409.2329.
+
+1222
+
+

@@ -1,0 +1,1657 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+A Probabilistic Generative Grammar for Semantic Parsing
+
+
+Proceedings of the 21st Conference on Computational Natural Language Learning (CoNLL 2017), pages 248–259,
+Vancouver, Canada, August 3 - August 4, 2017. c©2017 Association for Computational Linguistics
+
+A Probabilistic Generative Grammar for Semantic Parsing
+
+Abulhair Saparov
+Carnegie Mellon University
+
+Machine Learning Department
+Pittsburgh, P.A.
+
+asaparov@cs.cmu.edu
+
+Vijay Saraswat
+IBM T.J. Watson
+Research Center
+
+Yorktown Heights, N.Y.
+vijay@saraswat.org
+
+Tom M. Mitchell
+Carnegie Mellon University
+
+Machine Learning Department
+Pittsburgh, P.A.
+
+tom.mitchell@cmu.edu
+
+Abstract
+
+We present a generative model of nat-
+ural language sentences and demon-
+strate its application to semantic pars-
+ing. In the generative process, a logical
+form sampled from a prior, and condi-
+tioned on this logical form, a grammar
+probabilistically generates the output
+sentence. Grammar induction using
+MCMC is applied to learn the gram-
+mar given a set of labeled sentences
+with corresponding logical forms. We
+develop a semantic parser that finds the
+logical form with the highest posterior
+probability exactly. We obtain strong
+results on the GeoQuery dataset and
+achieve state-of-the-art F1 on Jobs.
+
+1 Introduction
+
+Accurate and efficient semantic parsing is a
+long-standing goal in natural language pro-
+cessing. Existing approaches are quite suc-
+cessful in particular domains (Zettlemoyer and
+Collins, 2005, 2007; Wong and Mooney, 2007;
+Liang et al., 2011; Kwiatkowski et al., 2010,
+2011, 2013; Li et al., 2013; Zhao and Huang,
+2014; Dong and Lapata, 2016). However, they
+are largely domain-specific, relying on addi-
+tional supervision such as a lexicon that pro-
+vides the semantics or the type of each to-
+ken in a set (Zettlemoyer and Collins, 2005,
+2007; Kwiatkowski et al., 2010, 2011; Liang
+et al., 2011; Zhao and Huang, 2014; Dong
+and Lapata, 2016), or a set of initial syn-
+chronous context-free grammar rules (Wong
+and Mooney, 2007; Li et al., 2013). To ap-
+ply the above systems to a new domain, addi-
+tional supervision is necessary. When begin-
+ning to read text from a new domain, humans
+do not need to re-learn basic English gram-
+
+Semantic prior
+
+Logical form
+turn on device(Ada,gpu cluster)
+
+Generative semantic grammarParser
+
+S
+
+VP
+
+NP
+
+NPPNP
+
+V
+
+NP
+
+“Ada started the machine with the GPU”
+
+Figure 1: High-level illustration of the setting in which
+our grammar is applied in this paper. The dark arrows
+outline the generative process. During parsing, the in-
+put is the observed sentence, and we wish to find the
+most probable logical form and derivation given the
+training data under the semantic prior.
+
+mar. Rather, they may encounter novel ter-
+minology. With this in mind, our approach
+is akin to that of (Kwiatkowski et al., 2013)
+where we provide domain-independent super-
+vision to train a semantic parser on a new do-
+main. More specifically, we restrict the rules
+that may be learned during training to a set
+that characterizes the general syntax of En-
+glish. While we do not explicitly present and
+evaluate an open-domain semantic parser, we
+hope our work provides a step in that direc-
+tion.
+
+Knowledge plays a critical role in natural
+language understanding. Even seemingly triv-
+ial sentences may have a large number of am-
+biguous interpretations. Consider the sentence
+“Ada started the machine with the GPU,” for
+example. Without additional knowledge, such
+as the fact that “machine” can refer to com-
+puting devices that contain GPUs, or that
+computers generally contain devices such as
+
+248
+
+
+
+GPUs, the reader cannot determine whether
+the GPU is part of the machine or if the GPU
+is a device that is used to start machines. Con-
+text is highly instrumental to quickly and un-
+ambiguously understand sentences.
+
+In contrast to most semantic parsers, which
+are built on discriminative models, our model
+is fully generative: To generate a sentence, the
+logical form is first drawn from a prior. A
+grammar then recursively constructs a deriva-
+tion tree top-down, probabilistically selecting
+production rules from distributions that de-
+pend on the logical form (see Figure 1 for a
+high-level schematic diagram). The seman-
+tic prior distribution provides a straightfor-
+ward way to incorporate background knowl-
+edge, such as information about the types of
+entities and predicates, or the context of the
+utterance. Additionally, our generative model
+presents a promising direction to jointly learn
+to understand and generate natural language.
+
+This article describes the following contri-
+butions:
+• In Section 2, we present our grammar for-
+
+malism in its general form.
+• Section 2.2 discusses aspects of the model
+
+in its application to the later experiments.
+• In Section 3, we present a method to per-
+
+form grammar induction in this model.
+Given a set of observed sentences and
+their corresponding logical forms, we ap-
+ply Markov chain Monte Carlo (MCMC) to
+infer the posterior distributions of the pro-
+duction rules in the grammar.
+• Given a trained grammar, we also develop
+
+a method to perform parsing in Section 4:
+to find the k-best logical forms for a given
+sentence, leveraging the semantic prior to
+guide its search.
+• Using the GeoQuery and Jobs datasets,
+
+we demonstrate in Section 6 that this
+framework can be applied to create nat-
+ural language interfaces for semantic for-
+malisms as complex as Datalog/lambda cal-
+culus, which contain variables, scope ambi-
+guity, and superlatives.
+
+All code and datasets are available at github.
+com/asaparov/parser.
+
+2 Semantic grammar
+
+A grammar in our formalism operates over a
+set of nonterminals N and a set of terminal
+
+S→ N:select arg1 VP:delete arg1
+VP→ V:identity N:select arg2
+VP→ V:identity
+
+N→ “tennis” V→ “swims”
+N→ “Andre Agassi” V→ “plays”
+N→ “Chopin”
+
+Figure 2: Example of a grammar in our framework.
+This grammar operates on logical forms of the form
+predicate(first argument, second argument). The se-
+mantic function select arg1 returns the first argu-
+ment of the logical form. Likewise, the function
+select arg2 returns the second argument. The func-
+tion delete arg1 removes the first argument, and
+identity returns the logical form with no change. In
+our use of the framework, the interior production rules
+(the first three listed above) are examples of rules that
+we specify, whereas the terminal rules and the posterior
+probabilities of all rules are learned via grammar in-
+duction. We also use a richer semantic formalism than
+in this example. Section 2.2 provides more detail.
+
+S plays sport(agassi,tennis)
+
+Nagassi
+
+“Andre Agassi”
+
+VP plays sport(,tennis)
+
+V
+
+“plays”
+
+N tennis
+
+“tennis.”
+Figure 3: Example of a derivation tree under the gram-
+mar given in Figure 2. The logical form corresponding
+to every node is shown in blue beside the respective
+node. The logical form for V is plays sport(,tennis)
+and is omitted above to reduce clutter.
+
+symbolsW. It can be understood as an exten-
+sion of a context-free grammar (CFG) (Chom-
+sky, 1956) where the generative process for the
+syntax is dependent on a logical form, thereby
+coupling syntax with semantics. In the top-
+down generative process of a derivation tree, a
+logical form guides the selection of production
+rules. Production rules in our grammar have
+the form A→ B1:f1 . . . Bk :fk where A ∈ N is
+a nonterminal, Bi ∈ N∪W are right-hand side
+symbols, and fi are semantic transformation
+functions. These functions can encode how
+to “decompose” this logical form when recur-
+sively generating the subtrees rooted at each
+Bi. Thus, they enable semantic composition-
+ality. An example of a grammar in this frame-
+work is shown in Figure 2, and a derivation
+tree is shown in Figure 3. Let R be the set
+of production rules in the grammar and RA
+be the set of production rules with left-hand
+nonterminal symbol A.
+
+2.1 Generative process
+
+A parse tree (or derivation) in this formalism
+is a tree where every interior node is labeled
+
+249
+
+
+
+with a nonterminal symbol, every leaf is la-
+beled with a terminal, and the root node is
+labeled with the root nonterminal S. More-
+over, every node in the tree is associated with
+a logical form: let xn be the logical form as-
+signed to the tree node n, and x0 = x for the
+root node 0.
+
+The generative process to build a parse tree
+begins with the root nonterminal S and a log-
+ical form x. We expand S by randomly draw-
+ing a production rule from RS , conditioned
+on the logical form x. This provides the first
+level of child nodes in the derivation tree. So
+if, for example, the rule S → B1 :f1 . . . Bk :fk
+were drawn, the root node would have k
+child nodes, n1, . . . ,nk, respectively labeled
+B1, . . . , Bk. The logical form associated with
+each node is determined by the semantic trans-
+formation function: xni = fi(x). These func-
+tions describe the relationship between the
+logical form at a child node and that of its
+parent node. This process repeats recursively
+with every right-hand side nonterminal sym-
+bol, until there are no unexpanded nontermi-
+nal nodes. The sentence is obtained by taking
+the yield of the terminals in the tree (a con-
+catenation).
+
+The semantic transformation functions are
+specific to the semantic formalism and may be
+defined as appropriate to the application. In
+our parsing application, we define a domain-
+independent set of transformation functions
+(e.g., one function selects the left n conjuncts
+in a conjunction, another selects the nth argu-
+ment of a predicate instance, etc).
+
+2.2 Selecting production rules
+
+In the above description, we did not specify
+the distribution from which rules are selected
+from RA. There are many modeling options
+available when specifying this distribution. In
+our approach, we choose a hierarchical Dirich-
+let process (HDP) prior (Teh et al., 2006). Ev-
+ery nonterminal in our grammar A ∈ N will
+be associated with an HDP hierarchy. For each
+nonterminal, we specify a sequence of semantic
+feature functions, {g1, . . . , gm}, each of which
+return a discrete feature (such as an integer)
+of an input logical form x. We use this se-
+quence of feature functions to define the hier-
+archy of the HDP: starting with the root node,
+we add a child node for every possible value of
+the first feature function g1. For each of these
+
+child nodes, we add a grandchild node for ev-
+ery possible value of the second feature func-
+tion g2, and so forth. The result is a complete
+tree of depth m. Each node n in this tree is
+assigned a distribution Gn as follows:
+
+G0 ∼ DP(α0, H), (1)
+Gn ∼ DP(αn, Gπ(n)),
+
+where 0 is the root node, π(n) is the parent
+of n, α are a set of concentration parameters,
+and H is a base distribution over RA. This
+base distribution is independent of the logical
+form x.
+
+To select a rule in the generative process,
+given the logical form x, we can compute its
+feature values (g1(x), . . . , gm(x)) which specify
+a unique path in the HDP hierarchy to a leaf
+node Gx. We then draw the production rule
+from Gx. The specified set of production rules
+and semantic features are included with the
+code package. The specified rules and features
+do not change across our experiments.
+
+Take, for example, the derivation in Figure
+3. In the generative process where the node
+VP is expanded, the production rule is drawn
+from the HDP associated with the nontermi-
+nal VP. Suppose the HDP was constructed
+using a sequence of two semantic features:
+(predicate, arg2). In the example, the fea-
+ture functions are evaluated with the logical
+form plays sport(,tennis) and they return
+the sequence (plays sport, tennis). This se-
+quence uniquely identifies a path in the HDP
+hierarchy from the root node 0 to a leaf node
+n. The production rule VP→ V N is drawn
+from this leaf nodeGn, and the generative pro-
+cess continues recursively.
+
+In our implementation, we divide the set of
+nonterminals N into two groups: (1) the set
+of “interior” nonterminals, and (2) pretermi-
+nals. The production rules of preterminals are
+restricted such that the right-hand side con-
+tains only terminal symbols. The rules of inte-
+rior nonterminals are restricted such that only
+nonterminal symbols appear on the right side.
+
+1. For preterminals, we set H to be a distri-
+bution over sequences of terminal symbols
+as follows: we generate each token in the
+sequence i.i.d. from a uniform distribution
+over a finite set of terminals and a special
+stop symbol with probability φA. Once the
+stop symbol is drawn, we have finished gen-
+
+250
+
+
+
+erating the rule. Note that we do not spec-
+ify a set of domain-specific terminal sym-
+bols in defining this distribution.
+
+2. For interior nonterminals, we specify H
+as a discrete distribution over a domain-
+independent set of production rules. This
+requires specifying a set of nonterminal
+symbols, such as S, NP, VP, etc. Since these
+production rules contain semantic transfor-
+mation functions, they are specific to the
+semantic formalism.
+
+We emphasize that only the prior is specified
+here, and we will use grammar induction to
+infer the posterior. In principle, a more re-
+laxed choice of H may enable grammar induc-
+tion without pre-specified production rules,
+and therefore without dependence on a partic-
+ular semantic formalism or natural language,
+if an efficient inference algorithm can be de-
+veloped in such cases.
+
+3 Induction
+
+We describe grammar induction indepen-
+dently of the choice of rule distribution. Let
+θ be the random variables in the grammar: in
+the case of the HDP prior, θ is the set of all dis-
+tributions Gn at every node in the hierarchies.
+Given a set of sentences y , {y1, . . . , yn} and
+corresponding logical forms x , {x1, . . . , xn},
+we wish to compute the posterior p(t,θ|x,y)
+over the unobserved variables: the grammar
+θ and the latent derivations/parse trees t ,
+{t1, . . . , tn}. This is intractable to compute
+exactly, and so we resort to Markov chain
+Monte Carlo (MCMC) (Gelfand and Smith,
+1990; Robert and Casella, 2010). To perform
+blocked Gibbs sampling, we pick initial values
+for t and θ and repeat the following:
+
+1. For i = 1, . . . , n, sample ti|θ, xi, yi.
+2. Sample θ|t.
+
+However, since the sampling of each tree t de-
+pends on θ, and we need to resample all n
+parse trees before sampling θ, this Markov
+chain can be slow to mix. Thus, we employ
+collapsed Gibbs sampling by integrating out
+θ. In this algorithm, we repeatedly sample
+from ti|t−i, xi, yi where t−i = t \ {ti}.
+p(ti|t−i, xi, yi) = (2)
+
+1{yield(ti) = yi}
+∏
+A∈N
+
+p
+
+( ⋂
+{n∈ti :n
+
+has label A}
+
+rn
+
+∣∣∣∣∣ t−i, xi
+)
+,
+
+where the intersection is taken over tree nodes
+n ∈ ti labeled with the nonterminal A, rn is
+the production rule at node n, and 1{·} is 1 if
+the condition is true and zero otherwise. With
+θ integrated out, the probability does not nec-
+essarily factorize over rules. In the case of the
+HDP prior, selecting a rule will increase the
+probability that the same rule is selected again
+(due to the “rich get richer” effect observed in
+the Chinese restaurant process). We instead
+use a Metropolis-Hastings step to sample ti,
+where the proposal distribution is given by the
+fully factorized form:
+
+p(t∗i |t−i, xi, yi) = (3)
+1{yield(t∗i ) = yi}
+
+∏
+n∈t∗i
+
+p (rn | t−i, xni ) .
+
+After sampling t∗i , we choose to accept the new
+sample with probability∏
+
+n∈ti p(r
+n|xn, t−i)
+
+p
+(⋂
+
+n∈ti r
+n|x, t−i
+
+) p
+(⋂
+
+n∈t∗i r
+n|x, t−i
+
+)
+∏
+
+n∈t∗i p(r
+n|xn, t−i) ,
+
+where ti, here, is the old sample, and t∗i is the
+newly proposed sample. In practice, this ac-
+ceptance probability is very high. This ap-
+proach is very similar in structure to that
+in Johnson et al. (2007); Blunsom and Cohn
+(2010); Cohn et al. (2010).
+
+If an application requires posterior samples
+of the grammar variables θ, we can obtain
+them by drawing from θ|t after the collapsed
+Gibbs sampler has mixed. Note that this algo-
+rithm requries no further supervision beyond
+the utterances y and logical forms x. However,
+it is able to exploit additional information such
+as supervised derivations/parse trees. For ex-
+ample, a lexicon can be provided where each
+entry is a terminal symbol yi with a corre-
+sponding logical form label xi. We evaluate
+our method with and without such a lexicon.
+
+Refer to Saparov and Mitchell (2016) for
+details on HDP inference and computing
+p(rn|xn, t−i).
+
+3.1 Sampling t∗i
+To sample from equation (3), we use inside-
+outside sampling (Finkel et al., 2006; John-
+son et al., 2007), a dynamic programming
+approach, where the inside step is imple-
+mented using an agenda-driven chart parser
+(Indurkhya and Damerau, 2010). The algo-
+rithm fills a chart, which has a cell for every
+
+251
+
+
+
+nonterminal A, sentence start position i, end
+position j, and logical form x. The algorithm
+aims to compute the inside probability of ev-
+ery chart cell: that is, for every cell (A, i, j, x),
+we compute the probability that t∗i contains
+a subtree rooted with the nonterminal A and
+logical form x, spanning the sentence positions
+(i, j). Let I(A,i,j,x) be the inside probability at
+the chart cell (A, i, j, x):
+
+I(A,i,j,x) =
+∑
+
+A→B1:f1...BK :fK∑
+i=l1<...<lK+1=j
+
+K∏
+u=1
+
+I(Bu,lu,lu+1,fu(x)). (4)
+
+Each item in the agenda represents a snapshot
+of the computation of this expression for a sin-
+gle rule A → B1 : f1 . . . BK : fK . The agenda
+item stores the current position in the rule k,
+the set of sentence spans that correspond to
+the first k right-hand side symbols l1, . . . , lk+1,
+the span of the rule (i, j), the logical form x,
+and the inside probability of the portion of the
+rule computed so far. At every iteration, the
+algorithm pops an item from the agenda and
+adds it to the chart, and considers the next
+right-hand side symbol Bk.
+• If Bk is a terminal, it will match it against
+
+the input sentence. If the terminal does not
+match the sentence, this agenda item is dis-
+carded and the algorithm continues to the
+next iteration. If the terminal does match,
+the algorithm increments the rule. That
+is, for each possible value of lk+2, the al-
+gorithm constructs a new agenda item con-
+taining the same contents as the old agenda
+item, but with rule position k + 1.
+• If Bk is a nonterminal, the algorithm will
+
+expand it (if it was not previously expanded
+at this cell). The algorithm considers ev-
+ery production rule of the form Bk → β,
+and every possible end position for the next
+nonterminal lk+2 = lk+1 + 1, . . . , j − 1,
+and enqueues a new agenda item with rule
+Bk → β, rule position set to 1, span set
+to (lk, lk+1), logical form set to fk(x), and
+inside probability initialized to 1. The orig-
+inal agenda item is said to be “waiting” for
+Bk to be completed later on in the algo-
+rithm.
+• If the rule is complete (there are no sub-
+
+sequent symbols in the rule of this agenda
+item), we can compute its inner probabil-
+
+ity p(A → B1 :f1 . . . BK :fK |x, t−i). First,
+we record that this rule was used to com-
+plete the left-hand nonterminalA at the cell
+(A, i, j, x). Then, we consider every agenda
+item in the chart that is currently “wait-
+ing” for the left-hand nonterminal A at this
+sentence span. The search increments each
+“waiting” item, adding a new item to the
+agenda for each, whose log probability is
+the sum of the log probability of the old
+agenda item and the log probability of the
+completed rule.
+
+We prioritize items in the agenda by i − j
+(so items with smaller spans are dequeued
+first). This ensures that whenever the search
+considers expanding Bk, if Bk was previously
+expanded at this cell, its inside probabil-
+ity is fully computed. Thus, we can avoid
+re-expanding Bk and directly increment the
+agenda item. The algorithm terminates when
+there are no items in the agenda.
+
+All that remains is the outside step: to sam-
+ple the tree given the computed inside proba-
+bilities. To do so, we begin with the chart cell
+(S, 0, |yi|, xi) where |yi| is the length of sen-
+tence yi, and we consider all completed rules
+at this cell (these rules will be of the form
+S → β). Each rule will have a computed inside
+probability, and we can sample the rule from
+the categorical distribution according to these
+inside probabilities. Then, we consider the
+right-hand side nonterminals in the selected
+rule, and continue sampling recursively. The
+end result is a tree sampled from equation (3).
+
+4 Parsing
+
+For a new sentence y∗, we aim to find the log-
+ical form x∗ and derivation t∗ that maximizes
+
+p(x∗, t∗|y∗,θ) ∝ p(x∗)p(y∗|t∗)p(t∗|x∗,θ),
+= 1{yield(t∗) = y∗}p(x∗)
+
+∏
+n∈t∗
+
+p(rn|xn∗ ,θ). (5)
+
+Here, θ is a point estimate of the grammar,
+which may be obtained from a single sample,
+or from a Monte Carlo average over a finite set
+of samples.
+
+To perform parsing, we first describe an
+algorithm to compute the derivation t∗ that
+maximizes the above quantity, given the log-
+ical form x∗ and input sentence y∗. We will
+later demonstrate how this algorithm can be
+used to find the optimal logical form and
+
+252
+
+
+
+derivation x∗, t∗. To find the optimal t∗, we
+again use an agenda-driven chart parser to
+perform the optimization, with a number of
+important differences. Each agenda item will
+keep track the derivation tree completed so far.
+
+The algorithm is very similar in structure to
+the inside algorithm described above. At every
+iteration of the algorithm, an item is popped
+from the agenda and added to the chart, ap-
+plying one of the three operations available to
+the inside algorithm. The algorithm begins by
+expanding the root nonterminal S at (0, |y∗|)
+with the logical form x∗.
+
+4.1 Agenda prioritization
+
+The most important difference from the in-
+side algorithm is the prioritization of agenda
+items. For a given agenda item with rule
+A → B1 : f1 . . . BK : fK with logical form x
+at sentence position (i, j), we aim to assign as
+its priority an upper bound on equation (5) for
+any derivation that contains this rule at this
+position. To do so, we can split the product in
+the objective
+
+∏
+n∈t∗ p(r
+
+n|xn∗ ,θ) into a product
+of two components: (1) the inner probability
+is the product of the terms that correspond to
+the subtree of t∗ rooted at the current agenda
+item, and (2) the outer probability is the prod-
+uct of the remaining terms, which correspond
+to the parts of t∗ outside of the subtree rooted
+at the agenda item. A schematic decomposi-
+tion of a derivation tree is shown in Figure 4.
+
+We define an upper bound on the log inner
+probability I(A,i,j) for any subtree rooted at
+nonterminal A at sentence span (i, j).
+
+I(A,i,j) , (6)
+
+max
+A→B1...BK
+
+(
+max
+x′
+
+log p(A→ B1, . . . , BK |x′,θ)
+
++ max
+l2<...<lK
+
+K∑
+k=1
+
+I(Bk,lk,lk+1)
+
+)
+,
+
+where l1 = i, lK+1 = j. Note that the left
+term is a maximum over all logical forms x′,
+and so this upper bound only considers syntac-
+tic information. The right term can be maxi-
+mized using dynamic programming in O(K2).
+As such, classical syntactic parsing algorithms
+can be applied to compute I for every chart
+cell in O(n3). For any terminal symbol T , we
+define I(T,i,j) = 0.
+
+We similarly define O(A,i,j,x) representing a
+
+bound on the outer probability at every cell.
+
+O(A,i,j,x) , max{t:yield(t)=y∗}
+
+(
+log p(x) (7)
+
++ log p(tL|x,θ) +
+∑
+
+(A′,i′,j′)∈r(tR)
+I(A′,i′,j′)
+
+)
+,
+
+where the maximum is taken over t which is a
+derivation containing a subtree rooted at A at
+sentence position (i, j). In this expression, tL
+is the outer-left portion of the derivation tree
+t, tR is the outer-right portion, and r(tR) is
+the set of root vertices of the trees in tR.
+
+Using these two upper bounds, we define the
+priority of any agenda item with rule A →
+B1 :f1 . . . BK :fK at rule position k, with log
+probability score ρ, and logical form x as:
+
+ρ+ max
+lk+2<...<lK+1
+
+K∑
+u=k
+
+I(Bu,lu,lu+1)+O(A,i,j,x). (8)
+
+Thm 1. If the priority of agenda items is com-
+puted as in equation (8), then at every itera-
+tion of the chart parser, the priority of new
+agenda items will be at most the priority of
+the current item.
+
+Proof. See supplementary material A.
+
+Thus, the search is monotonic1. That is,
+the maximum priority of items in the agenda
+never increases.
+
+This property allows us to compute the
+outer probability bound O(A,i,j,x) for free.
+Computing it directly is intractable. Consider
+the expansion step for an agenda item with
+rule A → B1 :f1 . . . BK :fK at rule position k,
+with log probability score ρ, and logical form
+x. The nonterminal Bk is expanded next at
+sentence position (lk, lk+1), and its outer prob-
+ability is simply
+
+O(Bk,lk,lk+1,fk(x)) = ρ + (9)
+
+max
+lk+2<...<lK+1
+
+K∑
+u=k+1
+
+I(Bu,lu,lu+1) +O(A,i,j,x).
+
+The monotonicity of the search guarantees
+that any subsequent expansion of Bk at
+(lk, lk+1) will not yield a more optimal bound.
+
+Monotonicity also guarantees that when the
+algorithm completes a derivation for the root
+nonterminal S, it is optimal (i.e. the Viterbi
+
+1In the presentation of the algorithm as an A*
+search, the heuristic is consistent.
+
+253
+
+
+
+S
+
+NP
+
+N
+
+VP
+
+V NP
+
+N
+
+PP
+
+P N
+
+full parse
+=
+
+S
+
+NP
+
+N
+
+VP
+
+V
+
+left outer parse
+
++
+NP
+
+N
+
+inner parse
+
++
+PP
+
+P N
+
+right outer parse
+
+Figure 4: Decomposition of a parse tree into its left outer parse, inner parse, and its right outer parse. This
+is one example of such a decomposition. For instance, we may similarly produce a decomposition where the
+prepositional phrase is the inner parse, or where the verb is the inner parse. The terminals are omitted and only
+the syntactic portion of the parse is displayed here for conciseness.
+
+parse). In this way, we can continue execu-
+tion to obtain the k-best parses for the given
+sentence.
+
+4.2 Optimization over logical forms
+
+The above algorithm finds the optimal deriva-
+tion t∗, given a sentence y∗, logical form x∗,
+and grammar θ. To jointly optimize over both
+the derivation and logical form, given θ, imag-
+ine running the above algorithm repeatedly
+for every logical form. This approach, imple-
+mented naively, is clearly infeasible due to the
+sheer number of possible logical forms. How-
+ever, there is a great deal of overlap across
+the multiple runs, which corresponds to shared
+substructures across logical forms, which we
+can exploit to develop an efficient and exact
+algorithm. At the first step of every run, the
+root nonterminal is expanded for every logi-
+cal form. This would create of a new agenda
+item for every logical form, which are identi-
+cal in every field except for the logical form
+(and therefore, its prior probability). Thus,
+we can represent this set of agenda items as a
+single agenda item, where instead of an indi-
+vidual logical form x, we store a logical form
+set X. The outer probability bound is now
+defined over sets of logical forms: O(A,i,j,X) ,
+maxx∈X O(A,i,j,x). We can use this quantity in
+equation (8) to compute the priority of these
+“aggregated” agenda items. Thus, this algo-
+rithm is a kind of branch-and-bound approach
+to the combinatorial optimization problem. A
+sparse representation of a set of logical forms
+is essential for efficient parsing.
+
+Another difference arises after completing
+the parsing of a rule A → B1 : f1 . . . BK : fK
+with a set of logical forms X, where we need
+to compute log p(A → B1 :f1 . . . BK :fK |x,θ).
+In the inside algorithm, this was straightfor-
+ward since there was only a single logical
+form. But in the parsing setting, X is a set
+of logical forms, and the aforementioned prob-
+
+ability can vary across instances within this
+set (for the HDP prior, for example, the set
+may correspond to multiple distinct paths in
+the HDP hierarchy). Therefore, we divide X
+into its equivalence classes. More precisely,
+consider the set of disjoint subsets of X =
+X1
+⋃
+. . .
+⋃
+Xm where Xi
+
+⋂
+Xj = ∅ for i 6= j,
+
+such that p(A→ B1:f1 . . . BK :fK |x′,θ) is the
+same for every x′ ∈ Xi. For each equivalence
+class Xi, we create a “completed nonterminal”
+item with the appropriate parse tree, log prob-
+ability, and logical form set Xi. With these, we
+continue inspecting the chart for search states
+“waiting” for the nonterminal A.
+
+The increment operation is also slightly dif-
+ferent in the parser. When we increment a rule
+A → B1 :f1 . . . BK :fK after completing pars-
+ing for the symbol Bk with logical form set X,
+we create a new agenda item with the same
+contents as the old item, but with the rule po-
+sition increased by one. The log probability
+of the new agenda item is the sum of the log
+probabilities of the old agenda item and the
+completed subtree. Similarly the logical form
+set of the new agenda item will be the inter-
+section of {f−1k (x) : x ∈ X} and the logical
+forms in the old agenda item.
+
+Our implementation is available for refer-
+ence at github.com/asaparov/grammar and
+github.com/asaparov/parser.
+
+5 Semantic prior
+
+The modular nature of the semantic prior al-
+lows us to explore many different models of
+logical forms. We experiment with a fairly
+straightforward prior: Predicate instances are
+generated left-to-right, conditioned only on
+the last predicate instance that was sampled
+for each variable. When a predicate instance
+is sampled, its predicate, arity, and “direc-
+tion”2 are simultaneously sampled from a cat-
+
+2size(A), size(A,B), vs size(B,A), etc.
+
+254
+
+
+
+Method
+Additional
+Supervision
+
+GeoQuery Jobs
+P R F1 P R F1
+
+WASP (Wong and Mooney, 2006) 1,2 87.2 74.8 80.5
+λ-WASP (Wong and Mooney, 2007) 1,2,6 92.0 86.6 89.2
+Extended GHKM (Li et al., 2013) 2,6 93.0 87.6 90.2
+
+Zettlemoyer and Collins (2005) 3,5,6 96.3 79.3 87.0 97.3 79.3 87.4
+Zettlemoyer and Collins (2007) 3,5,6 91.6 86.1 88.8
+UBL (Kwiatkowski et al., 2010) 5 94.1 85.0 89.3
+FUBL (Kwiatkowski et al., 2011) 5 88.6 88.6 88.6
+TISP (Zhao and Huang, 2014) 5,6 92.9 88.9 90.9 85.0 85.0 85.0
+GSG − lexicon − type-checking 4 86.9 75.7 80.9 89.5 67.1 76.7
+GSG + lexicon − type-checking 4,5 88.4 81.8 85.0 91.4 75.7 82.8
+GSG − lexicon + type-checking 4,6 89.3 77.9 83.2 93.2 69.3 79.5
+GSG + lexicon + type-checking 4,5,6 90.7 83.9 87.2 97.4 81.4 88.7
+
+Legend for sources of additional supervision are:
+1. Training set containing 792 examples, 2. Domain-specific set of initial synchronous CFG rules,
+3. Domain-independent set of lexical templates, 4. Domain-independent set of interior production rules,
+5. Domain-specific initial lexicon, 6. Type-checking and type specification for entities.
+
+Figure 5: The methods in the top part of the table were evaluated using 10-fold cross validation, whereas those
+in the bottom part were evaluated with an independent test set.
+
+Logical form: answer(A,smallest(A,state(A))) answer(A,largest(B,(state(A),population(A,B))))
+Test sentence: “Which state is the smallest?” “Which state has the most population?”
+Generated: “What state is the smallest?” “What is the state with the largest population?”
+
+Figure 6: Examples of sentences generated from our trained grammar on logical forms in the GeoQuery test set.
+Generation is performed by computing arg maxy∗ p(y∗|x∗,θ).
+
+egorical distribution. Functions like largest,
+shortest, etc, are sampled in the same pro-
+cess. We again use an HDP to model the
+discrete distribution conditioned on a discrete
+random variable.
+
+We also follow Wong and Mooney (2007); Li
+et al. (2013); Zhao and Huang (2014) and ex-
+periment with type-checking, where every en-
+tity is assigned a type in a type hierarchy, and
+every predicate is assigned a functional type.
+We incorporate type-checking into the seman-
+tic prior by placing zero probability on type-
+incorrect logical forms. More precisely, logical
+forms are distributed according to the original
+prior, conditioned on the fact that the logical
+form is type-correct. Type-checking requires
+the specification of a type hierarchy. Our hi-
+erarchy contains 11 types for GeoQuery and
+12 for Jobs. We run experiments with and
+without type-checking for comparison.
+
+6 Results
+
+To evaluate our parser, we use the GeoQuery
+and Jobs datasets. Following Zettlemoyer and
+Collins (2007), we use the same 600 Geo-
+Query sentences for training and an indepen-
+dent test set of 280 sentences. On Jobs, we
+use the same 500 sentences for training and
+140 for testing. We run our parser with two se-
+
+tups: (1) with no domain-specific supervision,
+and (2) using a small domain-specific lexicon
+and a set of beliefs (such as the fact that Port-
+land is a city). For each setup, we run the
+experiments with and without type-checking,
+for a total of 4 experimental setups. A given
+output logical form is considered correct if it
+is semantically equivalent to the true logical
+form.3 We measure the precision and recall
+of our method, where precision is the num-
+ber of correct parses divided by the number of
+sentences for which our parser provided out-
+put, and recall is the number of correct parses
+divided by the total number of sentences in
+each dataset. Our results are shown compared
+against many other semantic parsers in Figure
+5. Our method is labeled GSG for “genera-
+tive semantic grammar.” The numbers for the
+baselines were copied from their respective pa-
+pers, and so their specified lexicons/type hier-
+archies may differ slightly.
+
+Many sentences in the test set contain to-
+kens previously unseen in the training set. In
+such cases, the maximum possible recall is
+88.2 and 82.3 on GeoQuery and Jobs, re-
+spectively. Therefore, we also measure the ef-
+fect of adding a domain-specific lexicon, which
+
+3The result of execution of the output logical form
+is identical to that of the true logical form, for any
+grounding knowledge base/possible world.
+
+255
+
+
+
+maps semantic constants like maine to the
+noun “maine” for example. This lexicon is
+analogous to the string-matching and argu-
+ment identification steps previous parsers. We
+constructed the lexicon manually, with an en-
+try for every city, state, river, and mountain
+in GeoQuery (141 entries), and an entry for
+every city, company, position, and platform in
+Jobs (180 entries).
+
+Aside from the lexicon and type hierarchy,
+the only training information is given by the
+set of sentences y, corresponding logical forms
+x, and the domain-independent set of interior
+production rules, as described in section 2.2.
+In our experiments, we found that the sampler
+converges rapidly, with only 10 passes over the
+data. This is largely due to our restriction
+of the interior production rules to a domain-
+independent set.
+
+We emphasize that the addition of type-
+checking and a lexicon are mainly to enable a
+fair comparison with past approaches. As ex-
+pected, their addition greatly improves pars-
+ing performance. Our method achieves state-
+of-the-art F1 on the Jobs dataset. How-
+ever, even without such domain-specific super-
+vision, the parser performs reasonably well.
+
+7 Related work
+
+Our grammar formalism can be related to
+synchronous CFGs (SCFGs) (Aho and Ull-
+man, 1972) where the semantics and syntax
+are generated simultaneously. However, in-
+stead of modeling the joint probability of the
+logical form and natural language utterance
+p(x, y), we model the factorized probability
+p(x)p(y|x). Modeling each component in isola-
+tion provides a cleaner division between syntax
+and semantics, and one half of the model can
+be modified without affecting the other (such
+as the addition of new background knowl-
+edge, or changing the language/semantic for-
+malism). We used a CFG in the syntactic
+portion of our model (although our grammar
+is not context-free, due to the dependence
+on the logical form). Richer syntactic for-
+malisms such as combinatory categorial gram-
+mar (Steedman, 1996) or head-driven phrase
+structure grammar (Pollard and Sag, 1994)
+could replace the syntactic component in our
+framework and may provide a more uniform
+analysis across languages. Our model is simi-
+lar to lexical functional grammar (LFG) (Ka-
+
+plan and Bresnan, 1995), where f -structures
+are replaced with logical forms. Nothing in our
+model precludes incorporating syntactic infor-
+mation like f-structures into the logical form,
+and as such, LFG is realized in our framework.
+Our approach can be used to define new gener-
+ative models of these grammatical formalisms.
+We implemented our method with a particu-
+lar semantic formalism, but the grammatical
+model is agnostic to the choice of semantic for-
+malism or the language. As in some previous
+parsers, a parallel can be drawn between our
+parsing problem and the problem of finding
+shortest paths in hypergraphs using A* search
+(Klein and Manning, 2001, 2003; Pauls and
+Klein, 2009; Pauls et al., 2010; Gallo et al.,
+1993).
+
+8 Discussion
+
+In this article, we presented a generative model
+of sentences, where each sentence is gener-
+ated recursively top-down according to a se-
+mantic grammar, where each step is condi-
+tioned on the logical form. We developed a
+method to learn the posterior of the gram-
+mar using a Metropolis-Hastings sampler. We
+also derived a Viterbi parsing algorithm that
+takes into account the prior probability of the
+logical forms. Through this semantic prior,
+background knowledge and other information
+can be easily incorporated to better guide the
+parser during its search. Our parser provides
+state-of-the-art results when compared with
+past approaches.
+
+As a generative model, there are promising
+applications to interactive learning, caption
+generation, data augmentation, etc. Richer
+semantic priors can be applied to perform on-
+tology learning, relation extraction, or con-
+text modeling. Applying this work to semi-
+supervised settings is also interesting. The av-
+enues for future work are numerous.
+
+Acknowledgments
+
+We thank the anonymous reviewers for their
+helpful feedback, and we also thank Em-
+manouil A. Platanios for insightful discus-
+sion and comments. This research is based
+upon work supported in part by the Office of
+the Director of National Intelligence (ODNI),
+IARPA, and by DARPA under contract num-
+ber FA8750-13-2-0005. The views and conclu-
+sions contained herein are those of the authors
+
+256
+
+
+
+and should not be interpreted as necessar-
+ily representing the official policies, either ex-
+pressed or implied of ODNI, IARPA, DARPA,
+or the US government. The US Government
+is authorized to reproduce and distribute the
+reprints for governmental purposed notwith-
+standing any copyright annotation therein.
+
+References
+
+Albert V. Aho and Jeffery D. Ullman. 1972. The
+Theory of Parsing, Translation, and Compiling ,
+volume 1. Prentice-Hall, Englewood Cliffs, NJ.
+
+Phil Blunsom and Trevor Cohn. 2010. Inducing
+synchronous grammars with slice sampling. In
+HLT-NAACL. The Association for Computa-
+tional Linguistics, pages 238–241.
+
+Noam Chomsky. 1956. Three models for the de-
+scription of language. IRE Transactions on In-
+formation Theory 2:113–124.
+
+Trevor Cohn, Phil Blunsom, and Sharon Goldwa-
+ter. 2010. Inducing tree-substitution grammars.
+Journal of Machine Learning Research 11:3053–
+3096.
+
+Li Dong and Mirella Lapata. 2016. Language
+to logical form with neural attention. CoRR
+abs/1601.01280.
+
+Jenny Rose Finkel, Christopher D. Manning, and
+Andrew Y. Ng. 2006. Solving the problem
+of cascading errors: approximate bayesian in-
+ference for linguistic annotation pipelines. In
+EMNLP ’06: Proceedings of the 2006 Confer-
+ence on Empirical Methods in Natural Language
+Processing . Association for Computational Lin-
+guistics, Morristown, NJ, USA, pages 618–626.
+
+Giorgio Gallo, Giustino Longo, and Stefano Pallot-
+tino. 1993. Directed hypergraphs and applica-
+tions. Discrete Applied Mathematics 42(2):177–
+201.
+
+Alan E. Gelfand and Adrian F. M. Smith.
+1990. Sampling-based approaches to calculat-
+ing marginal densities. Journal of the American
+Statistical Association 85(410):398–409.
+
+Nitin Indurkhya and Fred J. Damerau, editors.
+2010. Handbook of Natural Language Process-
+ing, Second Edition. Chapman and Hall/CRC.
+
+M. Johnson, T. L. Griffiths, and S. Goldwater.
+2007. Bayesian inference for PCFGs via Markov
+chain Monte Carlo. In Proceedings of the North
+American Conference on Computational Lin-
+guistics (NAACL ’07).
+
+Ronald M. Kaplan and Joan Bresnan. 1995.
+Lexical-functional grammar: A formal system
+for grammatical representation.
+
+Dan Klein and Christopher D. Manning. 2001.
+Parsing and hypergraphs. In IWPT . Tsinghua
+University Press.
+
+Dan Klein and Christopher D. Manning. 2003. A*
+parsing: Fast exact viterbi parse selection. In
+HLT-NAACL.
+
+Tom Kwiatkowski, Eunsol Choi, Yoav Artzi, and
+Luke S. Zettlemoyer. 2013. Scaling semantic
+parsers with on-the-fly ontology matching. In
+EMNLP . ACL, pages 1545–1556.
+
+Tom Kwiatkowski, Luke S. Zettlemoyer, Sharon
+Goldwater, and Mark Steedman. 2010. Induc-
+ing probabilistic ccg grammars from logical form
+with higher-order unification. In EMNLP . ACL,
+pages 1223–1233.
+
+Tom Kwiatkowski, Luke S. Zettlemoyer, Sharon
+Goldwater, and Mark Steedman. 2011. Lexical
+generalization in ccg grammar induction for se-
+mantic parsing. In EMNLP . ACL, pages 1512–
+1523.
+
+Peng Li, Yang Liu, and Maosong Sun. 2013. An
+extended ghkm algorithm for inducing lambda-
+scfg. In Marie desJardins and Michael L.
+Littman, editors, AAAI . AAAI Press.
+
+Percy Liang, Michael I. Jordan, and Dan Klein.
+2011. Learning dependency-based composi-
+tional semantics. CoRR abs/1109.6841.
+
+Adam Pauls and Dan Klein. 2009. K-best a*
+parsing. In Keh-Yih Su, Jian Su, and Janyce
+Wiebe, editors, ACL/IJCNLP . The Association
+for Computer Linguistics, pages 958–966.
+
+Adam Pauls, Dan Klein, and Chris Quirk. 2010.
+Top-down k-best a* parsing. In Proceedings of
+the ACL 2010 Conference Short Papers. Asso-
+ciation for Computational Linguistics, Strouds-
+burg, PA, USA, ACLShort ’10, pages 200–204.
+
+Carl Pollard and Ivan A. Sag. 1994. Head-
+driven phrase structure grammar . University of
+Chicago Press, Chicago.
+
+C. P. Robert and G. Casella. 2010. Monte Carlo
+Statistical Methods. Springer, New York, NY.
+
+Abulhair Saparov and Tom M. Mitchell. 2016. A
+probabilistic generative grammar for semantic
+parsing. In arXiv:1606.06361 .
+
+Mark Steedman. 1996. Surface structure and in-
+terpretation. Linguistic inquiry monographs, 30.
+MIT Press.
+
+Yee Whye Teh, Michael I. Jordan, Matthew J.
+Beal, and David M. Blei. 2006. Hierarchical
+dirichlet processes. Journal of the American
+Statistical Association 101(476):1566–1581.
+
+257
+
+
+
+Yuk Wah Wong and Raymond J. Mooney. 2006.
+Learning for semantic parsing with statistical
+machine translation. In Robert C. Moore,
+Jeff A. Bilmes, Jennifer Chu-Carroll, and Mark
+Sanderson, editors, HLT-NAACL. The Associa-
+tion for Computational Linguistics.
+
+Yuk Wah Wong and Raymond J. Mooney. 2007.
+Learning synchronous grammars for semantic
+parsing with lambda calculus. In John A. Car-
+roll, Antal van den Bosch, and Annie Zaenen,
+editors, ACL. The Association for Computa-
+tional Linguistics.
+
+Luke S. Zettlemoyer and Michael Collins. 2005.
+Learning to map sentences to logical form:
+Structured classification with probabilistic cat-
+egorial grammars. In UAI . AUAI Press, pages
+658–666.
+
+Luke S. Zettlemoyer and Michael Collins. 2007.
+Online learning of relaxed ccg grammars for
+parsing to logical form. In Jason Eisner, editor,
+EMNLP-CoNLL. ACL, pages 678–687.
+
+Kai Zhao and Liang Huang. 2014. Type-driven in-
+cremental semantic parsing with polymorphism.
+CoRR abs/1411.5379.
+
+A Proof of Thm 1
+
+Induct on the iteration of the algorithm. Let a
+be the current agenda item, where the produc-
+tion rule of the item is A → B1 :f1 . . . BK :fK ,
+the rule position is k, the set of sentence spans
+that correspond to the first k right-hand side
+symbols is l1, . . . , lk+1, the span of the rule is
+(i, j), the logical form is x, and the log proba-
+bility of the first k right-hand side symbols is
+ρ. For notational brevity, we let c(a) denote
+the priority of the agenda item a as defined in
+equation (8). There are three cases:
+
+Case 1 If Bk is a terminal, a new agenda
+item is created only if the terminal matches
+the token in the input sentence. Then for each
+possible value of lk+2, a new agenda item a′ is
+created, where ρ is the same as that in the old
+agenda item a. Since the logical form is the
+same, and
+
+I(Bk,lk,lk+1) + maxlk+3<...<lK+1
+
+K∑
+u=k+1
+
+I(Bu,lu,lu+1)
+
+≤ max
+lk+2<...<lK+1
+
+K∑
+u=k
+
+I(Bu,lu,lu+1),
+
+the priority of the new agenda item is at most
+that of the old item c(a′) ≤ c(a).
+
+Case 2 If Bk is a nonterminal, it proceeds
+to “expand” it. Suppose to the contrary that
+we create an agenda item whose priority is
+greater than that of the current item. This
+implies that there exists a production rule
+Bk → C1 . . . CK′ and a set of sentence spans
+l′2 < . . . < l′K′+1 such that
+
+c(a) =
+
+ρ+ max
+lk+2<...<lK+1
+
+K∑
+u=k
+
+I(Bu,lu,lu+1) +O(A,i,j,x),
+
+<
+
+K′∑
+u=1
+
+I(Cu,l′u,l′u+1) +O(Bk,lk,lk+1,fk(x))
+
+≤ I(Bk,lk,lk+1) +O(Bk,lk,lk+1,fk(x)),
+where l′1 = lk and lK′+1 = lk+1. By defini-
+tion of the bound on the outer probability,
+the above inequality implies that there exists
+a derivation t′ and logical form x′ such that
+fk(x′) = fk(x) and
+
+c(a) < log p(x′) + log p(t′L|x′,θ)
++ I(Bk,lk,lk+1) +
+
+∑
+(A′,i′,j′)∈r(t′R)
+
+I(A′,i′,j′). (10)
+
+Let D → E1 . . . EK′′ be the production rule in
+t′ that contains theBk nonterminal at sentence
+span (lk, lk+1), and so for some m, Em = Bk.
+In addition, let s′i be the sibling derivation tree
+rooted at Ei for all i = 1, . . . ,m − 1. There-
+fore, there must exist an agenda item a′ with
+the same production rule, with rule position
+m, (lk, lk+1) as the sentence spans of Dm, log
+probability of the first m right-hand side sym-
+bols
+
+∑m−1
+i=1 log p(s
+
+′
+i|x′,θ), and logical form x′.
+
+The priority of this rule state is
+
+c(a′) =
+m−1∑
+i=1
+
+log p(s′i|x′,θ)
+
++ max
+lm+2<...<lK′′+1
+
+K′′∑
+u=m
+
+I(Eu,lu,lu+1) +O(D,i′,j′,x′).
+
+By definition of the outer probability
+bound, we have O(D,i′,j′,x′) ≥ log p(x′) +
+log p(t′′L|x′,θ) +
+
+∑
+(A′,i′,j′)∈r(t′′R) I(A′,i′,j′) where
+
+t′′L is the outer-left portion of the derivation
+tree t′ not containing the subtree rooted
+at the nonterminal C, and t′′R is similarly
+the outer-right portion. Thus, we can lower
+
+258
+
+
+
+bound c(a′)
+
+c(a′) ≥
+
+log p(x′) + log p(t′′L|x′,θ) +
+m−1∑
+i=1
+
+log p(s′i|x′,θ)
+
++ max
+lm+2<...<lK′′+1
+
+K′′∑
+u=m
+
+I(Du,lu,lu+1) +
+∑
+
+(A′,i′,j′)∈r(t′′R)
+I(A′,i′,j′),
+
+which is at least the quantity in equation (10),
+since
+
+log p(t′L|x′,θ) =
+
+log p(t′′L|x′,θ) +
+m−1∑
+i=1
+
+log p(s′i|x′,θ),∑
+(A′,i′,j′)∈r(t′R)
+
+I(A′,i′,j′) ≤
+
+max
+lm+2<...<lK′′+1
+
+K′′∑
+u=m+1
+
+I(Du,lu,lu+1) +
+∑
+
+(A′,i′,j′)∈r(t′′R)
+I(A′,i′,j′).
+
+Thus, c(a′) > c(a), and so by the inductive hy-
+pothesis, a′ was processed by the algorithm at
+an earlier iteration. However, this would mean
+that the nonterminal Bk is expanded more
+than once at the sentence location (lk, lk+1),
+which is disallowed.
+
+Case 3 If the rule is complete, the algo-
+rithm looks for previously-processed agenda
+items that are “waiting” for a derivation of
+Bk at positions (lk, lk+1). The algorithm will
+combine the completed derivation with the
+waiting state and create a new agenda item
+where the rule position is incremented by 1.
+Suppose to the contrary that the new agenda
+item a′ has priority greater than the current
+item a. Let the production rule of a′ be
+D → E1 : f1 . . . EK′ :: fK′ where Em = A for
+some m, and so m is the rule position of a′.
+Additionally, let the sentence spans of the first
+m− 1 right-hand symbols be l′1, . . . , l′m−1, and
+ρ′ is the log probability of the first m−1 right-
+hand symbols, and the logical form is x′ where
+fm(x′) = x. Therefore, we can write
+
+c(a) = log p(t′A|x,θ) +O(A,i,j,x),
+< ρ′ + log p(t′A|x,θ) +O(D,i′,j′,x′)
+
++ max
+lm+3<...<lK′
+
+K′∑
+u=m+1
+
+I(Du,l′u,l′u+1) = c(a
+′).
+
+This expression implies
+
+O(A,i,j,x) < ρ
+′ +
+
+max
+lm+3<...<lK′
+
+K′∑
+u=m+1
+
+I(Du,l′u,l′u+1) +O(C,i′,j′,x′),
+
+but this is not possible by the definition of
+O(A,i,j,x) in equation (7), as we would have
+found a derivation with a strictly better ob-
+jective. �
+
+259
+
+

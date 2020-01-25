@@ -1,0 +1,2808 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Greedy, Joint Syntactic-Semantic Parsing with Stack LSTMs
+
+
+Proceedings of the 20th SIGNLL Conference on Computational Natural Language Learning (CoNLL), pages 187–197,
+Berlin, Germany, August 7-12, 2016. c©2016 Association for Computational Linguistics
+
+Greedy, Joint Syntactic-Semantic Parsing with Stack LSTMs
+
+Swabha Swayamdipta♣ Miguel Ballesteros♦ Chris Dyer♠ Noah A. Smith♥
+♣School of Computer Science, Carnegie Mellon University, Pittsburgh, PA 15213, USA
+♦Natural Language Processing Group, Universitat Pompeu Fabra, Barcelona, Spain
+
+♠Google DeepMind, London, UK
+♥Computer Science & Engineering, University of Washington, Seattle, WA 98195, USA
+
+swabha@cs.cmu.edu, miguel.ballesteros@upf.edu,
+cdyer@cs.cmu.edu, nasmith@cs.washington.edu
+
+Abstract
+
+We present a transition-based parser that
+jointly produces syntactic and semantic
+dependencies. It learns a representation
+of the entire algorithm state, using stack
+long short-term memories. Our greedy in-
+ference algorithm has linear time, includ-
+ing feature extraction. On the CoNLL
+2008–9 English shared tasks, we obtain
+the best published parsing performance
+among models that jointly learn syntax
+and semantics.
+
+1 Introduction
+
+We introduce a new joint syntactic and semantic
+dependency parser. Our parser draws from the
+algorithmic insights of the incremental structure
+building approach of Henderson et al. (2008), with
+two key differences. First, it learns representations
+for the parser’s entire algorithmic state, not just the
+top items on the stack or the most recent parser
+states; in fact, it uses no expert-crafted features at
+all. Second, it uses entirely greedy inference rather
+than beam search. We find that it outperforms all
+previous joint parsing models, including Hender-
+son et al. (2008) and variants (Gesmundo et al.,
+2009; Titov et al., 2009; Henderson et al., 2013) on
+the CoNLL 2008 and 2009 (English) shared tasks.
+Our parser’s multilingual results are comparable to
+the top systems at CoNLL 2009.
+
+Joint models like ours have frequently been pro-
+posed as a way to avoid cascading errors in NLP
+pipelines; varying degrees of success have been at-
+tained for a range of joint syntactic-semantic anal-
+ysis tasks (Sutton and McCallum, 2005; Hender-
+son et al., 2008; Toutanova et al., 2008; Johansson,
+2009; Lluı́s et al., 2013, inter alia).
+
+One reason pipelines often dominate is that they
+make available the complete syntactic parse tree,
+
+and arbitrarily-scoped syntactic features—such as
+the “path” between predicate and argument, pro-
+posed by Gildea and Jurafsky (2002)—for seman-
+tic analysis. Such features are a mainstay of high-
+performance semantic role labeling (SRL) sys-
+tems (Roth and Woodsend, 2014; Lei et al., 2015;
+FitzGerald et al., 2015; Foland and Martin, 2015),
+but they are expensive to extract (Johansson, 2009;
+He et al., 2013).
+
+This study shows how recent advances in repre-
+sentation learning can bypass those expensive fea-
+tures, discovering cheap alternatives available dur-
+ing a greedy parsing procedure. The specific ad-
+vance we employ is the stack LSTM (Dyer et al.,
+2015), a neural network that continuously summa-
+rizes the contents of the stack data structures in
+which a transition-based parser’s state is conven-
+tionally encoded. Stack LSTMs were shown to ob-
+viate many features used in syntactic dependency
+parsing; here we find them to do the same for joint
+syntactic-semantic dependency parsing.
+
+We believe this is an especially important find-
+ing for greedy models that cast parsing as a se-
+quence of decisions made based on algorithmic
+state, where linguistic theory and researcher intu-
+itions offer less guidance in feature design.
+
+Our system’s performance does not match that
+of the top expert-crafted feature-based systems
+(Zhao et al., 2009; Björkelund et al., 2010; Roth
+and Woodsend, 2014; Lei et al., 2015), systems
+which perform optimal decoding (Täckström et
+al., 2015), or of systems that exploit additional,
+differently-annotated datasets (FitzGerald et al.,
+2015). Many advances in those systems are or-
+thogonal to our model, and we expect future work
+to achieve further gains by integrating them.
+
+Because our system is very fast— with an
+end-to-end runtime of 177.6±18 seconds to parse
+the CoNLL 2009 English test data on a single
+core—we believe it will be useful in practical set-
+
+187
+
+
+
+all are expected to reopen soon
+expect.01 reopen.01
+
+sbj
+
+root
+
+vc oprd im tmp
+
+A1
+C-A1
+
+AM-TMP
+
+A1
+
+Figure 1: Example of a joint parse. Syntactic de-
+pendencies are shown by arcs above the sentence
+and semantic dependencies below; predicates are
+marked in boldface. C- denotes continuation of
+argument A1. Correspondences between depen-
+dencies might be close (between expected and to)
+or not (between reopen and all).
+
+tings. Our open-source implementation has been
+released.1
+
+2 Joint Syntactic and Semantic
+Dependency Parsing
+
+We largely follow the transition-based, synchro-
+nized algorithm of Henderson et al. (2013) to pre-
+dict joint parse structures. The input to the algo-
+rithm is a sentence annotated with part-of-speech
+tags. The output consists of a labeled syntactic de-
+pendency tree and a directed SRL graph, in which
+a subset of words in the sentence are selected as
+predicates, disambiguated to a sense, and linked
+by labeled, directed edges to their semantic argu-
+ments. Figure 1 shows an example.
+
+2.1 Transition-Based Procedure
+
+The two parses are constructed in a bottom-up
+fashion, incrementally processing words in the
+sentence from left to right. The state of the pars-
+ing algorithm at timestep t is represented by three
+stack data structures: a syntactic stack St, a se-
+mantic stack Mt—each containing partially built
+structures—and a buffer of input words Bt. Our
+algorithm also places partial syntactic and seman-
+tic parse structures onto the front of the buffer,
+so it is also implemented as a stack. Each arc in
+the output corresponds to a transition (or “action”)
+chosen based on the current state; every transition
+modifies the state by updating St, Mt, and Bt to
+St+1, Mt+1, and Bt+1, respectively. While each
+state may license several valid actions, each action
+
+1https://github.com/clab/
+joint-lstm-parser
+
+has a deterministic effect on the state of the algo-
+rithm.
+
+Initially, S0 and M0 are empty, and B0 contains
+the input sentence with the first word at the front
+ofB and a special root symbol at the end.2 Execu-
+tion ends on iteration t such that Bt is empty and
+St and Mt contain only a single structure headed
+by root.
+
+2.2 Transitions for Joint Parsing
+
+There are separate sets of syntactic and semantic
+transitions; the former manipulate S and B, the
+latter M and B. All are formally defined in Ta-
+ble 1. The syntactic transitions are from the “arc-
+eager” algorithm of Nivre (2008). They include:
+
+• S-SHIFT, which copies3 an item from the front
+of B and pushes it on S.
+• S-REDUCE pops an item from S.
+• S-RIGHT(`) creates a syntactic dependency.
+
+Let u be the element at the top of S and v be
+the element at the front of B. The new depen-
+dency has u as head, v as dependent, and label
+`. u is popped off S, and the resulting structure,
+rooted at u, is pushed on S. Finally, v is copied
+to the top of S.
+• S-LEFT(`) creates a syntactic dependency with
+
+label ` in the reverse direction as S-RIGHT. The
+top of S, u, is popped. The front of B, v, is
+replaced by the new structure, rooted at v.
+
+The semantic transitions are similar, operating
+on the semantic stack.
+
+• M-SHIFT removes an item from the front of B
+and pushes it on M .
+• M-REDUCE pops an item from M .
+• M-RIGHT(r) creates a semantic dependency.
+
+Let u be the element at the top of M and v,
+the front of B. The new dependency has u as
+head, v as dependent, and label r. u is popped
+off M , and the resulting structure, rooted at u,
+is pushed on M .
+• M-LEFT(r) creates a semantic dependency
+
+with label r in the reverse direction as M-
+RIGHT. The buffer front, v, is replaced by the
+new v-rooted structure. M remains unchanged.
+
+2This works better for the arc-eager algorithm (Balles-
+teros and Nivre, 2013), in contrast to Henderson et al. (2013),
+who initialized with root at the buffer front.
+
+3Note that in the original arc-eager algorithm (Nivre,
+2008), SHIFT and RIGHT-ARC actions move the item on the
+buffer front to the stack, whereas we only copy it (to allow
+the semantic operations to have access to it).
+
+188
+
+
+
+and has otherCongress
+have.03 problem.01
+
+A2
+
+problems
+
+A1
+
+AM-DIS A1
+
+A0
+
+Figure 2: Example of an SRL graph with an arc
+from predicate problem.01 to itself, filling the A2
+role. Our SELF(A2) transition allows recovering
+this semantic dependency.
+
+Because SRL graphs allow a node to be a se-
+mantic argument of two parents—like all in the
+example in Figure 1—M-LEFT and M-RIGHT
+do not remove the dependent from the semantic
+stack and buffer respectively, unlike their syntactic
+equivalents, S-LEFT and S-RIGHT. We use two
+other semantic transitions from Henderson et al.
+(2013) which have no syntactic analogues:
+
+• M-SWAP swaps the top two items on M , to al-
+low for crossing semantic arcs.
+• M-PRED(p) marks the item at the front of B
+
+as a semantic predicate with the sense p, and
+replaces it with the disambiguated predicate.
+
+The CoNLL 2009 corpus introduces semantic
+self-dependencies where many nominal predicates
+(from NomBank) are marked as their own argu-
+ments; these account for 6.68% of all semantic
+arcs in the English corpus. An example involving
+an eventive noun is shown in Figure 2. We intro-
+duce a new semantic transition, not in Henderson
+et al. (2013), to handle such cases:
+
+• M-SELF(r) adds a dependency, with label r be-
+tween the item at the front of B and itself. The
+result replaces the item at the front of B.
+
+Note that the syntactic and semantic transitions
+both operate on the same buffer, though they in-
+dependently specify the syntax and semantics, re-
+spectively. In order to ensure that both syntactic
+and semantic parses are produced, the syntactic
+and semantic transitions are interleaved. Only syn-
+tactic transitions are considered until a transition is
+chosen that copies an item from the buffer front to
+the syntactic stack (either S-SHIFT or S-RIGHT).
+The algorithm then switches to semantic transi-
+tions until a buffer-modifying transition is taken
+(M-SHIFT).4 At this point, the buffer is modi-
+
+4Had we moved the item at the buffer front during the
+syntactic transitions, it would have been unavailable for the
+
+fied and the algorithm returns to syntactic transi-
+tions. This implies that, for each word, its left-
+side syntactic dependencies are resolved before its
+left-side semantic dependencies. An example run
+of the algorithm is shown in Figure 3.
+
+2.3 Constraints on Transitions
+To ensure that the parser never enters an invalid
+state, the sequence of transitions is constrained,
+following Henderson et al. (2013). Actions that
+copy or move items from the buffer (S-SHIFT,
+S-RIGHT and M-SHIFT) are forbidden when the
+buffer is empty. Actions that pop from a stack
+(S-REDUCE and M-REDUCE) are forbidden when
+that stack is empty. We disallow actions corre-
+sponding to the same dependency, or the same
+predicate to be repeated in the sequence. Repet-
+itive M-SWAP transitions are disallowed to avoid
+infinite swapping. Finally, as noted above, we re-
+strict the parser to syntactic actions until it needs
+to shift an item from B to S, after which it can
+only execute semantic actions until it executes an
+M-SHIFT.
+
+Asymptotic runtime complexity of this greedy
+algorithm is linear in the length of the input, fol-
+lowing the analysis by Nivre (2009).5
+
+3 Statistical Model
+
+The transitions in §2 describe the execution paths
+our algorithm can take; like past work, we apply
+a statistical classifier to decide which transition to
+take at each timestep, given the current state. The
+novelty of our model is that it learns a finite-length
+vector representation of the entire joint parser’s
+state (S,M , andB) in order to make this decision.
+
+3.1 Stack Long Short-Term Memory (LSTM)
+LSTMs are recurrent neural networks equipped
+with specialized memory components in addition
+to a hidden state (Hochreiter and Schmidhuber,
+1997; Graves, 2013) to model sequences. Stack
+LSTMs (Dyer et al., 2015) are LSTMs that al-
+low for stack operations: query, push, and pop.
+A “stack pointer” is maintained which determines
+which cell in the LSTM provides the memory and
+hidden units when computing the new memory
+cell contents. Query provides a summary of the
+stack in a single fixed-length vector. Push adds
+
+semantic transitions, hence we only copy it.
+5The analysis in (Nivre, 2009) does not consider SWAP
+
+actions. However, since we constrain the number of such ac-
+tions, the linear time complexity of the algorithm stays intact.
+
+189
+
+
+
+St Mt Bt Action St+1 Mt+1 Bt+1 Dependency
+S M (v, v), B S-SHIFT (v, v), S M (v, v), B —
+
+(u, u), S M B S-REDUCE S M B —
+
+(u, u), S M (v, v), B S-RIGHT(`) (v, v), (gs(u, v, l), u), S M (v, v), B S ∪ u `→ v
+(u, u), S M (v, v), B S-LEFT(`) S M (gs(v, u, l), v), B S ∪ u `← v
+
+S M (v, v), B M-SHIFT S (v, v), M B —
+S (u, u), M B M-REDUCE S M B —
+S (u, u), M (v, v), B M-RIGHT(r) S (gm(u, v, r), u), M (v, v), B M∪ u r→ v
+S (u, u), M (v, v), B M-LEFT(r) S (u, u), M (gm(v, u, r), v), B M∪ u r← v
+S (u, u), (v, v), M B M-SWAP S (v, v), (u, u), M B —
+S M (v, v), B M-PRED(p) S M (gd(v, p), v), B —
+S M (v, v), B M-SELF(r) S M (gm(v, v, r), v), B M∪ v r↔ v
+
+Table 1: Parser transitions along with the modifications to the stacks and the buffer resulting from each.
+Syntactic transitions are shown above, semantic below. Italic symbols denote symbolic representations
+of words and relations, and bold symbols indicate (learned) embeddings (§3.5) of words and relations;
+each element in a stack or buffer includes both symbolic and vector representations, either atomic or
+recursive. S represents the set of syntactic transitions, andM the set of semantic transitions.
+
+an element to the top of the stack, resulting in a
+new summary. Pop, which does not correspond to
+a conventional LSTM operation, moves the stack
+pointer to the preceding timestep, resulting in a
+stack summary as it was before the popped item
+was observed. Implementation details (Dyer et al.,
+2015; Goldberg, 2015) and code have been made
+publicly available.6
+
+Using stack LSTMs, we construct a represen-
+tation of the algorithm state by decomposing it
+into smaller pieces that are combined by recursive
+function evaluations (similar to the way a list is
+built by a concatenate operation that operates on a
+list and an element). This enables information that
+would be distant from the “top” of the stack to be
+carried forward, potentially helping the learner.
+
+3.2 Stack LSTMs for Joint Parsing
+Our algorithm employs four stack LSTMs,
+one each for the S, M , and B data struc-
+tures.Like Dyer et al. (2015), we use a fourth stack
+LSTM, A, for the history of actions—A is never
+popped from, only pushed to. Figure 4 illustrates
+the architecture. The algorithm’s state at timestep
+t is encoded by the four vectors summarizing the
+four stack LSTMs, and this is the input to the clas-
+sifier that chooses among the allowable transitions
+at that timestep.
+
+Let st, mt, bt, and at denote the summaries
+of St, Mt, Bt, and At, respectively. Let At =
+Allowed(St,Mt, Bt, At) denote the allowed tran-
+sitions given the current stacks and buffer. The
+parser state at time t is given by a rectified linear
+unit (Nair and Hinton, 2010) in vector yt:
+
+yt = elementwisemax {0,d + W[st;mt;bt;at]}
+6https://github.com/clab/lstm-parser
+
+root soon reopen to
+
+all
+
+are expected
+
+expect.01
+all
+
+all
+
+sbj
+
+A1
+
+M
+
+B
+
+S
+
+S-RIGHT 
+(oprd)
+
+...
+M-PRED
+
+(expect.01)
+M-REDUCE M-LEFT
+
+(A1)
+
+A
+
+are
+vc
+
+M-SHIFT
+
+Figure 4: Stack LSTM for joint parsing. The state
+illustrated corresponds to the ***-marked row in
+the example transition sequence in Fig. 3.
+
+where W and d are the parameters of the classi-
+fier. The transition selected at timestep t is
+
+arg max
+τ∈At
+
+qτ + θτ · yt (1)
+
+≡ arg max
+τ∈At
+
+score(τ ;St,Mt, Bt, At)
+
+where θτ and qτ are parameters for each transi-
+tion type τ . Note that only allowed transitions are
+considered in the decision rule (see §2.3).
+3.3 Composition Functions
+To use stack LSTMs, we require vector representa-
+tions of the elements that are stored in the stacks.
+Specifically, we require vector representations of
+atoms (words, possibly with part-of-speech tags)
+and parse fragments. Word vectors can be pre-
+trained or learned directly; we consider a concate-
+nation of both in our experiments; part-of-speech
+
+190
+
+
+
+Tr
+an
+
+si
+tio
+
+n
+S
+
+M
+B
+
+D
+ep
+
+en
+de
+
+nc
+y
+
+[]
+[]
+
+[a
+ll,
+
+ar
+e,
+
+ex
+pe
+
+ct
+ed
+
+,t
+o,
+
+re
+op
+
+en
+,s
+
+oo
+n,
+
+ro
+ot
+
+]
+—
+
+S
+-S
+
+H
+IF
+
+T
+[a
+
+ll]
+[]
+
+[a
+ll,
+
+ar
+e,
+
+ex
+pe
+
+ct
+ed
+
+,t
+o,
+
+re
+op
+
+en
+,s
+
+oo
+n,
+
+ro
+ot
+
+]
+—
+
+M
+-S
+
+H
+IF
+
+T
+[a
+
+ll]
+[a
+
+ll]
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+—
+
+S
+-L
+
+E
+F
+
+T
+(s
+
+bj
+)
+
+[]
+[a
+
+ll]
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+al
+l
+
+sb
+j
+
+←−
+ar
+
+e
+S
+
+-S
+H
+
+IF
+T
+
+[a
+re
+
+]
+[a
+
+ll]
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+—
+M
+
+-S
+H
+
+IF
+T
+
+[a
+re
+
+]
+[a
+
+ll,
+ar
+
+e]
+[e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+—
+S
+
+-R
+IG
+
+H
+T
+
+(v
+c)
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d]
+[a
+
+ll,
+ar
+
+e]
+[e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+ar
+e
+
+vc −→
+ex
+
+pe
+ct
+
+ed
+M
+
+-P
+R
+
+E
+D
+
+(e
+xp
+
+ec
+t.0
+
+1)
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d]
+
+[a
+ll,
+
+ar
+e]
+
+[e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n,
+
+so
+on
+
+,r
+oo
+
+t]
+—
+
+M
+-R
+
+E
+D
+
+U
+C
+
+E
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d]
+
+[a
+ll]
+
+[e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n,
+
+so
+on
+
+,r
+oo
+
+t]
+—
+
+M
+-L
+
+E
+F
+
+T
+(A
+
+1)
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d]
+
+[a
+ll]
+
+[e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n,
+
+so
+on
+
+,r
+oo
+
+t]
+al
+
+l
+A
+
+1
+←−
+
+ex
+pe
+
+ct
+.0
+
+1
+M
+
+-S
+H
+
+IF
+T
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d]
+[a
+
+ll,
+ex
+
+pe
+ct
+
+ed
+]
+
+[t
+o,
+
+re
+op
+
+en
+,s
+
+oo
+n,
+
+ro
+ot
+
+]
+—
+
+**
+*S
+
+-R
+IG
+
+H
+T
+
+(o
+pr
+
+d)
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+]
+
+[a
+ll,
+
+ex
+pe
+
+ct
+ed
+
+]
+[t
+
+o,
+re
+
+op
+en
+
+,s
+oo
+
+n,
+ro
+
+ot
+]
+
+ex
+pe
+
+ct
+ed
+
+op
+rd −→
+
+to
+
+M
+-R
+
+IG
+H
+
+T
+(C
+
+-A
+1)
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+]
+[a
+
+ll,
+ex
+
+pe
+ct
+
+ed
+]
+
+[t
+o,
+
+re
+op
+
+en
+,s
+
+oo
+n,
+
+ro
+ot
+
+]
+ex
+
+pe
+ct
+
+.0
+1
+
+C
+-A
+
+1
+−→
+
+to
+M
+
+-R
+E
+
+D
+U
+
+C
+E
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+]
+[a
+
+ll]
+[t
+
+o,
+re
+
+op
+en
+
+,s
+oo
+
+n,
+ro
+
+ot
+]
+
+—
+M
+
+-S
+H
+
+IF
+T
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+]
+[a
+
+ll,
+to
+
+]
+[r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+—
+
+S
+-R
+
+IG
+H
+
+T
+(i
+
+m
+)
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n]
+
+[a
+ll,
+
+to
+]
+
+[r
+eo
+
+pe
+n,
+
+so
+on
+
+,r
+oo
+
+t]
+to
+
+im −→
+re
+
+op
+en
+
+M
+-P
+
+R
+E
+
+D
+(r
+
+eo
+pe
+
+n.
+01
+
+)
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n]
+[a
+
+ll,
+to
+
+]
+[r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+—
+M
+
+-R
+E
+
+D
+U
+
+C
+E
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n]
+
+[a
+ll]
+
+[r
+eo
+
+pe
+n,
+
+so
+on
+
+,r
+oo
+
+t]
+—
+
+M
+-L
+
+E
+F
+
+T
+(A
+
+1)
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n]
+[a
+
+ll]
+[r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+al
+l
+
+A
+1
+←−
+
+re
+op
+
+en
+.0
+
+1
+M
+
+-R
+E
+
+D
+U
+
+C
+E
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n]
+
+[]
+[r
+
+eo
+pe
+
+n,
+so
+
+on
+,r
+
+oo
+t]
+
+—
+M
+
+-S
+H
+
+IF
+T
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n]
+
+[r
+eo
+
+pe
+n]
+
+[s
+oo
+
+n,
+ro
+
+ot
+]
+
+—
+
+S
+-R
+
+IG
+H
+
+T
+(t
+
+m
+p)
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n,
+
+so
+on
+
+]
+[r
+
+eo
+pe
+
+n]
+[s
+
+oo
+n,
+
+ro
+ot
+
+]
+re
+
+op
+en
+
+tm
+p
+
+−→
+so
+
+on
+
+M
+-R
+
+IG
+H
+
+T
+(A
+
+M
+-T
+
+M
+P
+
+)
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n,
+so
+
+on
+]
+
+[r
+eo
+
+pe
+n]
+
+[s
+oo
+
+n,
+ro
+
+ot
+]
+
+re
+op
+
+en
+.0
+
+1
+A
+
+M
+-T
+
+M
+P
+
+−→
+so
+
+on
+M
+
+-R
+E
+
+D
+U
+
+C
+E
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n,
+
+so
+on
+
+]
+[]
+
+[s
+oo
+
+n,
+ro
+
+ot
+]
+
+—
+M
+
+-S
+H
+
+IF
+T
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d,
+to
+
+,r
+eo
+
+pe
+n,
+
+so
+on
+
+]
+[s
+
+oo
+n]
+
+[r
+oo
+
+t]
+—
+
+S
+-R
+
+E
+D
+
+U
+C
+
+E
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+,r
+
+eo
+pe
+
+n]
+[s
+
+oo
+n]
+
+[r
+oo
+
+t]
+—
+
+S
+-R
+
+E
+D
+
+U
+C
+
+E
+[a
+
+re
+,e
+
+xp
+ec
+
+te
+d,
+
+to
+]
+
+[s
+oo
+
+n]
+[r
+
+oo
+t]
+
+—
+S
+
+-R
+E
+
+D
+U
+
+C
+E
+
+[a
+re
+
+,e
+xp
+
+ec
+te
+
+d]
+[s
+
+oo
+n]
+
+[r
+oo
+
+t]
+—
+
+S
+-R
+
+E
+D
+
+U
+C
+
+E
+[a
+
+re
+]
+
+[s
+oo
+
+n]
+[r
+
+oo
+t]
+
+—
+S
+
+-L
+E
+
+F
+T
+
+(r
+oo
+
+t)
+[]
+
+[s
+oo
+
+n]
+[r
+
+oo
+t]
+
+ar
+e
+
+ro
+ot ←−
+
+ro
+ot
+
+S
+-S
+
+H
+IF
+
+T
+[r
+
+oo
+t]
+
+[s
+oo
+
+n]
+[r
+
+oo
+t]
+
+—
+M
+
+-R
+E
+
+D
+U
+
+C
+E
+
+[r
+oo
+
+t]
+[]
+
+[r
+oo
+
+t]
+—
+
+M
+-S
+
+H
+IF
+
+T
+[r
+
+oo
+t]
+
+[r
+oo
+
+t]
+[]
+
+—
+
+Figure 3: Joint parser transition sequence for the sentence in Figure 1, “all are expected to reopen soon.”
+Syntactic labels are in lower-case and semantic role labels are capitalized. *** marks the operation
+predicted in Figure 4.
+
+vectors are learned and concatenated to the same.
+
+To obtain vector representations of parse frag-
+ments, we use neural networks which recursively
+compute representations of the complex structured
+output (Dyer et al., 2015). The tree structures here
+are always ternary trees, with each internal node’s
+three children including a head, a dependent, and
+a label. The vectors for leaves are word vectors
+
+and vectors corresponding to syntactic and seman-
+tic relation types.
+
+The vector for an internal node is a squashed
+(tanh) affine transformation of its children’s vec-
+tors. For syntactic and semantic attachments, re-
+
+191
+
+
+
+burnthe
+
+feel
+
+nmod
+
+dobj
+
+A1
+
+the burn
+
+nmod
+
+the burnfeel
+
+dobj
+nmod
+
+the burnfeel
+
+dob
+j
+
+nmod
+
+A1
+feel.01
+
+feel.01
+
+feel
+feel.01
+
+Figure 5: Example of a joint parse tree fragment
+with vector representations shown at each node.
+The vectors are obtained by recursive composition
+of representations of head, dependent, and label
+vectors. Syntactic dependencies and labels are in
+green, semantic in blue.
+
+spectively, the composition function is:
+
+gs(v,u, l) = tanh(Zs[v;u; l] + es) (2)
+gm(v,u, r) = tanh(Zm[v;u; r] + em) (3)
+
+where v and u are vectors corresponding to atomic
+words or composed parse fragments; l and r are
+learned vector representations for syntactic and se-
+mantic labels respectively. Syntactic and semantic
+parameters are separated (Zs, es and Zm, em, re-
+spectively).
+
+Finally, for predicates, we use another recur-
+sive function to compose the word representa-
+tion, v with a learned representation for the dis-
+mabiguated sense of the predicate, p:
+
+gd(v,p) = tanh(Zd[v;p] + ed) (4)
+
+where Zd and ed are parameters of the model.
+Note that, because syntactic and semantic transi-
+tions are interleaved, the fragmented structures are
+a blend of syntactic and semantic compositions.
+Figure 5 shows an example.
+
+3.4 Training
+Training the classifier requires transforming each
+training instance (a joint parse) into a transition se-
+quence, a deterministic operation under our tran-
+sition set. Given a collection of algorithm states
+at time t and correct classification decisions τt, we
+minimize the sum of log-loss terms, given (for one
+timestep) by:
+
+− log exp(qτt + θτt · yt)∑
+τ ′∈At exp(qτ ′ + θτ ′ · yt)
+
+(5)
+
+with respect to the classifier and LSTM parame-
+ters. Note that the loss is differentiable with re-
+spect to the parameters; gradients are calculated
+using backpropagation. We apply stochastic gra-
+dient descent with dropout for all neural network
+parameters.
+
+3.5 Pretrained Embeddings
+Following Dyer et al. (2015), “structured skip-
+gram” embeddings (Ling et al., 2015) were used,
+trained on the English (AFP section), German,
+Spanish and Chinese Gigaword corpora, with a
+window of size 5; training was stopped after 5
+epochs. For out-of-vocabulary words, a randomly
+initialized vector of the same dimension was used.
+
+3.6 Predicate Sense Disambiguation
+Predicate sense disambiguation is handled within
+the model (M-PRED transitions), but since senses
+are lexeme-specific, we need a way to handle un-
+seen predicates at test time. When a predicate is
+encountered at test time that was not observed in
+training, our system constructs a predicate from
+the predicted lemma of the word at that position
+and defaults to the “01” sense, which is correct
+for 91.22% of predicates by type in the English
+CoNLL 2009 training data.
+
+4 Experimental Setup
+
+Our model is evaluated on the CoNLL shared
+tasks on joint syntactic and semantic dependency
+parsing in 2008 (Surdeanu et al., 2008) and
+2009 (Hajič et al., 2009). The standard training,
+development and test splits of all datasets were
+used. Per the shared task guidelines, automati-
+cally predicted POS tags and lemmas provided in
+the datasets were used for all experiments. As
+a preprocessing step, pseudo-projectivization of
+the syntactic trees (Nivre et al., 2007) was used,
+which allowed an accurate conversion of even the
+non-projective syntactic trees into syntactic transi-
+tions. However, the oracle conversion of semantic
+parses into transitions is not perfect despite using
+the M-SWAP action, due to the presence of multi-
+ple crossing arcs.7
+
+7For 1.5% of English sentences in the CoNLL 2009 En-
+glish dataset, the transition sequence incorrectly encodes the
+gold-standard joint parse; details in Henderson et al. (2013).
+
+192
+
+
+
+The standard evaluation metrics include the
+syntactic labeled attachment score (LAS), the se-
+mantic F1 score on both in-domain (WSJ) and out-
+of-domain (Brown corpus) data, and their macro
+average (Macro F1) to score joint systems. Be-
+cause the task was defined somewhat differently
+in each year, each dataset is considered in turn.
+
+4.1 CoNLL 2008
+
+The CoNLL 2008 dataset contains annotations
+from the Penn Treebank (Marcus et al., 1993),
+PropBank (Palmer et al., 2005) and Nom-
+Bank (Meyers et al., 2004). The shared task evalu-
+ated systems on predicate identification in addition
+to predicate sense disambiguation and SRL.
+
+To identify predicates, we trained a zero-
+Markov order bidirectional LSTM two-class clas-
+sifier. As input to the classifier, we use learned rep-
+resentations of word lemmas and POS tags. This
+model achieves an F1 score of 91.43% on marking
+words as predicates (or not).
+
+Hyperparameters The input representation for
+a word consists of pretrained embeddings (size
+100 for English, 80 for Chinese, 64 for Ger-
+man and Spanish), concatenated with additional
+learned word and POS tag embeddings (size 32
+and 12, respectively). Learned embeddings for
+syntactic and semantic arc labels are of size 20
+and predicates 100. Two-layer LSTMs with hid-
+den state dimension 100 were used for each of the
+four stacks. The parser state yt and the composi-
+tion function g are of dimension 100. A dropout
+rate of 0.2 (Zaremba et al., 2014) was used on all
+layers at training time, tuned on the development
+data from the set of values {0.1, 0.2, 0.3, 1.0}. The
+learned representations for actions are of size 100,
+similarly tuned from {10, 20, 30, 40, 100}. Other
+hyperparameters have been set intuitively; careful
+tuning is expected to yield improvements (Weiss
+et al., 2015).
+
+An initial learning rate of 0.1 for stochastic gra-
+dient descent was used and updated in every train-
+ing epoch with a decay rate of 0.1 (Dyer et al.,
+2015). Training is stopped when the development
+performance does not improve for approximately
+6–7 hours of elapsed time. Experiments were run
+on a single thread on a CPU, with memory require-
+ments of up to 512 MB.
+
+4.2 CoNLL 2009
+
+Relative to the CoNLL 2008 task (above), the
+main change in 2009 is that predicates are pre-
+identified, and systems are only evaluated on pred-
+icate sense disambiguation (not identification).
+Hence, the bidirectional LSTM classifier is not
+used here. The preprocessing for projectivity, and
+the hyperparameter selection is the same as in
+§4.1.
+
+In addition to the joint approach described in
+the preceding sections, we experiment here with
+several variants:
+
+Semantics-only: the set of syntactic transitions
+S, the syntactic stack S, and the syntactic compo-
+sition function gs are discarded. As a result, the set
+of constraints on transitions is a subset of the full
+set of constraints in §2.3. Effectively, this model
+does not use any syntactic features, similar to Col-
+lobert et al. (2011) and Zhou and Xu (2015). It
+provides a controlled test of the benefit of explicit
+syntax in a semantic parser.
+
+Syntax-only: all semantic transitions inM, the
+semantic stack M , and the semantic composition
+function gm are discarded. S-SHIFT and S-RIGHT
+now move the item from the front of the buffer to
+the syntactic stack, instead of copying. The set of
+constraints on the transitions is again a subset of
+the full set of constraints. This model is an arc-
+eager variant of Dyer et al. (2015), and serves to
+check whether semantic parsing degrades syntac-
+tic performance.
+
+Hybrid: the semantics parameters are trained
+using automatically predicted syntax from the
+syntax-only model. At test time, only seman-
+tic parses are predicted. This setup bears simi-
+larity to other approaches which pipeline syntax
+and semantics, extracting features from the syn-
+tactic parse to help SRL. However, unlike other
+approaches, this model does not offer the entire
+syntactic tree for feature extraction, since only the
+partial syntactic structures present on the syntactic
+stack (and potentially the buffer) are visible at a
+given timestep. This model helps show the effect
+of joint prediction.
+
+5 Results and Discussion
+
+CoNLL 2008 (Table 2) Our joint model signif-
+icantly outperforms the joint model of Hender-
+son et al. (2008), from which our set of tran-
+
+193
+
+
+
+Model LAS Sem. Macro
+F1 F1
+
+joint models:
+Lluı́s and Màrquez (2008) 85.8 70.3 78.1
+Henderson et al. (2008) 87.6 73.1 80.5
+Johansson (2009) 86.6 77.1 81.8
+Titov et al. (2009) 87.5 76.1 81.8
+CoNLL 2008 best:
+#3: Zhao and Kit (2008) 87.7 76.7 82.2
+#2: Che et al. (2008) 86.7 78.5 82.7
+#2: Ciaramita et al. (2008) 87.4 78.0 82.7
+#1: J&N (2008) 89.3 81.6 85.5
+Joint (this work) 89.1 80.5 84.9
+
+Table 2: Joint parsers: comparison on the CoNLL
+2008 test (WSJ+Brown) set.
+
+sitions is derived, showing the benefit of learn-
+ing a representation for the entire algorithmic
+state. Several other joint learning models have
+been proposed (Lluı́s and Màrquez, 2008; Jo-
+hansson, 2009; Titov et al., 2009) for the same
+task; our joint model surpasses the performance
+of all these models. The best reported systems on
+the CoNLL 2008 task are due to Johansson and
+Nugues (2008), Che et al. (2008), Ciaramita et
+al. (2008) and Zhao and Kit (2008), all of which
+pipeline syntax and semantics; our system’s se-
+mantic and overall performance is comparable to
+these. We fall behind only Johansson and Nugues
+(2008), whose success was attributed to carefully
+designed global SRL features integrated into a
+pipeline of classifiers, making them asymptoti-
+cally slower.
+
+CoNLL 2009 English (Table 3) All of our
+models (Syntax-only, Semantics-only, Hybrid and
+Joint) improve over Gesmundo et al. (2009)
+and Henderson et al. (2013), demonstrating the
+benefit of our entire-parser-state representation
+learner compared to the more locally scoped
+model.
+
+Given that syntax has consistently proven useful
+in SRL, we expected our Semantics-only model
+to underperform Hybrid and Joint, and it did. In
+the training domain, syntax and semantics bene-
+fit each other (Joint outperforms Hybrid). Out-
+of-domain (the Brown test set), the Hybrid pulls
+ahead, a sign that Joint overfits to WSJ. As a
+syntactic parser, our Syntax-only model performs
+slightly better than Dyer et al. (2015), who achieve
+89.56 LAS on this task. Joint parsing is very
+slightly better still.
+
+The overall performance of Joint is on par with
+the other winning participants at the CoNLL 2009
+shared task (Zhao et al., 2009; Che et al., 2009;
+Gesmundo et al., 2009), falling behind only Zhao
+et al. (2009), who carefully designed language-
+specific features and used a series of pipelines for
+the joint task, resulting in an accurate but compu-
+tationally expensive system.
+
+State-of-the-art SRL systems (shown in the last
+block of Table 3) which use advances orthog-
+onal to the contributions in this paper, perform
+better than our models. Many of these systems
+use expert-crafted features derived from full syn-
+tactic parses in a pipeline of classifiers followed
+by a global reranker (Björkelund et al., 2009;
+Björkelund et al., 2010; Roth and Woodsend,
+2014); we have not used these features or rerank-
+ing. Lei et al. (2015) use syntactic parses to obtain
+interaction features between predicates and their
+arguments and then compress feature representa-
+tions using a low-rank tensor. Täckström et al.
+(2015) present an exact inference algorithm for
+SRL based on dynamic programming and their lo-
+cal and structured models make use of many syn-
+tactic features from a pipeline; our search pro-
+cedure is greedy. Their algorithm is adopted
+by FitzGerald et al. (2015) for inference in a model
+that jointly learns representations from a combina-
+tion of PropBank and FrameNet annotations; we
+have not experimented with extra annotations.
+
+Our system achieves an end-to-end runtime of
+177.6±18 seconds to parse the CoNLL 2009 En-
+glish test set on a single core. This is almost 2.5
+times faster than the pipeline model of Lei et al.
+(2015) (439.9±42 seconds) on the same machine.8
+
+CoNLL 2009 Multilingual (Table 4) We tested
+the joint model on the non-English CoNLL 2009
+datasets, and the results demonstrate that it adapts
+easily—it is on par with the top three systems in
+most cases. We note that our Chinese parser relies
+on pretrained word embeddings for its superior
+performance; without them (not shown), it was on
+par with the others. Japanese is a small-data case
+(4,393 training examples), illustrating our model’s
+dependence on reasonably large training datasets.
+
+We have not extended our model to incorporate
+morphological features, which are used by the sys-
+tems to which we compare. Future work might in-
+
+8See https://github.com/taolei87/
+SRLParser; unlike other state-of-the-art systems, this
+one is publicly available.
+
+194
+
+
+
+Model LAS Sem. F1(WSJ)
+Sem. F1
+(Brown)
+
+Macro
+F1
+
+CoNLL’09 best:
+#3 G+ ’09 88.79 83.24 70.65 86.03
+#2 C+ ’09 88.48 85.51 73.82 87.00
+#1 Z+ ’09a 89.19 86.15 74.58 87.69
+this work:
+Syntax-only 89.83
+Sem.-only 84.39 73.87
+Hybrid 89.83 84.58 75.64 87.20
+Joint 89.94 84.97 74.48 87.45
+pipelines:
+R&W ’14 86.34 75.90
+L+ ’15 86.58 75.57
+T+ ’15 87.30 75.50
+F+ ’15 87.80 75.50
+
+Table 3: Comparison on the CoNLL 2009 English
+test set. The first block presents results of other
+models evaluated for both syntax and semantics on
+the CoNLL 2009 task. The second block presents
+our models. The third block presents the best pub-
+lished models, each using its own syntactic pre-
+processing.
+
+corporate morphological features where available;
+this could potentially improve performance, espe-
+cially in highly inflective languages like Czech.
+An alternative might be to infer word-internal rep-
+resentations using character-based word embed-
+dings, which was found beneficial for syntactic
+parsing (Ballesteros et al., 2015).
+
+Language #1 C+’09 #2 Z+ ’09a #3 G+ ’09 Joint
+Catalan 81.84 83.01 82.66 82.40
+Chinese 76.38 76.23 76.15 79.27
+Czech 83.27 80.87 83.21 79.53
+English 87.00 87.69 86.03 87.45
+German 82.44 81.22 79.59 81.05
+Japanese 85.65 85.28 84.91 80.91
+Spanish 81.90 83.31 82.43 83.11
+Average 82.64 82.52 82.14 81.96
+
+Table 4: Comparison of macro F1 scores on the
+multilingual CoNLL 2009 test set.
+
+6 Related Work
+
+Other approaches to joint modeling, not consid-
+ered in our experiments, are notable. Lluı́s et al.
+(2013) propose a graph-based joint model using
+dual decomposition for agreement between syn-
+tax and semantics, but do not achieve competi-
+tive performance on the CoNLL 2009 task. Lewis
+et al. (2015) proposed an efficient joint model for
+CCG syntax and SRL, which performs better than
+
+a pipelined model. However, their training neces-
+sitates CCG annotation, ours does not. Moreover,
+their evaluation metric rewards semantic depen-
+dencies regardless of where they attach within the
+argument span given by a PropBank constituent,
+making direct comparison to our evaluation infea-
+sible. Krishnamurthy and Mitchell (2014) pro-
+pose a joint CCG parsing and relation extraction
+model which improves over pipelines, but their
+task is different from ours. Li et al. (2010) also
+perform joint syntactic and semantic dependency
+parsing for Chinese, but do not report results on
+the CoNLL 2009 dataset.
+
+There has also been an increased interest in
+models which use neural networks for SRL. Col-
+lobert et al. (2011) proposed models which per-
+form many NLP tasks without hand-crafted fea-
+tures. Though they did not achieve the best results
+on the constituent-based SRL task (Carreras and
+Màrquez, 2005), their approach inspired Zhou and
+Xu (2015), who achieved state-of-the-art results
+using deep bidirectional LSTMs. Our approach
+for dependency-based SRL is not directly compa-
+rable.
+
+7 Conclusion
+
+We presented an incremental, greedy parser for
+joint syntactic and semantic dependency parsing.
+Our model surpasses the performance of previous
+joint models on the CoNLL 2008 and 2009 En-
+glish tasks, without using expert-crafted, expen-
+sive features of the full syntactic parse.
+
+Acknowledgments
+
+The authors thank Sam Thomson, Lingpeng Kong,
+Mark Yatskar, Eunsol Choi, George Mulcaire, and
+Luheng He, as well as the anonymous review-
+ers, for many useful comments. This research
+was supported in part by DARPA grant FA8750-
+12-2-0342 funded under the DEFT program and
+by the U.S. Army Research Office under grant
+number W911NF-10-1-0533. Any opinion, find-
+ings, and conclusions or recommendations ex-
+pressed in this material are those of the author(s)
+and do not necessarily reflect the view of the
+U.S. Army Research Office or the U.S. Govern-
+ment. Miguel Ballesteros was supported by the
+European Commission under the contract num-
+bers FP7-ICT-610411 (project MULTISENSOR)
+and H2020-RIA-645012 (project KRISTINA).
+
+195
+
+
+
+References
+Miguel Ballesteros and Joakim Nivre. 2013. Going
+
+to the roots of dependency parsing. Computational
+Linguistics, 39(1):5–13.
+
+Miguel Ballesteros, Chris Dyer, and Noah A. Smith.
+2015. Improved transition-based parsing by mod-
+eling characters instead of words with LSTMs. In
+Proc. of EMNLP.
+
+Anders Björkelund, Love Hafdell, and Pierre Nugues.
+2009. Multilingual semantic role labeling. In Proc.
+of CoNLL.
+
+Anders Björkelund, Bernd Bohnet, Love Hafdell, and
+Pierre Nugues. 2010. A high-performance syntactic
+and semantic dependency parser. In Proc. of COL-
+ING.
+
+Xavier Carreras and Lluı́s Màrquez. 2005. Introduc-
+tion to the CoNLL-2005 shared task: Semantic role
+labeling. In Proc. of CoNLL.
+
+Wanxiang Che, Zhenghua Li, Yuxuan Hu, Yongqiang
+Li, Bing Qin, Ting Liu, and Sheng Li. 2008. A
+cascaded syntactic and semantic dependency pars-
+ing system. In Proc. of CoNLL.
+
+Wanxiang Che, Zhenghua Li, Yongqiang Li, Yuhang
+Guo, Bing Qin, and Ting Liu. 2009. Multilingual
+dependency-based syntactic and semantic parsing.
+In Proc. of CoNLL.
+
+Massimiliano Ciaramita, Giuseppe Attardi, Felice
+Dell’Orletta, and Mihai Surdeanu. 2008. DeSRL: A
+linear-time semantic role labeling system. In Proc.
+of CoNLL.
+
+Ronan Collobert, Jason Weston, Léon Bottou, Michael
+Karlen, Koray Kavukcuoglu, and Pavel Kuksa.
+2011. Natural language processing (almost) from
+scratch. Journal of Machine Learning Research,
+12:2493–2537.
+
+Chris Dyer, Miguel Ballesteros, Wang Ling, Austin
+Matthews, and Noah A. Smith. 2015. Transition-
+based dependency parsing with stack long short-
+term memory. In Proc. of ACL.
+
+Nicholas FitzGerald, Oscar Täckström, Kuzman
+Ganchev, and Dipanjan Das. 2015. Semantic role
+labelling with neural network factors. In Proc. of
+EMNLP.
+
+William R. Foland and James Martin. 2015. Depen-
+dencybased semantic role labeling using convolu-
+tional neural networks. In Proc. of *SEM.
+
+Andrea Gesmundo, James Henderson, Paola Merlo,
+and Ivan Titov. 2009. A latent variable model of
+synchronous syntactic-semantic parsing for multiple
+languages. In Proc. of CoNLL.
+
+Daniel Gildea and Daniel Jurafsky. 2002. Automatic
+labeling of semantic roles. Computational Linguis-
+tics, 28(3):245–288.
+
+Yoav Goldberg. 2015. A primer on neural
+network models for natural language processing.
+arXiv:1510.00726.
+
+Alex Graves. 2013. Generating sequences with recur-
+rent neural networks. arXiv:1308.0850.
+
+Jan Hajič, Massimiliano Ciaramita, Richard Johans-
+son, Daisuke Kawahara, Maria Antònia Martı́, Lluı́s
+Màrquez, Adam Meyers, Joakim Nivre, Sebastian
+Padó, Jan Štěpánek, Pavel Straňák, Mihai Surdeanu,
+Nianwen Xue, and Yi Zhang. 2009. The CoNLL-
+2009 shared task: Syntactic and semantic dependen-
+cies in multiple languages. In Proc. of CoNLL.
+
+He He, Hal Daumé III, and Jason Eisner. 2013. Dy-
+namic feature selection for dependency parsing. In
+Proc. of EMNLP.
+
+James Henderson, Paola Merlo, Gabriele Musillo, and
+Ivan Titov. 2008. A latent variable model of syn-
+chronous parsing for syntactic and semantic depen-
+dencies. In Proc. of CoNLL.
+
+James Henderson, Paola Merlo, Ivan Titov, and
+Gabriele Musillo. 2013. Multi-lingual joint pars-
+ing of syntactic and semantic dependencies with a
+latent variable model. Computational Linguistics,
+39(4):949–998.
+
+Sepp Hochreiter and Jürgen Schmidhuber. 1997.
+Long short-term memory. Neural Computation,
+9(8):1735–1780.
+
+Richard Johansson and Pierre Nugues. 2008.
+Dependency-based syntactic-semantic analysis with
+PropBank and NomBank. In Proc. of CoNLL.
+
+Richard Johansson. 2009. Statistical bistratal depen-
+dency parsing. In Proc. of EMNLP.
+
+Jayant Krishnamurthy and Tom M. Mitchell. 2014.
+Joint syntactic and semantic parsing with combina-
+tory categorial grammar. In Proc. of ACL.
+
+Tao Lei, Yuan Zhang, Lluı́s Màrquez i Villodre,
+Alessandro Moschitti, and Regina Barzilay. 2015.
+High-order low-rank tensors for semantic role label-
+ing. In Proc. of NAACL.
+
+Mike Lewis, Luheng He, and Luke Zettlemoyer. 2015.
+Joint A* CCG parsing and semantic role labelling.
+In Proc. of EMNLP.
+
+Junhui Li, Guodong Zhou, and Hwee Tou Ng. 2010.
+Joint syntactic and semantic parsing of Chinese. In
+Proc. of ACL.
+
+Wang Ling, Chris Dyer, Alan Black, and Isabel
+Trancoso. 2015. Two/too simple adaptations of
+word2vec for syntax problems. In Proc. of NAACL.
+
+Xavier Lluı́s and Lluı́s Màrquez. 2008. A joint model
+for parsing syntactic and semantic dependencies. In
+Proc. of CoNLL.
+
+196
+
+
+
+Xavier Lluı́s, Xavier Carreras, and Lluı́s Màrquez.
+2013. Joint arc-factored parsing of syntactic and
+semantic dependencies. Transactions of the ACL,
+1:219–230.
+
+Mitchell P. Marcus, Mary Ann Marcinkiewicz, and
+Beatrice Santorini. 1993. Building a large anno-
+tated corpus of English: The Penn treebank. Com-
+putational Linguistics, 19(2):313–330.
+
+Adam Meyers, Ruth Reeves, Catherine Macleod,
+Rachel Szekely, Veronika Zielinska, Brian Young,
+and Ralph Grishman. 2004. The NomBank project:
+An interim report. In Proc. of NAACL.
+
+Vinod Nair and Geoffrey E. Hinton. 2010. Rectified
+linear units improve restricted Boltzmann machines.
+In Proc. of ICML.
+
+Joakim Nivre, Johan Hall, Jens Nilsson, Atanas
+Chanev, Gülsen Eryigit, Sandra Kübler, Svetoslav
+Marinov, and Erwin Marsi. 2007. MaltParser:
+A language-independent system for data-driven de-
+pendency parsing. Natural Language Engineering,
+13:95–135.
+
+Joakim Nivre. 2008. Algorithms for deterministic in-
+cremental dependency parsing. Computational Lin-
+guistics, 34(4):513–553.
+
+Joakim Nivre. 2009. Non-projective dependency pars-
+ing in expected linear time. In Proc. of ACL.
+
+Martha Palmer, Daniel Gildea, and Paul Kingsbury.
+2005. The Proposition Bank: An annotated cor-
+pus of semantic roles. Computational Linguistics,
+31(1):71–106.
+
+Michael Roth and Kristian Woodsend. 2014. Com-
+position of word representations improves semantic
+role labelling. In Proc. of EMNLP.
+
+Mihai Surdeanu, Richard Johansson, Adam Meyers,
+Lluı́s Màrquez, and Joakim Nivre. 2008. The
+CoNLL-2008 shared task on joint parsing of syntac-
+tic and semantic dependencies. In Proc. of CoNLL.
+
+Charles Sutton and Andrew McCallum. 2005. Joint
+parsing and semantic role labeling. In Proc. of
+CoNLL.
+
+Oscar Täckström, Kuzman Ganchev, and Dipanjan
+Das. 2015. Efficient inference and structured learn-
+ing for semantic role labeling. Transactions of the
+ACL, 3:29–41.
+
+Ivan Titov, James Henderson, Paola Merlo, and
+Gabriele Musillo. 2009. Online graph planarisation
+for synchronous parsing of semantic and syntactic
+dependencies. In Proc. of IJCAI.
+
+Kristina Toutanova, Aria Haghighi, and Christopher D.
+Manning. 2008. A global joint model for se-
+mantic role labeling. Computational Linguistics,
+34(2):161–191.
+
+David Weiss, Chris Alberti, Michael Collins, and Slav
+Petrov. 2015. Structured training for neural network
+transition-based parsing. In Proc. of ACL.
+
+Wojciech Zaremba, Ilya Sutskever, and Oriol Vinyals.
+2014. Recurrent neural network regularization.
+arXiv:1409.2329.
+
+Hai Zhao and Chunyu Kit. 2008. Parsing syntactic and
+semantic dependencies with two single-stage maxi-
+mum entropy models. In Proc. of CoNLL.
+
+Hai Zhao, Wenliang Chen, Jun’ichi Kazama, Kiyotaka
+Uchimoto, and Kentaro Torisawa. 2009. Multilin-
+gual dependency learning: Exploiting rich features
+for tagging syntactic and semantic dependencies. In
+Proc. of CoNLL.
+
+Jie Zhou and Wei Xu. 2015. End-to-end learning of
+semantic role labeling using recurrent neural net-
+works. In Proc. of ACL.
+
+197
+
+

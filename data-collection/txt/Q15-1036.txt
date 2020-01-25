@@ -1,0 +1,1579 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Plato: A Selective Context Model for Entity Resolution
+
+Nevena Lazic, Amarnag Subramanya, Michael Ringgaard, Fernando Pereira
+Google Inc., Mountain View CA 94043, USA
+
+{nevena, asubram, ringgaard, pereira}@google.com
+
+Abstract
+
+We present Plato, a probabilistic model for en-
+tity resolution that includes a novel approach
+for handling noisy or uninformative features,
+and supplements labeled training data derived
+from Wikipedia with a very large unlabeled
+text corpus. Training and inference in the pro-
+posed model can easily be distributed across
+many servers, allowing it to scale to over 107
+
+entities. We evaluate Plato on three standard
+datasets for entity resolution. Our approach
+achieves the best results to-date on TAC KBP
+2011 and is highly competitive on both the
+CoNLL 2003 and TAC KBP 2012 datasets.
+
+1 Introduction
+
+Given a document collection and a knowledge base
+(KB) of entities, entity resolution, also known as en-
+tity disambiguation or entity linking, is the process
+of mapping each entity mention in a document to the
+corresponding entity record in the KB (Bunescu and
+Pasca, 2006; Cucerzan, 2007; Dredze et al., 2010;
+Hachey et al., 2013).
+
+Entity resolution is challenging because referring
+expressions are often ambiguous on their own and
+can only be disambiguated by their surrounding con-
+text. Consider the name Newcastle; it can refer to
+the city of Newcastle upon Tyne in UK, to the foot-
+ball (soccer for US readers) club Newcastle United
+F.C., to a popular beverage (Newcastle Brown Ale),
+or to several other entities. The ambiguity can only
+be resolved with appropriate context. Another com-
+plicating factor is that no KB is complete, and so
+a name in a document may refer to an entity that
+
+is missing from the KB. This problem is commonly
+called NIL detection.
+
+In this paper we present a probabilistic model for
+entity resolution. Our system, hereafter referred to
+as Plato, is designed to be resilient to irrelevant fea-
+tures and can be seen as a selective extension of the
+naı̈ve Bayes model. Specifically, we assume that
+most of the context features of a mention are irrele-
+vant to its disambiguation. This contrasts with the
+naı̈ve Bayes assumption that all features are gen-
+erated from a class-conditional distribution and are
+thus all relevant to the class assignment. Our empir-
+ical results support this modeling choice. We train
+Plato in a semi-supervised manner, starting with la-
+beled data derived from Wikipedia, and continuing
+with a very large unlabeled corpus of Web docu-
+ments. The use of unlabeled data enables us to ob-
+tain a better estimate of feature distributions and dis-
+cover new features that are not present in the (la-
+beled) training data. Plato scales up easily to very
+large KBs with millions of entities and includes NIL
+detection as a natural by-product of inference. We
+named our system after the Greek philosopher be-
+cause the system’s inference of real underlying en-
+tities from imperfect evidence reminds us of Plato’s
+Theory of Forms.
+
+Previous entity resolution studies (Milne and Wit-
+ten, 2008; Cucerzan, 2007; Ratinov et al., 2011;
+Hoffart et al., 2011; Hachey et al., 2013) have typ-
+ically relied on three main components: a mention
+model, a context model, and a coherency model. The
+mention model, perhaps the most important compo-
+nent (Hachey et al., 2013), estimates the prior belief
+that a particular phrase refers to a particular entity
+
+503
+
+Transactions of the Association for Computational Linguistics, vol. 3, pp. 503–515, 2015. Action Editor: Noah Smith.
+Submission batch: 4/2015; Revision batch: 6/2015; Published 9/2015.
+
+c©2015 Association for Computational Linguistics. Distributed under a CC-BY 4.0 license.
+
+
+
+in the KB. In addition to providing a prior, the men-
+tion model also helps efficient inference by giving
+zero probability to entities that are never referred to
+by a particular name. The context model helps dis-
+ambiguate the entity using the textual context of the
+mention. This includes both features extracted from
+the immediate context (such as the enclosing sen-
+tence) and from the overall discourse (such as the
+most salient noun phrases in the document). Finally,
+the coherency model encourages all referring ex-
+pressions in a document to resolve to entities that are
+related to each other in the KB. For example, a men-
+tion of Sunderland A.F.C. (a rival football club to
+Newcastle United F.C.) may reduce the uncertainty
+about the mention Newcastle. Since a coherency
+model introduces dependencies between the resolu-
+tions of all the mentions in a document, it is seen as
+a global model, while mention and context models
+are usually referred to as local (Ratinov et al., 2011).
+Coherency models typically have an increased infer-
+ence cost, as they require access to the relevant entity
+relationships in the KB.
+
+Plato does not include a full coherency com-
+ponent. Instead, mentions in a given document
+are sorted into coreference clusters by a simple
+within-document coreference algorithm similar to
+that of Haghighi and Klein (2009). Each coreference
+cluster is then resolved to the KB independently of
+the resolution of the other clusters in the document.
+The context features for each mention cluster in our
+model include the names of other referring phrases
+in the document. Since many referring phrases are
+unambiguous, our hypothesis is that such context
+can capture much of the discourse coherence usually
+represented by a coherency model. Plato detects and
+links both nominal and named mentions, but follow-
+ing previous work, we evaluate it only on the resolu-
+tion of gold named entity mentions to either KB or
+NIL.
+
+We train Plato with expectation-maximization
+(EM), which is easily parallelizable and thus can
+scale up to very large KBs and unlabeled training
+corpora. Indeed, our efficient distributed implemen-
+tation allows the system to scale up to KBs with
+over 107 entities. Plato achieves highly competi-
+tive results on several benchmarks: CoNLL 2003,
+TAC 2012 KBP, and TAC 2011 KBP. Most impor-
+tantly, this performance is “out-of-the-box”: we did
+
+not use any of the corresponding training sets, la-
+beled or not, to train the model or tune hyperparam-
+eters.
+
+2 Definitions and Notation
+
+We are given a document collection where all the
+candidate entity mentions have been identified. Each
+mention is characterized by its phrase, and by the
+document context. The context is abstracted as a
+(multi)set of features that includes phrases related
+to the mention by linear order, syntax, or within-
+document coreference and phrases extracted from
+the whole enclosing document. Context features for
+a mention depend only on the document text, and not
+on the results of the entity resolution for other men-
+tions. Therefore, we can treat each mention (more
+strictly speaking, each coreference cluster) indepen-
+dently. Finally, we are given the set E of KB entities.
+
+When discussing probabilistic models, we use up-
+percase for random variables, lowercase for the val-
+ues they take, and boldface for vectors. We use wm
+to represent the phrase of mention m. The context
+of mention m is represented either as a binary fea-
+ture presence vector bm ∈ {0, 1}|F|, or as a fea-
+ture count vector cm ∈ N|F|. The random variable
+Em ∈ E ranges over the possible candidate entities
+for mention m. We provide more details on how the
+candidates are obtained in Section 8.
+
+3 Naı̈ve Bayes Model
+
+We start with a naı̈ve Bayes model that will serve as
+a source of intuition and an evaluation baseline. In
+this model, the phrase and context of a mention are
+conditionally independent given the entity:
+
+p(e|c, w) ∝ p(e)p(w|e)p(c|e). (1)
+If we assume that the set of feature counts is drawn
+from the multinomial distribution then
+
+p(c|e,θe) =
+(
+∑
+
+k ck)!
+
+c1! . . . c|F|!
+
+∏
+
+k
+
+θe,k
+ck ,
+
+where θe,k is the probability of drawing feature k
+given that the entity is e. The posterior probability
+of an entity given the context feature counts c and
+the mention phrase w is
+
+p(e|c, w) ∝ p(e)p(w|e)
+∏
+
+k
+
+θe,k
+ck .
+
+504
+
+
+
+At first sight, the naı̈ve Bayes model seems well
+suited for the entity resolution problem. It is very
+simple to implement. Given labeled data, the max-
+imum likelihood (ML) estimate of the parameters
+θe can be obtained from data counts. Unlabeled
+training data can be incorporated using the EM al-
+gorithm, which lends itself to easy parallelization.
+
+We implemented a naı̈ve Bayes model and used
+it for resolving entities in the CoNLL corpus (Hof-
+fart et al., 2011) and the TAC KBP corpora (Ji et
+al., 2011; Mayfield et al., 2012), as discussed in
+more detail in Section 9. We found that the perfor-
+mance of the model was only slightly better than us-
+ing only the mention phrase. We hypothesize that for
+the more difficult cases in the test set, many context
+features of a mention are not informative in identi-
+fying the entity, contrary to the model assumption
+that all context features are drawn from an entity-
+conditional distribution. Consider the following ex-
+ample:
+
+While Solon may have slipped slightly
+this year in Cleveland magazine’s rank-
+ing of best suburbs, it climbed higher on
+a more prestigious list. On Monday, the
+city placed 23rd on Money magazine’s an-
+nual list of best places to live in the United
+States.
+
+There are five US locations named Solon in
+Wikipedia (in addition to the pre-Socratic Athenian
+statesman). In the above, Solon refers to a sub-
+urb of Cleveland, Ohio. The only context feature
+that helps us discriminate between the different pos-
+sible disambiguations is Cleveland; the remain-
+ing features (such as Money magazine, United
+States) could easily appear in the context of the
+other candidates. Thus, combining the evidence
+from all features may blur the distinction between
+these entities. Our selective context model aims to
+address this issue.
+
+4 Selective context model
+
+Our selective context model assumes that most fea-
+tures that appear in the context of a mention are not
+discriminative for entity disambiguation. In partic-
+ular, we make a simplifying modeling assumption
+that exactly one context feature is relevant for dis-
+ambiguation, and the remaining features are drawn
+
+wm em km bm
+
+ρτ β
+
+m = 1 : M
+
+Figure 1: Selective context model. The mention phrase
+wm provides a prior distribution over possible entities for
+mentionm. The latent variable km selects a relevant con-
+text feature bm,km that fires for entity em; the remain-
+ing features are drawn from a background distribution
+p(bj |βj). The entity is represented as a latent variable
+here, but it is observed for the labeled training mentions.
+
+from a background distribution. Let K be the ran-
+dom variable corresponding to the index of the rel-
+evant feature for a mention of entity e. The model
+can be written as
+
+p(k, e, w,b) =p(w)p(e|w)p(k|e)
+∏
+
+j
+
+p(bj |k)
+
+p(bj |k) =
+{
+bj if k = j
+
+β
+bj
+j (1− βj)1−bj if k 6= j.
+
+Here βj parameterizes the background probability of
+observing a feature that is not relevant. We impose
+the constraint that the relevant kth feature must be
+on, and hence p(bk|K = k) = bk. We treat mentions
+(or mention clusters) as independent and identically
+distributed; the complete model is shown in Figure
+1.
+
+Given a test mention (w′,b′), we can compute the
+entity posterior by marginalizing out the latent vari-
+able k:
+
+p(e|b′, w′) ∝ p(e|w′)
+∑
+
+k
+
+p(k|e)b′k
+∏
+
+j 6=k
+p(b′j |K 6= j)
+
+∝ p(e|w′)
+∑
+
+k
+
+b′k
+p(k|e)
+βk
+
+. (2)
+
+Thus the entity posterior is a product of
+the name score (p(e|w′)) and context score
+(
+∑
+
+k b
+′
+kp(k|e)/βk). This is intuitively appealing: if
+
+we assume that βk ≈ p(k) then p(k|e)/βk is similar
+to the pointwise mutual information between feature
+k and entity e.1 Thus the context score is the sum of
+the scores for all features present in the context.
+
+1Pointwise mutual information is defined as pmi(x; y) =
+log p(y|x)/p(y).
+
+505
+
+
+
+Finally, it is important to note that our modeling
+goal here is not parameter sparsity, but rather cap-
+turing the sparsity of useful disambiguating features
+that occur in the context of each entity mention. In
+fact, the model parameters are not sparse in practice.
+
+5 Learning and Inference
+
+We parameterize the model as follows:
+
+• vectors τw parameterize the conditional prob-
+ability of an entity given the phrase w, with
+τw,e = p(E = e|W = w)
+
+• vectors ρe parameterize the probability of rele-
+vant features for entity e, with ρe,k = p(K =
+k|E = e)
+
+• scalars βj = p(Bj = 1|K 6= j) parameterize
+the background feature distribution.
+
+We estimate the maximum likelihood parameters
+from both labeled and unlabeled data. The latent
+variables in our model are the relevant feature in-
+dices km for all mentions m, as well as the entities
+em for the unlabeled mentions. We approximate the
+posterior distribution over latent variables as a prod-
+uct of marginals, and use the following auxiliary dis-
+tributions:
+
+• qm(e) is the probability that mention m re-
+solves to entity e, set to the ground truth for
+the labeled mentions.
+
+• sm(k) is the auxiliary distribution over the rel-
+evant feature index for mention m.
+
+We describe two approaches to estimating the pa-
+rameters: (1) standard EM algorithm, where we in-
+fer all latent variables, and (2) a memory-efficient
+alternative. While both these approaches can be
+implemented using a distributed processing frame-
+work such as map-reduce (Dean and Ghemawat,
+2008), the latter where we only infer the missing
+entity labels scales better than the standard EM ap-
+proach. Simulations on synthetic data suggest that
+the two algorithms have similar performance (see
+Section 5.3) .
+
+5.1 Standard EM algorithm
+The EM algorithm for the model performs coordi-
+nate ascent in the following lower bound on the like-
+lihood of observed data:
+
+L =
+∑
+
+m
+
+∑
+
+e
+
+qm(e)
+
+(∑
+
+w
+
+[wm = w] ln τe,w
+
++
+∑
+
+k
+
+sm(k)
+(
+ln(bm,kρk,e)− lnβk
+
+)
+
++
+∑
+
+j
+
+bm,j lnβj + (1− bm,j) ln(1− βj)
+)
+
++H(q) +H(s) + const
+
+where [·] is the Iverson bracket, and H(·) is the en-
+tropy function. It can be shown that the iterative up-
+dates are given by:
+
+E-step:
+
+qm(e) ∝ τw,e exp
+(∑
+
+k
+
+sm(k) ln ρe,k/βk
+
+)
+
+sm(k) =
+bm,k
+βk
+
+exp
+
+(∑
+
+e
+
+qm(e) ln ρe,k
+
+)
+
+M-step:
+
+τw,e ∝
+∑
+
+m
+
+qm(e)[wm = w]
+
+ρe,k ∝
+∑
+
+m
+
+qm(e)sm(k)
+
+βj =
+
+∑
+m(bm,j − sm(j))∑
+m(1− sm(j))
+
+5.2 Memory-efficient EM algorithm
+One practical drawback to using the full EM algo-
+rithm is that maintaining the auxiliary distributions
+qm(e) and sm(k) requires a very large amount of
+memory, since they scale with the data. In this sec-
+tion we propose a simpler memory-efficient alter-
+native, where we only update qm(e). We perform
+the E-step according to the entity posterior equa-
+tion (2). In the M-step, rather than updating pa-
+rameters {βj}, we use empirical marginals. To up-
+date parameters {ρe}, we approximate sm(k) by a
+fixed uniform distribution over features that fired,
+s′m(j) = bm,j/
+
+∑
+k bm,k. The update for τ remains
+
+the same as before. The memory-efficient EM algo-
+rithm is:
+
+506
+
+
+
+E-step:
+
+qm(e) ∝ τw,e
+∑
+
+k
+
+bm,k
+ρe,k
+βk
+
+(3)
+
+M-step:
+
+τw,e ∝
+∑
+
+m
+
+qm(e)[wm = w] (4)
+
+ρe,k ∝
+∑
+
+m
+
+qm(e)s
+′
+m(k) (5)
+
+βj =
+1
+
+M
+
+∑
+
+m
+
+bm,j (6)
+
+whereM is the number of mentions. Note that these
+updates can be efficiently implemented in a map-
+reduce framework, where the map (E-step) com-
+putes the distribution qm(e), and the reduce (M-step)
+updates the parameters. This is the learning algo-
+rithm we use for all our experiments.
+
+5.3 Simulation
+We compared the performance of the two selective
+context EM algorithms (standard EM and its mem-
+ory efficient variant) and the EM algorithm for naı̈ve
+Bayes on synthetic data generated from our model.
+We left out the mention prior and only evaluated the
+context part. We assumed that there are |E| = 10
+equiprobable entities, M = 2, 000 mentions, and
+|F| = 200 possible features. Each entity was as-
+signed a set of 5-10 randomly selected relevant fea-
+tures (these feature sets were allowed to overlap).
+For each mention, we drew one relevant feature ac-
+cording to ρe, and a number of other features ac-
+cording to {βj}. We sampled parameters {ρe} from
+a symmetric Dirichlet distribution, and parameters
+{βj} from a uniform distribution in [0, σ], where
+σ roughly controlled the number of noisy features
+introduced. We generated synthetic datasets with
+σ ∈ {0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.22, 0.33}.
+We then removed labels from half of the mentions
+and ran the three inference algorithms. To com-
+pare the results, we computed micro-averaged pre-
+cision and recall over the unlabeled mentions, since
+these are the metrics we are ultimately interested
+in. The results are shown in Fig. 2, where each
+curve corresponds to a dataset. It is evident that
+the performance naı̈ve Bayes is hindered by spuri-
+ous features, even though each mention gets at least
+
+0 1
+0
+
+1
+Standard EM
+
+Pr
+ec
+
+is
+io
+
+n
+
+Recall 0 1
+0
+
+1
+Memory Efficient EM
+
+Recall
+
+Pr
+ec
+
+is
+io
+
+n
+
+0 1
+0
+
+1
+Naive Bayes
+
+Recall
+
+Pr
+ec
+
+is
+io
+
+n
+
+Figure 2: Micro-averaged precision-recall curves for the
+two EM algorithms for the selective context model (see
+Section 5), and the EM algorithm for the naı̈ve Bayes
+model. Each color corresponds to a dataset with a dif-
+ferent level of noise. It can be seen that in comparison
+to the naı̈ve Bayes model, the selective context models
+are more resilient to spurious features. In addition the
+two learning approaches – standard EM and its memory
+efficient variant have similar performance.
+
+one discriminative feature. The two selective con-
+text EM algorithms are more robust to noise; this is
+as expected, since they are based on the true data-
+generating model. Note that the performance of the
+memory-efficient version is similar to that of the
+standard EM algorithm.
+
+5.4 Parallel Implementation
+
+Semi-supervised learning has the important benefit
+of including many informative context features that
+are not present in the contexts of labeled training
+mentions. However, this comes at the cost of a very
+large model that in some cases may not fit in a sin-
+gle computer’s memory. Fortunately, our inference
+algorithm is easily parallelizable. We partition the
+model across multiple servers in a distributed client-
+server architecture. This does not change any of the
+model parameters but rather partitions them so that
+they can be loaded into memory on multiple servers.
+Each entity is assigned to a server according to a
+heuristic algorithm described below, and model pa-
+rameters for the entity are stored on the assigned
+server.
+
+Clients process documents to find mentions (if
+they have not been provided), their contexts, and
+the context feature vectors for each mention. This
+process does not require access to the model. Each
+client stores a lookup table that maps mention
+phrases to the servers containing entities for which
+the mention phrase probability is nonzero. To re-
+
+507
+
+
+
+solve a mention, the lookup table is consulted to
+identify the servers that could resolve the mention.
+All mentions in a document (or a suitable batch of
+documents) can be sent in parallel to the selected
+servers. Thus, the time to resolve all mentions in a
+document is proportional to the maximum response
+time of an entity server, rather than to the sum of
+per-mention response times. Further, queries to the
+same entity server are batched together.
+
+Once an entity server receives a query for a men-
+tionm (consisting of the phrasewm and context fea-
+tures bm), it looks up the candidate entities for wm,
+retrieves model parameters, and returns the entities
+e1, . . . , en with the n highest p(e|bm, wm) (Equa-
+tion 2). These lists are then merged across all the
+servers responsive to wm to yield the n top-scoring
+entities for m.
+
+We assign entities to servers by creating a bipar-
+tite entity-name graph and applying a greedy graph
+clustering algorithm that penalizes large clusters
+as they have a negative impact on load-balancing,
+while at the same time ensuring that most names will
+only be in one or a few clusters. Each cluster is then
+assigned to a server. Phrases such as Washington
+that evoke many entities may be distributed across
+multiple servers. Plato can also be made more re-
+sponsive and resilient to server failure by replicating
+entity models across multiple servers.
+
+6 Related Work
+
+Entity resolution is a key step in many
+language-processing tasks such as text classi-
+fication (Gabrilovich and Markovitch, 2007),
+information extraction (Lin et al., 2012) and
+grounded semantic parsing (Kwiatkowski et al.,
+2011). It can also help upstream tasks such as
+part-of-speech tagging, parsing, and coreference
+resolution (Finin et al., 2009; Mayfield et al., 2009)
+as it provides a link to world knowledge such as
+entity types, aliases, and gender.
+
+Early work (Bunescu and Pasca, 2006; Cucerzan,
+2007; Mihalcea and Csomai, 2007; Milne and Wit-
+ten, 2008; Nguyen and Cao, 2008) on the entity res-
+olution problem focused on linking named entities to
+the relevant Wikipedia pages (also known as Wikifi-
+cation). Most of these systems resolved mentions by
+defining a similarity score between mention contexts
+
+and Wikipedia page contents. Mihalcea and Csomai
+(2007) and Han and Sun (2011) used naı̈ve Bayes
+models similar to our baseline. Dredze et al. (2010)
+and Ratinov et al. (2011) used a ranking support vec-
+tor machine (SVM), trained to put the correct entity
+above the remaining ones. More recently He et al.
+(2013) used stacked autoencoders to learn a context
+score.
+
+While Bunescu and Pasca (2006) and Mihal-
+cea and Csomai (2007) used local models only,
+others (Cucerzan, 2007; Milne and Witten, 2008;
+Kulkarni et al., 2009; Ferragina and Scaiella, 2010;
+Han and Zhao, 2009; Ratinov et al., 2011; Han et al.,
+2011; Hoffart et al., 2011; He et al., 2013; Alhel-
+bawy and Gaizauskas, 2014; Pershina et al., 2015)
+used a coherency model in conjunction with a local
+model. One popular approach to coherency has been
+to use variants of the PageRank algorithm (Page et
+al., 1999) to re-score candidates (He et al., 2013;
+Alhelbawy and Gaizauskas, 2014; Pershina et al.,
+2015). Pershina et al. (2015) achieve the highest ac-
+curacy to date on the CoNLL 2003 dataset using a
+version of Personalized PageRank.
+
+Chisholm and Hachey (2015) demonstrate the
+benefits of supplementing curated Wikipedia data
+with a large noisy Web corpus. Their model, rely-
+ing on simple distance scores and an SVM ranker,
+achieves highly competitive results when trained
+on both Wikipedia and the Wikilinks corpus (Orr
+et al., 2013). While all of the systems described
+thus far rely on supervised learning, Plato is semi-
+supervised, and our experimental results (Section 9)
+confirm that incorporating unlabeled Web data can
+lead to significant performance gains.
+
+Several recent entity resolution systems (Kataria
+et al., 2011; Han and Sun, 2012; Houlsby and
+Ciaramita, 2014) have been based on topic model-
+ing. Han and Sun (2012) associate each document
+with a single topic; the topic generates entities, and
+the entities generate context words (non-referrent
+phrases). Houlsby and Ciaramita (2014) consider
+each entity to be a topic, and the words generated
+by the entity include both non-referent and referent
+phrases in the document, similarly to our context
+features. While topic modeling approaches are ca-
+pable of exploiting both labeled and unlabeled data,
+inference, typically based on sampling, can be ex-
+tremely slow when the number of entities is very
+
+508
+
+
+
+large. In contrast, our inference algorithm is sim-
+ple to implement, parallelizable, scalable, and easily
+extended to the semi-supervised setting.
+
+Jin et al. (2014) argue that many textual features
+within Web documents are irrelevant to the entity
+resolution task. Their method iteratively selects the
+most discriminative features for each document by
+trying to minimize the distance to some entity in the
+KB, and it outperforms a naı̈ve Bayes model that in-
+cludes all features. In contrast, we incorporate as-
+sumptions about feature relevance into our proba-
+bilistic model, and do not require access to the KB
+during learning or inference.
+
+7 Data
+
+Knowledge Base We use Freebase2 (Bollacker et
+al., 2008) as our KB. Freebase data is harvested
+from many sources, including Wikipedia, AMG,
+and IMDB. As of this writing, it contains more
+than 21 million topics and 70 million properties.
+For a large majority of topics that appear both in
+Freebase and Wikipedia (Freebase covers more than
+95% of Wikipedia), Freebase maintains a link to the
+Wikipedia page of that topic. While it is feasible to
+train our models using all of Freebase, for the exper-
+iments in this paper we restrict ourselves to the set of
+entities that appear in both Freebase and Wikipedia,
+as this is the standard setup used for our evaluation
+corpora.
+
+Labeled Data We use all pages in Wikipedia that
+contain a corresponding topic in Freebase as labeled
+data. For a given Wikipedia page, we treat the tar-
+get Wikipedia page of the link as the entity, and the
+anchor text as a mention of that entity (Milne and
+Witten, 2008; Han and Sun, 2011). We ignore dis-
+ambiguation pages.
+
+Unlabeled Data We collected a Web corpus of
+50 million pages from a source similar to the
+Clueweb09 corpus (Hallan and Hoy, 2009) for use
+as unlabeled data.
+
+Evaluation Data and Setup We used three eval-
+uation corpora: (a) CoNLL 20033 (Hoffart et al.,
+2011), (b) TAC 2011 KBP (Ji et al., 2011), and (c)
+TAC 2012 KBP (Mayfield et al., 2012).
+
+2www.freebase.com.
+3www.mpi-inf.mpg.de/yago-naga/aida.
+
+The CoNLL dataset contains 1,393 articles with
+about 34K mentions (Hachey et al., 2013). For
+the purpose of comparison with previous work, we
+evaluate Plato on the 231 test-b documents with
+4,483 linkable gold mentions. Performance on
+those mentions is measured by micro-averaged pre-
+cision@1, that is, accuracy averaged across men-
+tions. We did not use CoNLL train or test-a
+documents for training or parameter tuning.
+
+The TAC KBP competitions use a subset of a
+2008 Wikipedia dump as the reference knowledge
+base. TAC 2012 evaluation data contains 2,226 gold
+mentions, of which 1,177 are linkable to the refer-
+ence KB, and TAC 2011 data contains 2,250 men-
+tions of which 1,123 are linkable to the same KB.
+Thus the TAC KBP competition evaluation includes
+NIL entities; participants are required to cluster NIL
+mentions across documents so that all mentions of
+each unknown entity are assigned a unique identifier.
+In addition to the official evaluation metric B3+F1,
+we also report Plato’s in-KB accuracy as well as
+overall accuracy, where all NIL mentions are consid-
+ered to be in one cluster. Once again as in the case of
+CoNLL, we did not train or tune Plato on any TAC
+KBP training data.
+
+For each of the test corpora, we evaluate on the
+exact same set of mentions as previous work that we
+compare against in Tables 2 and 3. However, our
+setup differs from existing systems in two important
+ways. First, we train on Wikipedia and unlabeled
+Web data only, and do not use TAC or CoNLL train-
+ing or development datasets. Second, candidate gen-
+eration for each mention is based on our estimated
+mention prior (see Section 8 for details) and thus
+may differ from previous approaches. Plato’s can-
+didate recall is shown on Table 1; this is an upper
+bound on the accuracy of our approach.
+
+8 Experimental Setup
+
+Mention Prior We initialized the mention phrase
+parameters {τ e} from links in Wikipedia by count-
+ing how many times a given phrasew is used to refer
+to entity e, and normalizing appropriately (Han and
+Sun, 2012). We used the following sources to ob-
+tain (w, e) pairs for the above estimates: (a) w is the
+title of e’s page after removing parenthesized dis-
+ambiguation terms; (b) w is the title of a Wikipedia
+
+509
+
+www.freebase.com
+http://www.mpi-inf.mpg.de/yago-naga/aida
+
+
+Dataset Candidate
+recall
+
+CoNLL 2003 91.7
+TAC 2011 84.8
+TAC 2012 83.2
+
+Table 1: Candidate generation recall on the three evalu-
+ation datasets: the percentage of linkable gold mentions
+for which the correct entity was in the set of candidates
+generated by Plato. This is an upper bound on our in-KB
+accuracy.
+
+redirect page linking to e’s page; (c) w is a Free-
+base alias (property /common/topic/alias)
+for Freebase topic e; (d) w is the title of a dis-
+ambiguation page that links to e as a possible dis-
+ambiguation. For all the aliases obtained from the
+above sources, we used the Wikilinks corpus (Orr
+et al., 2013) as an additional source of counts. In
+addition to the above sources, we also used anchors
+of Wikipedia pages as aliases if they occurred more
+than 500 times. Unlabeled data was used to reesti-
+mate the parameters τ e using Equation 4; however,
+we did not introduce any new aliases.
+
+Context Features To extract context features, all
+documents were processed as follows. The free text
+in each document was POS-tagged and dependency-
+parsed using a parser that is a reimplementation of
+the MaltParser (Nivre et al., 2007) with a linear ker-
+nel SVM. When trained on Sections 02-21 of the
+Wall Street Journal (WSJ) portion of the Penn Tree-
+bank (Marcus et al., 1993), our parser achieves an
+unlabeled attachment score (UAS) of 88.24 and a
+labeled attachment score (LAS) of 84.69 on WSJ
+Section 22. Named mentions (such as Barack
+Obama) and common noun phrases (such as the
+president) were identified using a simple rule-
+based tagger with rules over POS tag sequences
+and dependency parses. We then used a within-
+document coreference resolver comparable to that
+of Haghighi and Klein (2009) to cluster all identi-
+fied mentions.
+
+As context features in our model, we used the
+phrases of all mentions in each coreference cluster
+in the document. We did not differentiate between
+phrases corresponding to the same coreference clus-
+ter as the query string, and phrases in other clusters.
+
+Adding other types of local features, such as words
+and phrases near the mentions in a cluster and de-
+pendency paths involving mentions in a cluster, did
+not lead to significant performance improvements in
+either our proposed model or naı̈ve Bayes, and so
+we did not include them. We initialized the con-
+text parameters {ρk} using only labeled data, and
+re-estimated them using unlabeled data, as detailed
+in Equation 5.
+
+Inference To determine the set of candidate enti-
+ties for each coreference cluster, we use the men-
+tion with the longest phrase in the cluster. This
+phrase is used to generate the candidates which are
+then scored using Equation 2. We copy the label
+of the highest-scoring entity to all mentions in the
+cluster. Note that clusters will often include proper
+names mentions, referential common noun phrases,
+and referential pronouns. Thus Plato detects and
+links both nominal and named mentions. However,
+following most existing work, we only evaluate the
+resolution of gold named entity mentions to either
+KB or NIL. While in the case of CoNLL all gold
+mentions can be resolved to the KB, in TAC NIL is a
+valid label.
+
+NIL Detection and Clustering As noted earlier,
+not all mentions correspond to an entity in the KB,
+even if they share a name or alias with a known en-
+tity. The problem is further complicated by the fact
+that it is hard to estimate the total number of entities
+in the world with a particular name. Plato decides
+whether to resolve a mention m (i.e., the cluster that
+m is a member off) to an entity in KB or to NIL based
+on context alone. Let
+
+a∗m = maxe
+
+∑
+
+k
+
+bm,k
+ρe,k
+βk
+
+.
+
+If a∗m < α, we resolve i to NIL. We found that set-
+ting α = 1e−5 works well in practice. We use the
+above rule both during EM-based learning and at in-
+ference time.
+
+The TAC KBP evaluation requires participants to
+perform cross-document clustering of NIL mentions,
+such that each unknown entity has a distinct NIL id.
+We employ a very simple clustering strategy, similar
+to Cucerzan (2012):
+
+• Since our KB is much bigger than 2008
+Wikipedia, Plato sometimes resolves mentions
+
+510
+
+
+
+Model CoNLL 2003 test-b
+micro-accuracy
+
+Hoffart et al. (2013) 82.5
+Sil and Yates (2013) 84.2
+Nguyen et al. (2014) 84.8
+Houlsby and Ciaramita (2014) 84.9
+He et al. (2013) + Han et al. (2011) 85.6
+Chisholm and Hachey (2015) no coherency 86.1
+Chisholm and Hachey (2015) with coherency 88.7
+Mention prior 74.1
+Naı̈ve Bayes 76.1
+Supervised selective context 79.7
+Plato (semi-supervised selective context) 86.4
+
+Table 2: Mention-averaged accuracy on the CoNLL 2003 dataset in our experiments and previous best work. The
+results of the best system are shown in bold-face.
+
+to entities that are in our KB but not in the TAC
+KB. We assign the same NIL label to all such
+mentions of the same entity.
+
+• We assign a unique NIL identifier to each coref-
+erence cluster that is resolved to NIL by Plato.
+
+Naı̈ve Bayes Model We estimated the parameters
+of the naı̈ve Bayes model from labeled data only, us-
+ing a symmetric Dirichlet prior to prevent zero prob-
+abilities. While the naı̈ve Bayes model can also be
+extended to include unlabeled data using the EM al-
+gorithm (Nigam et al., 2000), we did not pursue this
+beyond preliminary experiments, since the initial re-
+sults were mediocre and re-estimation on unlabeled
+data is known to be very sensitive to initialization.
+
+9 Results
+
+Table 2 summarizes entity resolution results on the
+CoNLL 2003 corpus. This evaluation only con-
+siders linkable mentions, and we compare differ-
+ent systems in terms of mention-averaged accuracy.
+As external baselines for CoNLL test-b, we show
+the results of (Nguyen et al., 2014; Sil and Yates,
+2013; Houlsby and Ciaramita, 2014; He et al., 2013;
+Chisholm and Hachey, 2015). To the best of our
+knowledge, these are the top reported results for this
+dataset. We also note that the systems of Alhelbawy
+and Gaizauskas (2014) and Pershina et al. (2015) are
+highly competitive on CoNLL; however we do not
+include their results in Table 2 due to differences to
+
+the standard evaluation settings (while we evaluate
+on test-b as is standard practice they evaluate on the
+entire dataset).
+
+Table 3 shows the evaluation results on the two
+TAC KBP corpora; these evaluations also consider
+NIL entities. Our baseline for TAC 2012 is the sys-
+tem of Cucerzan (2012), which achieved the high-
+est accuracy and B3+F1 score in the 2012 com-
+petition. Our baseline for TAC 2011 is Cucerzan
+(2011), which achieved the highest overall accuracy
+and second-highest B3+F1 score in the 2011 com-
+petition. Dalton and Dietz (2013) also report high
+accuracy on TAC KBP data; however, their results
+are computed on non-standard training/evaluation
+data splits, and hence not directly comparable.
+
+In both tables, we include the results of all of our
+experiments: (a) mention prior baseline, (b) super-
+vised naı̈ve Bayes (see Section 3 for details); (c) su-
+pervised selective context model; and (d) Plato, the
+semi-supervised selective context model.
+
+The mention prior alone does surprisingly well
+on this task, but well below the previous best re-
+sults, as might be expected. Supervised naı̈ve Bayes
+performs better, but does not offer much improve-
+ment over the mention prior. The supervised selec-
+tive context model performs much better than naı̈ve
+Bayes, even though it is trained on exactly the same
+data. These results support our hypothesis that the
+performance of naı̈ve Bayes suffers in the presence
+of irrelevant features. Finally, Plato outperforms the
+
+511
+
+
+
+Data Model In-KB Overall B3+F1
+accuracy accuracy
+
+TAC 2011 Cucerzan (2011) - 86.8 84.1
+Mention prior 67.9 78.7 75.8
+Naı̈ve Bayes 69.3 79.6 76.5
+Supervised selective context 74.5 84.1 81.1
+Plato (semi-supervised selective context) 79.3 86.5 84.0
+
+TAC 2012 Cucerzan (2012) Run 1 72.0 76.2 72.1
+Cucerzan (2012) Run 3 71.2 76.6 73.0
+Mention prior 47.0 59.1 52.5
+Naı̈ve Bayes 50.6 61.3 55.1
+Supervised selective context 68.7 74.3 69.7
+Plato (semi-supervised selective context) 74.2 76.6 71.2
+
+Table 3: TAC KBP evaluation results for our model and previous highest-accuracy systems. The best results are
+shown in bold-face; this includes the highest-accuracy system and systems whose performance was not statistically
+significantly different, according to a two-tailed t-test with p = 0.05.
+
+other models in accuracy by a substantial margin,
+suggesting that incorporating unlabeled data helps
+the model generalize through feature discovery.
+
+In comparison with previous work, Plato is
+highly competitive with existing results on all three
+datasets. On TAC 2012 data, Plato achieves the
+highest in-KB accuracy, and the same overall accu-
+racy as the previous best system (Cucerzan, 2012).
+On TAC 2011 data, Plato once again achieves the
+highest in-KB accuracy, and has similar overall ac-
+curacy as the best system of (Cucerzan, 2011) (86.5
+compared to 86.8).
+
+The highest reported accuracy on CoNLL (test-
+b) is obtained by Chisholm and Hachey (2015),
+who use both Wikipedia and Wiklinks to train their
+model. Their results support the case for incorpo-
+rating large amounts of noisy training data into en-
+tity linking systems. Without coherency, their model
+performs slightly worse than Plato, suggesting that
+coherency is a good direction for improving Plato.
+Recently, Pershina et al. (2015) have reported accu-
+racy 91.8 on the entire CoNLL dataset (train, test-
+a, test-b) using a variant of Personalized PageR-
+ank. This is higher than Plato candidate recall (upper
+bound on our accuracy); as their publication is very
+recent, we have not had the chance to evaluate Plato
+on their candidates. Current Plato accuracy on the
+whole CoNLL dataset is 86.5.
+
+Since many of the systems described here were
+
+trained on different datasets and features, it is hard
+to provide a deeper comparison of their properties.
+However, we reiterate that Plato’s performance is
+out-of-the-box: it was not trained on CoNLL or TAC
+data, and we used the exact same model for all eval-
+uations in Tables 2 and 3
+
+Finally, we illustrate the favorable feature discov-
+ery properties of the semi-supervised approach with
+the following example:
+
+George Harrison said that partnering
+with Roush Fenway Racing further
+demonstrates how Wii is bringing gaming
+to the masses.
+
+Here the mention George Harrison refers
+to the former senior vice-president (SVP) of
+Nintendo, and not the Beatle George Harri-
+son (Freebase id /m/03bnv). The mention
+prior has a strong preference for the Beatles:
+p(Beatles|George Harrison) = 0.92 while
+p(SVP|George Harrison) = 0.02. In addi-
+tion, none of the sentence context features occur in
+Wikipedia. Since the supervised model is trained
+only on Wikipedia, the mention prior component
+dominates, and the system incorrectly infers that
+George Harrison refers to the Beatle. How-
+ever, once we retrain with unlabeled data, the model
+learns several new relevant features for the correct
+entity, including Rouse Fenway Racing and
+
+512
+
+
+
+Wii, and gaming. As a result we now get
+
+p(SVP|George Harrison,b) = 0.74
+p(Beatles|George Harrison,b) = 0.25,
+
+which leads us to the correct inference for the person
+mentioned in the passage.
+
+10 Conclusions and Future work
+
+We have presented Plato, a simple and scalable en-
+tity resolution system that leverages unlabeled data
+to produce state-of-the-art results.
+
+The main gains in our approach come from com-
+bining a novel selective context model with a large
+corpus of unlabeled Web documents. We have
+demonstrated that a model in which most features
+are considered noisy is superior to a model in which
+all features depend on the entity. However, in some
+circumstances such a model may fail to exploit all
+useful features. An obvious direction for future
+work is extending the framework to cases where a
+small subset of features can be relevant, for example
+using binary per-feature indicator variables. A more
+subtle direction for context modeling could involve
+distinguishing between salient entities, for which
+most features (mentions in that cluster) in a docu-
+ment are likely to be informative, and non-salient
+entities with few informative features.
+
+Plato does not include a cross-entity coherency
+model; while such models are intuitively appeal-
+ing, they depend on cross-entity links that are of-
+ten missing for rare entities, and may require com-
+putationally demanding joint inference in a proba-
+bilistic model. We capture discourse coherency only
+by adding referring phrases in the document to the
+context features of each mention cluster (as strings,
+not entities). Very recent results by Chisholm and
+Hachey (2015) and Pershina et al. (2015) suggest
+that simple coherence-based rescoring can signifi-
+cantly boost performance, and so this is another po-
+tential direction for improving Plato.
+
+While semi-supervised training leads to major ac-
+curacy gains for our method, it also creates very
+large models. We are able to serve those models
+with a simple distributed architecture, but it would
+be worth exploring inference methods that could re-
+duce model size while not compromising accuracy.
+
+One possibility involves improving inference to se-
+lect a small set of relevant features for each mention,
+rather than averaging over all features.
+
+References
+
+Ayman Alhelbawy and Robert Gaizauskas. 2014. Graph
+ranking for collective named entity disambiguation.
+In Proc. 52nd Annual Meeting of the Association for
+Computational Linguistics, ACL 14, pages 75–80.
+
+Kurt D. Bollacker, Colin Evans, Praveen Paritosh, Tim
+Sturge, and Jamie Taylor. 2008. Freebase: a collabo-
+ratively created graph database for structuring human
+knowledge. In Proc. of the 2008 ACM SIGMOD Inter-
+national Conference on Management of Data, pages
+1247–1250. ACM.
+
+Razvan C. Bunescu and Marius Pasca. 2006. Using en-
+cyclopedic knowledge for named entity disambigua-
+tion. In Proc. 11th Conference of the European Chap-
+ter of the Association for Computational Linguistics,
+EACL 06.
+
+Andrew Chisholm and Ben Hachey. 2015. Entity disam-
+biguation with web links. Transactions of the Associ-
+ation for Computational Linguistics, 3:145–156.
+
+Silviu Cucerzan. 2007. Large-scale named entity dis-
+ambiguation based on Wikipedia data. In Proc. of
+EMNLP-CoNLL 2007, pages 708–716.
+
+Silviu Cucerzan. 2011. TAC entity linking by perform-
+ing full-document entity extraction and disambigua-
+tion. In In Proc. of the Text Analysis Conference, TAC
+11.
+
+Silviu Cucerzan. 2012. The MSR system for entity link-
+ing at TAC 2012. In In Proc. of the Text Analysis Con-
+ference, TAC 12.
+
+Jeffrey Dalton and Laura Dietz. 2013. A neighborhood
+relevance model for entity linking. In Proc. of the 10th
+Conference on Open Research Areas in Information
+Retrieval.
+
+Jeffrey Dean and Sanjay Ghemawat. 2008. MapReduce:
+simplified data processing on large clusters. Commu-
+nications of the ACM, 51(1):107–113, January.
+
+Mark Dredze, Paul McNamee, Delip Rao, Adam Ger-
+ber, and Tim Finin. 2010. Entity disambiguation for
+knowledge base population. In Proc. of the 23rd In-
+ternational Conference on Computational Linguistics,
+COLING 10, pages 277–285.
+
+Paolo Ferragina and Ugo Scaiella. 2010. TAGME:
+on-the-fly annotation of short text fragments (by
+Wikipedia entities). In Proc. of the 19th ACM Inter-
+national Conference on Information Knowledge and
+Management, CIKM 10, pages 1625–1628. ACM.
+
+513
+
+
+
+Tim Finin, Zareen Syed, James Mayfield, Paul Mc-
+Namee, and Christine Piatko. 2009. Using Wikitol-
+ogy for cross-document entity coreference resolution.
+In Proc. of the AAAI Spring Symposium on Learning
+by Reading and Learning to Read. AAAI Press.
+
+Evgeniy Gabrilovich and Shaul Markovitch. 2007.
+Harnessing the expertise of 70,000 human editors:
+Knowledge-based feature generation for text catego-
+rization. Journal of Machine Learning Research,
+8:2297–2345, December.
+
+Ben Hachey, Will Radford, Joel Nothman, Matthew Hon-
+nibal, and James R. Curran. 2013. Evaluating en-
+tity linking with Wikipedia. Artificial Intelligence,
+194(0):130 – 150.
+
+Aria Haghighi and Dan Klein. 2009. Simple coreference
+resolution with rich syntactic and semantic features. In
+Proc.of the 2009 Conference on Empirical Methods in
+Natural Language Processing, EMNLP 09. ACL.
+
+Jamie Hallan and Mark Hoy. 2009. Clueweb09 data set.
+http://lemurproject.org/clueweb09/.
+
+Xianpei Han and Le Sun. 2011. A generative entity-
+mention model for linking entities with knowledge
+base. In Proc. of the 49th Annual Meeting of the As-
+sociation for Computational Linguistics: Human Lan-
+guage Technologies, volume 1 of ACLHLT 11. ACL.
+
+Xianpei Han and Le Sun. 2012. An entity-topic model
+for entity linking. In EMNLP-CoNLL, pages 105–115.
+
+Xianpei Han and Jun Zhao. 2009. Named entity dis-
+ambiguation by leveraging Wikipedia semantic knowl-
+edge. In Proc. of the 18th Conference on Information
+and Knowledge Management, CIKM 09, pages 215–
+224. ACM.
+
+Xianpei Han, Le Sun, and Jun Zhao. 2011. Collective
+entity linking in Web text: a graph-based method. In
+In Proc. 34th ACM SIGIR conference on research and
+development in information retrieval, pages 765–774.
+ACM.
+
+Zhengyan He, Shujie Liu, Mu Li, Ming Zhou, Longkai
+Zhang, and Houfeng Wang. 2013. Learning entity
+representation for entity disambiguation. In Proc. of
+the 51st Annual Meeting of the Association for Com-
+putational Linguistics, ACL 13, pages 30–34.
+
+Johannes Hoffart, Mohamed Amir Yosef, Ilaria Bordino,
+Hagen Fürstenau, Manfred Pinkal, Marc Spaniol,
+Bilyana Taneva, Stefan Thater, and Gerhard Weikum.
+2011. Robust disambiguation of named entities in text.
+In Proc. of the 2011 Conference on Empirical Methods
+in Natural Language Processing, EMNLP11. ACL.
+
+Johannes Hoffart, Mohamed Amir Yosef, Ilaria Bor-
+dino, Hagen Fürstenau, Manfred Pinkal, Marc
+Spaniol, Bilyana Taneva, Stefan Thater, and Ger-
+hard Weikum. 2013. AIDA: accurate on-
+line disambiguation of named entities in text
+
+and tables. http://www.mpi-inf.mpg.de/
+yago-naga/aida/index.html.
+
+Neil Houlsby and Massimiliano Ciaramita. 2014. A
+scalable Gibbs sampler for probabilistic entity linking.
+In Advances in Information Retrieval, pages 335–346.
+Springer.
+
+Heng Ji, Ralph Grishman, and Hoa Trang Dang. 2011.
+Overview of the TAC 2011 knowledge base population
+track. In Proc. of the 4th Text Analysis Conference,
+TAC 11.
+
+Yuzhe Jin, Emre Kiciman, Kuansan Wang, and Ricky
+Loynd. 2014. Entity linking at the tail: sparse sig-
+nals, unknown entities, and phrase models. In Proc. of
+the 7th ACM International Conference on Web Search
+and Data Mining, WSDM ’14, pages 453–462, New
+York, NY, USA. ACM.
+
+Saurabh S. Kataria, Krishnan S. Kumar, Rajeev R. Ras-
+togi, Prithviraj Sen, and Srinivasan H. Sengamedu.
+2011. Entity disambiguation with hierarchical topic
+models. In Proc. of the 17th ACM SIGKDD Confer-
+ence on Knowledge Discovery and Data Mining, pages
+1037–1045. ACM.
+
+Sayali Kulkarni, Amit Singh, Ganesh Ramakrishnan, and
+Soumen Chakrabarti. 2009. Collective annotation of
+Wikipedia entities in web text. In Proc. of the 15th
+ACM SIGKDD Conference on Knowledge Discovery
+and Data Mining, pages 457–466. ACM.
+
+Tom Kwiatkowski, Luke S. Zettlemoyer, Sharon Gold-
+water, and Mark Steedman. 2011. Lexical generaliza-
+tion in CCG grammar induction for semantic parsing.
+In Proc. of the 2011 Conference on Empirical Methods
+in Natural Language Processing, pages 1512–1523.
+
+Thomas Lin, Mausam, and Oren Etzioni. 2012. Entity
+linking at web scale. In Proc. of the Joint Workshop
+on Automatic Knowledge Base Construction and Web-
+scale Knowledge Extraction, AKBC-WEKEX ’12.
+
+Mitchell P Marcus, Mary Ann Marcinkiewicz, and Beat-
+rice Santorini. 1993. Building a large annotated cor-
+pus of English: The Penn Treebank. Computational
+linguistics, 19(2):313–330.
+
+James Mayfield, David Alexander, Bonnie Dorr, Jason
+Eisner, Tamer Elsayed, Tim Finin, Clay Fink, Marjorie
+Freedman, Nikesh Garera, Paul McNamee, Saif Mo-
+hammad, Douglas Oard, Christine Piatko, Asad Say-
+eed, Zareen Syed, Ralph Weischedel, Tan Xu, and
+David Yarowsky. 2009. Cross-document coreference
+resolution: A key technology for learning by read-
+ing. In AAAI 2009 Spring Symposium on Learning by
+Reading and Learning to Read.
+
+James Mayfield, Javier Artiles, and Hoa Trang Dang.
+2012. Overview of the TAC 2012 knowledge base
+population track. In Proc. of the 5th Text Analysis
+Conference, TAC 12.
+
+514
+
+http://lemurproject.org/clueweb09/
+http://www.mpi-inf.mpg.de/yago-naga/aida/index.html
+http://www.mpi-inf.mpg.de/yago-naga/aida/index.html
+
+
+Rada Mihalcea and Andras Csomai. 2007. Wikify!: link-
+ing documents to encyclopedic knowledge. In Proc. of
+the 16th ACM Conference on Information and Knowl-
+edge Management, CIKM 07, pages 233–242.
+
+David N. Milne and Ian H. Witten. 2008. Learning to
+link with Wikipedia. In Proc. of the 17th ACM Con-
+ference on Information and Knowledge Management,
+CIKM 07, pages 509–518.
+
+Hien T. Nguyen and Tru H. Cao. 2008. Named entity
+disambiguation on an ontology enriched by Wikipedia.
+In Proc. 2008 IEEE International Conference on Re-
+search, Innovation, and Vision for the Future in Com-
+puting and Communication Technologies, RIVF 08,
+pages 247–254. IEEE.
+
+Dat Ba Nguyen, Johannes Hoffart, Martin Theobald,
+and Gerhard Weikum. 2014. AIDA-light: High-
+throughput named-entity disambiguation. In Proc. of
+the Linked Data on the Web Workshop.
+
+Kamal Nigam, Andrew Kachites McCallum, Sebastian
+Thrun, and Tom Mitchell. 2000. Text classification
+from labeled and unlabeled documents using EM. Ma-
+chine Learning, 39(2-3):103–134, May.
+
+Joakim Nivre, Johan Hall, Jens Nilsson, Atanas Chanev,
+Gülsen Eryigit, Sandra Kübler, Svetoslav Marinov,
+and Erwin Marsi. 2007. MaltParser: A language-
+independent system for data-driven dependency pars-
+ing. Natural Language Engineering, 13(02):95–135.
+
+Dave Orr, Amar Subramanya, and Fernando
+Pereira. 2013. Learning from big data:
+40 million entities in context. http://
+googleresearch.blogspot.com/2013/03/
+learning-from-big-data-40-million.
+html.
+
+Lawrence Page, Sergey Brin, Rajeev Motwani, and Terry
+Winograd. 1999. The PageRank citation ranking:
+bringing order to the web. Technical Report SIDL-
+WP-1999-0120, Stanford InfoLab, November.
+
+Maria Pershina, Yifan He, and Ralph Grishman. 2015.
+Personalized Page Rank for named entity disambigua-
+tion. In Proc. 2015 Annual Conference of the North
+American Chapter of the ACL, NAACL HLT 14, pages
+238–243.
+
+Lev-Arie Ratinov, Dan Roth, Doug Downey, and Mike
+Anderson. 2011. Local and global algorithms for dis-
+ambiguation to Wikipedia. In Proc. of the 49th Annual
+Meeting of the Association for Computational Linguis-
+tics: Human Language Technologies, ACLHLT 11,
+pages 1375–1384. ACL.
+
+Avirup Sil and Alexander Yates. 2013. Re-ranking for
+joint named-entity recognition and linking. In Proc.
+of the 22nd ACM International Conference on Infor-
+mation & Knowledge Management, CIKM 13, pages
+2369–2374. ACM.
+
+515
+
+http://googleresearch.blogspot.com/2013/03/learning-from-big-data-40-million.html
+http://googleresearch.blogspot.com/2013/03/learning-from-big-data-40-million.html
+http://googleresearch.blogspot.com/2013/03/learning-from-big-data-40-million.html
+http://googleresearch.blogspot.com/2013/03/learning-from-big-data-40-million.html
+
+
+516
+
+

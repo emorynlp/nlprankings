@@ -1,0 +1,1480 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Competence-based Curriculum Learning for Neural Machine Translation
+
+
+Proceedings of NAACL-HLT 2019, pages 1162–1172
+Minneapolis, Minnesota, June 2 - June 7, 2019. c©2019 Association for Computational Linguistics
+
+1162
+
+Competence-based Curriculum Learning for
+Neural Machine Translation
+
+Emmanouil Antonios Platanios†, Otilia Stretcu†, Graham Neubig‡, Barnabas Poczos†, Tom M. Mitchell†
+†Machine Learning Department, ‡Language Technologies Institute
+
+Carnegie Mellon University
+{e.a.platanios,ostretcu,gneubig,bpoczos,tom.mitchell}@cs.cmu.edu
+
+Abstract
+Current state-of-the-art NMT systems use
+large neural networks that are not only slow
+to train, but also often require many heuristics
+and optimization tricks, such as specialized
+learning rate schedules and large batch sizes.
+This is undesirable as it requires extensive hy-
+perparameter tuning. In this paper, we propose
+a curriculum learning framework for NMT that
+reduces training time, reduces the need for spe-
+cialized heuristics or large batch sizes, and re-
+sults in overall better performance. Our frame-
+work consists of a principled way of deciding
+which training samples are shown to the model
+at different times during training, based on the
+estimated difficulty of a sample and the cur-
+rent competence of the model. Filtering train-
+ing samples in this manner prevents the model
+from getting stuck in bad local optima, mak-
+ing it converge faster and reach a better solu-
+tion than the common approach of uniformly
+sampling training examples. Furthermore, the
+proposed method can be easily applied to ex-
+isting NMT models by simply modifying their
+input data pipelines. We show that our frame-
+work can help improve the training time and
+the performance of both recurrent neural net-
+work models and Transformers, achieving up
+to a 70% decrease in training time, while at the
+same time obtaining accuracy improvements
+of up to 2.2 BLEU.
+
+1 Introduction
+
+Neural Machine Translation (NMT; Kalchbrenner
+and Blunsom (2013); Bahdanau et al. (2015)) now
+represents the state-of-the-art adapted in most ma-
+chine translation systems (Wu et al., 2016; Crego
+et al., 2016; Bojar et al., 2017a), largely due to
+its ability to benefit from end-to-end training on
+massive amounts of data. In particular, recently-
+introduced self-attentional Transformer architec-
+tures (Vaswani et al., 2017) are rapidly becoming
+the de-facto standard in NMT, having demonstrated
+
+CURRICULUM LEARNING
+
+DIFFICULTY
+
+Use sample only if:
+difficulty(sample) ≤ competence(model)
+
+COMPETENCE
+
+MODELTRAINER
+DATA
+
+SA
+M
+PL
+E
+
+M
+O
+D
+EL
+STATE
+
+Figure 1: Overview of the proposed curriculum learn-
+ing framework. During training, difficulty of each train-
+ing sample is estimated and a decision whether to use it
+is made based on the current competence of the model.
+
+both superior performance and training speed com-
+pared to previous architectures using recurrent neu-
+ral networks (RNNs; (Kalchbrenner and Blunsom,
+2013; Sutskever et al., 2014)). However, large scale
+NMT systems are often hard to train, requiring
+complicated heuristics which can be both time-
+consuming and expensive to tune. This is espe-
+cially true for Transformers which, when carefully
+tuned, have been shown to consistently outperform
+RNNs (Popel and Bojar, 2018), but on the other
+hand, also rely on a number of heuristics such as
+specialized learning rates and large-batch training.
+
+In this paper, we attempt to tackle this problem
+by proposing a curriculum learning framework
+for training NMT systems that reduces training
+time, reduces the need for specialized heuristics
+or large batch sizes, and results in overall better
+performance. It allows us to train both RNNs and,
+perhaps more importantly, Transformers, with rel-
+ative ease. Our proposed method is based on the
+idea of teaching algorithms in a similar manner
+as humans, from easy concepts to more difficult
+ones. This idea can be traced back to the work
+
+
+
+1163
+
+of Elman (1993) and Krueger and Dayan (2009).
+The main motivation is that training algorithms
+can perform better if training data is presented in
+a specific order, starting from easy examples and
+moving on to more difficult ones, as the learner
+becomes more competent. In the case of machine
+learning, it can also be thought of as a means to
+avoid getting stuck in bad local optima early on in
+training. An overview of the proposed framework
+is shown in Figure 1.
+
+Notably, we are not the first to examine cur-
+riculum learning for NMT, although other related
+works have met with mixed success. Kocmi and
+Bojar (2017) explore impact of several curriculum
+heuristics on training a translation system for a sin-
+gle epoch, presenting the training examples in an
+easy-to-hard order based on sentence length and
+vocabulary frequency. However, their strategy in-
+troduces all training samples during the first epoch,
+and how this affects learning in following epochs
+is not clear, with official evaluation results (Bo-
+jar et al., 2017b) indicating that final performance
+may indeed be hurt with this strategy. Contempo-
+raneously to our work, Zhang et al. (2018) further
+propose to split the training samples into a prede-
+fined number of bins (5, in their case), based on
+various difficulty metrics. A manually designed
+curriculum schedule then specifies the bins from
+which the model samples training examples. Ex-
+periments demonstrate that benefits of curriculum
+learning are highly sensitive to several hyperparam-
+eters (e.g., learning rate, number of iterations spent
+in each phase, etc.), and largely provide benefits
+in convergence speed as opposed to final model
+accuracy.
+
+In contrast to these previous approaches, we de-
+fine a continuous curriculum learning method (in-
+stead of a discretized regime) with only one tunable
+hyperparameter (the duration of curriculum learn-
+ing). Furthermore, as opposed to previous work
+which only focuses on RNNs, we also experiment
+with Transformers, which are notoriously hard to
+train (Popel and Bojar, 2018). Finally, unlike any
+of the work described above, we show that our
+curriculum approach helps not only in terms of
+convergence speed, but also in terms of the learned
+model performance. In summary, our method has
+the following desirable features:
+
+1. Abstract: It is a novel, generic, and extensible
+formulation of curriculum learning. A number
+of previous heuristic-based approaches, such as
+
+that of Kocmi and Bojar (2017), can be formu-
+lated as special cases of our framework.
+
+2. Simple: It can be applied to existing NMT sys-
+tems with only a small modification to their
+training data pipelines.
+
+3. Automatic: It does not require any tuning other
+than picking the value of a single parameter,
+which is the length of the curriculum (i.e., for
+how many steps to use curriculum learning, be-
+fore easing into normal training).
+
+4. Efficient: It reduces training time by up to 70%,
+whereas contemporaneous work of Zhang et al.
+(2018) reports reductions of up to 46%.
+
+5. Improved Performance: It improves the per-
+formance of the learned models by up to 2.2
+BLEU points, where the best setting reported
+by Zhang et al. (2018) achieves gains of up 1.55
+BLEU after careful tuning.
+
+In the next section, we introduce our proposed cur-
+riculum learning framework.
+
+2 Proposed Method
+
+We propose competence-based curriculum learn-
+ing, a training framework based on the idea that
+training algorithms can perform better if training
+data is presented in a way that picks examples ap-
+propriate for the model’s current competence. More
+specifically, we define the following two concepts
+that are central to our framework:
+
+Difficulty: A value that represents the difficulty
+of a training sample and that may depend on the
+current state of the learner. For example, sentence
+length is an intuitive difficulty metric for natural
+language processing tasks. The only constraint is
+that difficulty scores are comparable across differ-
+ent training samples (i.e., the training samples can
+be ranked according to their difficulty).
+
+Competence: A value between 0 and 1 that rep-
+resents the progress of a learner during its training.
+It is defined as a function of the learner’s state.
+More specifically, we define the competence, c(t)
+at time t (measured in terms of training steps), of
+a learner as the proportion of training data it is al-
+lowed to use at that time. The training examples are
+ranked according to their difficulty and the learner
+is only allowed to use the top c(t) portion of them
+at time t.
+Using these two concepts, we propose Algorithm 1
+(a high-level overview is shown in Figure 1, an ex-
+ample visualization of the first two steps is shown
+
+
+
+1164
+
+Thank you very much! 4
+Barack Obama loves ... 13
+My name is ... 6
+What did she say ... 123
+
+Sentence Length
+
+Thank you very much! 0.01
+Barack Obama loves ... 0.15
+My name is ... 0.03
+What did she say ... 0.95
+
+Sentence Difficulty
+
+Figure 2: Example visualization of the preprocessing sequence used in the proposed algorithm. The histogram
+shown is that of sentence lengths from the WMT-16 En)De dataset used in our experiments. Here sentence lengths
+represent an example difficulty scoring function, d. “CDF” stands for the empirical “cumulative density function”
+obtained from the histogram on the left plot.
+
+Difficulty
+Step 1000
+
+Competence
+
+Competence at current stepSample uniformly from
+blue region
+
+Step 10000
+
+Figure 3: Example illustration of the training data
+“filtering” performed by our curriculum learning algo-
+rithm. At each training step: (i) the current competence
+of the model is computed, and (ii) a batch of training
+examples is sampled uniformly from all training ex-
+amples whose difficulty is lower than that competence.
+In this example, we are using the sentence length dif-
+ficulty heuristic shown in Equation 1, along with the
+square root competence model shown in Equation 7.
+
+in Figure 2, and an example of the interaction be-
+tween difficulty and competence is shown in Fig-
+ure 3).
+
+Note that, at each training step, we are not chang-
+ing the relative probability of each training sample
+under the input data distribution, but we are rather
+constraining the domain of that distribution, based
+on the current competence of the learner. Even-
+tually, once the competence becomes 1, the train-
+ing process becomes equivalent to that without us-
+ing a curriculum, with the main difference that the
+learner should now be more capable to learn from
+the more difficult examples. Given the dependence
+of this algorithm on the specific choices of the dif-
+ficulty scoring function, d, and the competence
+function, c, we now describe our instantiations for
+training NMT models.
+
+Algorithm 1: Competence-based curricu-
+lum learning algorithm.
+
+Input: Dataset, D = {si}Mi=1, consisting of M
+samples, model trainer, T , that takes as input
+batches of training data to use at each step,
+difficulty scoring function, d, and competence
+function, c.
+
+1 Compute the difficulty, d(si), for each si ∈ D.
+2 Compute the cumulative density function (CDF) of
+
+the difficulty scores. This results in one difficulty
+CDF score per sample, d̄(si) ∈ [0, 1]. Illustrated in
+Figure 2.
+
+3 for training step t = 1, . . . do
+4 Compute the model competence, c(t).
+5 Sample a data batch, Bt, uniformly from all
+
+si ∈ D, such that d̄(si) ≤ c(t). Illustrated in
+Figure 3.
+
+6 Invoke the trainer, T , using Bt as input.
+Output: Trained model.
+
+2.1 Difficulty Metrics
+
+There are many possible ways of defining the dif-
+ficulty of translating a sentence. We consider two
+heuristics inspired by what we, as humans, may
+consider difficult when translating, and by fac-
+tors which can negatively impact the optimiza-
+tion algorithms used when training NMT mod-
+els. In the rest of this section we denote our
+training corpus as a collection of M sentences,
+{si}Mi=1, where each sentence is a sequence of
+words. si = {wi0, . . . , wiNi}.
+
+Sentence Length: We argue that it is harder to
+translate longer sentences, as longer sentences re-
+quire being able to translate their component parts,
+which often consist of short sentences. Further-
+more, longer sentences are intuitively harder to
+translate due to the propagation of errors made
+early on when generating the target language sen-
+tence. Therefore, a simple way to define the dif-
+ficulty of a sentence si = {wi0, . . . , wiNi} is as
+follows:
+
+dlength(si) , Ni. (1)
+
+
+
+1165
+
+Note that we can compute this difficulty metric on
+either the source language sentence or the target
+language sentence. We only consider the source
+sentence in this paper 1.
+
+Word Rarity: Another aspect of language that
+can affect the difficulty of translation is the fre-
+quency with which words appear. For example, hu-
+mans may find rare words hard to translate because
+we rarely ever see them and it may be hard to recall
+their meaning. The same can be true for NMT mod-
+els where: (i) the statistical strength of the training
+examples containing rare words is low and thus the
+model needs to keep revisiting such words in order
+to learn robust representations for them, and (ii)
+the gradients of the rare word embeddings tend to
+have high variance; they are overestimates of the
+true gradients in the few occasions where they are
+non-zero, and underestimates otherwise. This sug-
+gests that using word frequencies may be a helpful
+difficulty heuristic. Given a corpus of sentences,
+{si}Mi=1, we define relative word frequencies as:
+
+p̂(wj) ,
+1
+
+Ntotal
+
+M∑
+i=1
+
+Ni∑
+k=1
+
+1wik=wj
+, (2)
+
+where j = 1, . . . , #{unique words in corpus} and
+1condition is the indicator function which is equal
+to 1 if its condition is satisfied and 0 otherwise.
+Next we need to decide how to aggregate the rel-
+ative word frequencies of all words in a sentence
+to obtain a single difficulty score for that sentence.
+Previous research has proposed various pooling op-
+erations, such as minimum, maximum, and average
+(Zhang et al., 2018), but they show that they do not
+work well in practice. We propose a different ap-
+proach. Ultimately, what might be most important
+is the overall likelihood of a sentence as that con-
+tains information about both word frequency and,
+implicitly, sentence length. An approximation to
+this likelihood is the product of the unigram prob-
+abilities, which is related to previous work in the
+area of active learning (Settles and Craven, 2008).
+This product can be thought of as an approximate
+language model (assuming words are sampled in-
+dependently) and also implicitly incorporates in-
+
+1NMT models typically first pick up information about
+producing sentences of correct length. It can be argued that
+presenting only short sentences first may lead to learning a
+strong bias for the sentence lengths. In our experiments, we
+did not observe this to be an issue as the models kept im-
+proving and predicting sentences of correct length, throughout
+training.
+
+formation about the sentence length that was pro-
+posed earlier (longer sentence scores are products
+over more terms in [0, 1] and are thus likely to be
+smaller). We thus propose the following difficulty
+heuristic:
+
+drarity(si) , −
+Ni∑
+k=1
+
+log p̂(wik), (3)
+
+where we use logarithms of word probabilities to
+prevent numerical errors. Note that negation is
+used because we define less likely (i.e., more rare)
+sentences as more difficult.
+
+These are just two examples of difficulty metrics,
+and it is easy to conceive of other metrics such as
+the occurrence of homographs (Liu et al., 2018) or
+context-sensitive words (Bawden et al., 2018), the
+examination of which we leave for future work.
+
+2.2 Competence Functions
+
+For this paper, we propose two simple functional
+forms for c(t) and justify them with some intuition.
+More sophisticated strategies that depend on the
+loss function, the loss gradient, or on the learner’s
+performance on held-out data, are possible, but we
+do not consider them in this paper.
+
+Linear: This is a simple way to define c(t).
+Given an initial value c0 , c(0) ≥ 0 and a slope
+parameter r, we define:
+
+c(t) , min (1, tr + c0) . (4)
+
+In this case, new training examples are constantly
+being introduced during the training process, with a
+constant rate r (as a proportion of the total number
+of available training examples). Note that we can
+also define r = (1− c0)/T , where T denotes the
+time after which the learner is fully competent,
+which results in:
+
+clinear(t) , min
+
+(
+1, t
+
+1− c0
+T
+
++ c0
+
+)
+. (5)
+
+Root: In the case of the linear form, the same
+number of new and more difficult, examples are
+added to the training set, at all times t. However,
+as the training data grows in size, it gets less likely
+that any single data example will be sampled in a
+training batch. Thus, given that the newly added
+examples are less likely to be sampled, we propose
+to reduce the number of new training examples per
+unit time as training progresses to give the learner
+
+
+
+1166
+
+sufficient time to assimilate their information con-
+tent. More specifically, we define the rate in which
+new examples are added as inversely proportional
+to the current training data size:
+
+dc(t)
+
+dt
+=
+
+P
+
+c(t)
+, (6)
+
+for some constant P ≥ 0. Solving this simple
+differential equation, we obtain:∫
+
+c(t)dc(t) =
+
+∫
+Pdt⇒ c(t) =
+
+√
+2Pt+D,
+
+for some constants P and D. Then, we consider
+the following constraint: c0 , c(0) =
+
+√
+D ⇒
+
+D = c20. Finally, we also have that c(T ) = 1 ⇒
+P = (1− c20)/2T , where T denotes the time after
+which the learner is fully competent. This, along
+with the constraint that c(t) ∈ [0, 1] for all t ≥ 0,
+results in the following definition:
+
+csqrt(t) , min
+
+(
+1,
+
+√
+t
+1− c20
+T
+
++ c20
+
+)
+. (7)
+
+In our experiments, we refer to this specific for-
+mulation as the “square root” competence model.
+If we want to make the curve sharper, meaning
+that even more time is spent per sample added later
+on in training, then we can consider the following
+more general form, for p ≥ 1:
+
+croot-p(t) , min
+
+(
+1,
+
+p
+
+√
+t
+1− cp0
+T
+
++ cp0
+
+)
+. (8)
+
+We observed that best performance is obtained
+when p = 2 and then, as we increase p, perfor-
+mance converges to that obtained when training
+without a curriculum. Plots of the competence
+functions we presented are shown in Figure 4.
+
+2.3 Scalability
+Our method can be easily used in large-scale NMT
+systems. This is because it mainly consists of a
+preprocessing step of the training data that com-
+putes the difficulty scores. The implementation we
+are releasing with this paper computes these scores
+in an efficient manner by building a graph describ-
+ing their dependencies, as well as whether they
+are sentence-level scores (e.g., sentence length),
+or corpus-level (e.g., CDF), and using that graph
+to optimize their execution. Using only 8GB of
+memory, we can process up to 20k sentences per
+second when computing sentence rarity scores, and
+up to 150k sentences per second when computing
+sentence length scores.
+
+0 200 400 600 800 1000
+
+Time
+
+0.0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1.0
+
+C
+o
+
+m
+p
+
+et
+en
+
+ce
+
+clinear
+csqrt
+croot−3
+croot−5
+croot−10
+
+Figure 4: Plots of various competence functions with
+c0 = 0.01 (initial competence value) and T = 1, 000
+(total duration of the curriculum learning phase).
+
+3 Experiments
+
+For our experiments, we use three of the most com-
+monly used datasets in NMT, that range from a
+small benchmark dataset to a large-scale dataset
+with millions of sentences. Statistics about the
+datasets are shown in Table 1. We perform experi-
+ments using both RNNs and Transformers. For the
+RNN experiments we use a bidirectional LSTM
+for the encoder, and an LSTM with the attention
+model of Bahdanau et al. (2015) for the decoder.
+The number of layers of the encoder and the de-
+coder are equal. We use a 2-layer encoder and
+a 2-layer decoder for all experiments on IWSLT
+datasets, and a 4-layer encoder and a 4-layer de-
+coder for all experiments on the WMT dataset, due
+to the dataset’s significantly larger size. For the
+Transformer experiments we use the BASE model
+proposed by Vaswani et al. (2017). It consists of
+a 6-layer encoder and decoder, using 8 attention
+heads, and 2,048 units for the feed-forward layers.
+The multi-head attention keys and values depth is
+set to the word embedding size. The word embed-
+ding size is 512 for all experiments. Furthermore,
+for the Transformer experiments on the two smaller
+datasets we do not use any learning rate schedule,
+and for the experiments on the largest dataset we
+use the default Transformer schedule. A detailed
+discussion on learning rate schedules for Trans-
+formers is provided near the end of this section.
+All of our experiments were conducted on a ma-
+chine with a single Nvidia V100 GPU, and 24 GBs
+of system memory.
+
+During training, we use a label smoothing factor
+of 0.1 (Wu et al., 2016) and the AMSGrad opti-
+mizer (Reddi et al., 2018) with its default parame-
+ters in TensorFlow, and a batch size of 5,120 tokens
+
+
+
+1167
+
+Dataset # Train # Dev # Test
+IWSLT-15 En)Vi 133k 768 1268
+IWSLT-16 Fr)En 224k 1080 1133
+
+WMT-16 En)De 4.5m 3003 2999
+
+Table 1: Number of parallel sentences in each dataset.
+“k” stands for “thousand” and “m” stands for “million”.
+
+(due to GPU memory constraints). During infer-
+ence, we employ beam search with a beam size of
+10 and the length normalization scheme of Wu et al.
+(2016).2
+
+Curriculum Hyperparameters. We set the ini-
+tial competence c0 to 0.01, in all experiments. This
+means that all models start training using the 1%
+easiest training examples. The curriculum length
+T is effectively the only hyperparameter that we
+need to set for our curriculum methods. In each
+experiment, we set T in the following manner: we
+train the baseline model without using any curricu-
+lum and we compute the number of training steps
+it takes to reach approximately 90% of its final
+BLEU score. We then set T to this value. This
+results in T being set to 5,000 for the RNN ex-
+periments on the IWSLT datasets, and 20,000 for
+the corresponding Transformer experiments. For
+WMT, we set T to 20,000 and 50,000 for RNNs
+and Transformers, respectively. Furthermore, we
+use the following notation and abbreviations when
+presenting our results:
+– Plain: Trained without using any curriculum.
+– SL: Curriculum with sentence length difficulty.
+– SR: Curriculum with sentence rarity difficulty.
+– Linear: Curriculum with the linear competence
+
+shown in Equation 5.
+– Sqrt: Curriculum with the square root compe-
+
+tence shown in Equation 7.
+
+Data Preprocessing. Our experiments are per-
+formed using the machine translation library re-
+leased by Platanios et al. (2018). We use the same
+data preprocessing approach the authors used in
+their experiments. While training, we consider sen-
+tences up to length 200. Similar to them, for the
+IWSLT-15 experiments we use a per-language vo-
+cabulary which contains the 20,000 most frequently
+
+2We emphasize that we did not run experiments with other
+architectures or configurations, and thus our baseline archi-
+tectures were not chosen because they were favorable to our
+method, but rather because they were frequently mentioned in
+existing literature.
+
+0 5000 10000
+Step
+
+15
+
+20
+
+25
+
+30
+
+B
+L
+
+E
+U 26.00
+
+27.50
+
+RNN
+
+0 50000 100000
+Step
+
+15
+
+20
+
+25
+
+30
+
+28.00
+
+30.00
+Transformer
+
+Plain SL Linear SL Sqrt SR Linear SR Sqrt
+
+IWSLT15 : En→ Vi
+
+0 10000 20000
+Step
+
+20
+
+25
+
+30
+
+35
+
+B
+L
+
+E
+U 31.00
+
+32.00
+
+RNN
+
+0 50000 100000
+Step
+
+20
+
+25
+
+30
+
+35
+34.00
+
+36.00
+Transformer
+
+IWSLT16 : Fr→ En
+
+0 100000
+Step
+
+15
+
+20
+
+25
+
+30
+
+B
+L
+
+E
+U 25.50
+
+26.50
+
+RNN
+
+0 100000 200000
+Step
+
+15
+
+20
+
+25
+
+30
+
+28.00
+
+30.00
+Transformer
+
+WMT16 : En→ De
+
+Figure 5: Plots illustrating the performance of various
+models on the test set, as training progresses. Blue
+lines represent the baseline methods when no curricu-
+lum is used, and red lines represent the same mod-
+els when different versions of our curriculum learning
+framework are used to train them. The vertical lines
+represent the step in which the models attain the BLEU
+score that the baseline models attain at convergence.
+
+occurring words, while ignoring words that appear
+less than 5 times in the whole corpus. For the
+IWSLT-16 and WMT-16 experiments we use a byte-
+pair encoding (BPE) vocabulary (Sennrich et al.,
+2016) trained using 32,000 merge operations, simi-
+lar to the original Transformer paper by Vaswani
+et al. (2017).
+
+Results. We present a summary of our results in
+Table 2 and we also show complete learning curves
+for all methods in Figure 5. The evaluation metrics
+we use are the test set BLEU score and the time it
+takes for the models using curriculum learning to
+obtain the BLEU score that the baseline models at-
+tain at convergence. We observe that Transformers
+consistently benefit from our curriculum learning
+approach, achieving gains of up to 2 BLEU, and
+reductions in training time of up to 70%. RNNs
+also benefit, but to a lesser extent. This is con-
+sistent with our motivation for this paper, which
+
+
+
+1168
+
+RNN TRANSFORMER
+
+Plain
+SL Curriculum SR Curriculum
+
+Plain Plain*
+SL Curriculum SR Curriculum
+
+clinear csqrt clinear csqrt clinear csqrt clinear csqrt
+
+B
+L
+
+E
+U
+
+En)Vi 26.27 26.57 27.23 26.72 26.87 28.06 29.77 29.14 29.57 29.03 29.81
+Fr)En 31.15 31.88 31.92 31.39 31.57 34.05 34.88 34.98 35.47 35.30 35.83
+En)De 26.53 26.55 26.54 26.62 26.62 – 27.95 28.71 29.28 29.93 30.16
+
+Ti
+m
+
+e
+
+En)Vi 1.00 0.64 0.61 0.71 0.57 1.00 1.00 0.44 0.33 0.35 0.31
+Fr)En 1.00 1.00 0.93 1.10 0.73 1.00 1.00 0.49 0.44 0.42 0.39
+En)De 1.00 0.86 0.89 1.00 0.83 – 1.00 0.58 0.55 0.55 0.55
+
+Table 2: Summary of experimental results. For each method and dataset, we present the test set BLEU score of
+the best model based on validation set performance. We also show the relative time required to obtain the BLEU
+score of the best performing baseline model. For example, if an RNN gets to 26.27 BLEU in 10, 000 steps and
+the SL curriculum gets to the same BLEU in 3, 000 steps, then the plain model gets a score of 1.0 and the SL
+curriculum receives a score of 3, 000/10, 000 = 0.3. “Plain” stands for the model trained without a curriculum
+and, for Transformers, “Plain*” stands for the model trained using the learning rate schedule shown in Equation 9.
+
+stems from the observation that training RNNs is
+easier and more robust than training Transformers.
+Furthermore, the square root competence model
+consistently outperforms the linear model, which
+fits well with our intuition and motivation for in-
+troducing it. Regarding the difficulty heuristics,
+sentence length and sentence rarity both result in
+similar performance.
+
+We also observe that, for the two small datasets,
+RNNs converge faster than Transformers in terms
+of both the number of training iterations and the
+overall training time. This is contrary to other re-
+sults in the machine translation community (e.g.,
+Vaswani et al., 2017), but could be explained by the
+fact that we are not using any learning rate sched-
+ule for training Transformers. However, they never
+manage to outperform Transformers in terms of
+test BLEU score of the final model. Furthermore,
+to the best of our knowledge, for IWSLT-15 we
+achieve state-of-the-art performance. The highest
+previously reported result was 29.03 BLEU (Pla-
+tanios et al., 2018), in a multi-lingual setting. Using
+our curriculum learning approach we are able to
+achieve a BLEU score of 29.81 for this dataset.
+
+Overall, we have shown that our curriculum
+learning approach consistently outperforms mod-
+els trained without any curriculum, in both limited
+data settings and large-scale settings.
+
+Learning Rate Schedule. In all of our IWSLT
+experiments so far, we use the default AMSGrad
+learning rate of 0.001 and intentionally avoid using
+any learning rate schedules. However, Transform-
+ers are not generally trained without a learning rate
+
+schedule, due to their instability. Such schedules
+typically use a warm-up phase, which means that
+the learning rate starts at a very low value and keeps
+increasing until the end of the warm-up period, af-
+ter which a decay rate is typically used. In order
+to show that our curriculum learning approach can
+act as a principled alternative to such highly tuned
+learning rate schedules, we now present the results
+we obtain when training our Transformers using
+the following learning rate schedule:
+
+lr(t) , d−0.5embedding min
+(
+t−0.5, t · T−1.5warmup
+
+)
+, (9)
+
+where t is the current training step, dembedding is the
+word embeddings size, and Twarmup is the number
+of warmup steps and is set to 10,000 in these exper-
+iments. This schedule was proposed in the original
+Transformer paper (Vaswani et al., 2017), and was
+tuned for the WMT dataset.
+
+The results obtained when using this learning
+rate schedule are also shown in table 2, under
+the name “Plain*”. In both cases, our curricu-
+lum learning approach obtains a better model in
+about 70% less training time. This is very impor-
+tant, especially when applying Transformers in new
+datasets, because such learning rate heuristics of-
+ten require careful tuning. This tuning can be both
+very expensive and time consuming, often resulting
+in very complex mathematical expressions, with
+no clear motivation or intuitive explanation (Chen
+et al., 2018). Our curriculum learning approach
+achieves better results, in significantly less time,
+while only requiring one parameter (the length of
+the curriculum).
+
+Note that even without using any learning rate
+
+
+
+1169
+
+schedule, our curriculum methods were able to
+achieve performance comparable to the “Plain*” in
+about twice as many training steps. “Plain” was
+not able to achieve a BLEU score above 2.00 even
+after fives times as many training steps, at which
+point we stopped these experiments.
+
+Implementation and Reproducibility. We are
+releasing an implementation of our proposed
+method and experiments built on top of the ma-
+chine translation library released by Platanios
+et al. (2018), using TensorFlow Scala (Platanios,
+2018), and is available at https://github.com/
+eaplatanios/symphony-mt. Furthermore, all ex-
+periments can be run on a machine with a single
+Nvidia V100 GPU, and 24 GBs of system memory.
+Our most expensive experiments — the ones using
+Transformers on the WMT-16 dataset — take about
+2 days to complete, which would cost about $125
+on a cloud computing service such as Google Cloud
+or Amazon Web Services, thus making our results
+reproducible, even by independent researchers.
+
+4 Related work
+
+The idea of teaching algorithms in a similar man-
+ner as humans, from easy concepts to more dif-
+ficult ones, has existed for a long time (Elman,
+1993; Krueger and Dayan, 2009). Machine learn-
+ing models are typically trained using stochastic
+gradient descent methods, by uniformly sampling
+mini-batches from the pool of training examples,
+and using them to compute updates for the model
+parameters. Deep neural networks, such as RNNs
+and Transformers, have highly non-convex loss
+functions. This makes them prone to getting stuck
+in saddle points or bad local minima during train-
+ing, often resulting in long training times and bad
+generalization performance. Bengio et al. (2009)
+propose a curriculum learning approach that aims
+to address these issues by changing the mini-batch
+sampling strategy. They propose starting with a
+distribution that puts more weight on easy samples,
+and gradually increase the probability of more dif-
+ficult samples as training progresses, eventually
+converging to a uniform distribution. They demon-
+strate empirically that such curriculum approaches
+indeed help decrease training times and sometimes
+even improve generalization.
+
+Perhaps the earliest attempt to apply curriculum
+learning in MT was made by Zou et al. (2013). The
+authors employed a curriculum learning method
+to learn Chinese-English bilingual word embed-
+
+dings, which were subsequently used in the context
+of phrase-based machine translation. They split
+the word vocabulary in 5 separate groups based on
+word frequency, and learned separate word embed-
+dings for each of these groups in parallel. Then,
+they merged the 5 different learned embeddings
+and continued training using the full vocabulary.
+While this approach makes use of some of the ideas
+behind curriculum learning, it does not directly fol-
+low the original definition introduced by Bengio
+et al. (2009). Moreover, their model required 19
+days to train. There have also been a couple of
+attempts to apply curriculum learning in NMT that
+were discussed in section 1.
+
+There also exists some relevant work in areas
+other than curriculum learning. Zhang et al. (2016)
+propose training neural networks for NMT by fo-
+cusing on hard examples, rather than easy ones.
+They report improvements in BLEU score, while
+only using the hardest 80% training examples in
+their corpus. This approach is more similar to
+boosting by Schapire (1999), rather than curricu-
+lum learning, and it does not help speed up the
+training process; it rather focuses on improving
+the performance of the trained model. The fact
+that hard examples are used instead of easy ones
+is interesting because it is somewhat contradictory
+to that of curriculum learning. Also, in contrast
+to curriculum learning, no ordering of the training
+examples is considered.
+
+Perhaps another related area is that of active
+learning, where the goal is to develop methods that
+request for specific training examples. Haffari et al.
+(2009), Bloodgood and Callison-Burch (2010), and
+Ambati (2012) all propose methods to solicit train-
+ing examples for MT systems, based on the occur-
+rence frequency of n-grams in the training corpus.
+The main idea is that if an n-gram is very rare in the
+training corpus, then it is difficult to learn to trans-
+late sentences in which it appears. This is related
+to our sentence rarity difficulty metric and points
+out an interesting connection between curriculum
+learning and active learning.
+
+Regarding training Transformer networks,
+Shazeer and Stern (2018) perform a thorough ex-
+perimental evaluation of Transformers, when using
+different optimization configurations. They show
+that a significantly higher level of performance can
+be reached by not using momentum during opti-
+mization, as long as a carefully chosen learning
+rate schedule is used. Such learning rate sched-
+
+https://github.com/eaplatanios/symphony-mt
+https://github.com/eaplatanios/symphony-mt
+
+
+1170
+
+ules are often hard to tune because of the multiple
+seemingly arbitrary terms they often contain. Fur-
+thermore, Popel and Bojar (2018) show that, when
+using Transformers, increasing the batch size re-
+sults in a better model at convergence. We believe
+this is indicative of very noisy gradients when start-
+ing to train Transformers and that higher batch sizes
+help increase the signal-to-noise ratio. We show
+that our proposed curriculum learning method of-
+fers a more principled and robust way to tackle
+this problem. Using our approach, we are able to
+train Transformers to state-of-the-art performance,
+using small batch sizes and without the need for pe-
+culiar learning rate schedules, which are typically
+necessary.
+
+5 Conclusion and Future Work
+
+We have presented a novel competence-based cur-
+riculum learning approach for training neural ma-
+chine translation models. Our resulting framework
+is able to boost performance of existing NMT sys-
+tems, while at the same time significantly reduc-
+ing their training time. It differs from previous
+approaches in that it does not depend on multi-
+ple hyperparameters that can be hard to tune, and
+it does not depend on a manually designed dis-
+cretized training regime. We define the notions of
+competence, for a learner, and difficulty, for the
+training examples, and propose a way to filter train-
+ing data based on these two quantities. Perhaps
+most interestingly, we show that our method makes
+training Transformers faster and more reliable, but
+has a much smaller effect in training RNNs.
+
+In the future, we are mainly interested in: (i) ex-
+ploring more difficulty heuristics, such as measures
+of alignment between the source and target sen-
+tences (Kocmi and Bojar, 2017), sentence length
+discrepancies, or even using a pre-trained language
+model to score sentences, which would act as a
+more robust replacement of our sentence rarity
+heuristic, and (ii) exploring more sophisticated
+competence metrics that may depend on the loss
+function, the loss gradient, or on the learner’s per-
+formance on held-out data. Furthermore, it would
+be interesting to explore applications of curricu-
+lum learning to multilingual machine translation
+(e.g., it may be easier to start with high-resource
+languages and move to low-resource ones later on).
+We would also like to explore the usefulness of our
+framework in more general machine learning tasks,
+outside of NMT.
+
+Acknowledgments
+
+We would like to thank Maruan Al-Shedivat and
+Dan Schwartz for the useful feedback they pro-
+vided in early versions of this paper. This re-
+search was supported in part by AFOSR under
+grant FA95501710218.
+
+References
+Vamshi Ambati. 2012. Active Learning and Crowd-
+
+sourcing for Machine Translation in Low Resource
+Scenarios. Ph.D. thesis, Pittsburgh, PA, USA.
+AAI3528171.
+
+Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Ben-
+gio. 2015. Neural Machine Translation by Jointly
+Learning to Align and Translate. In International
+Conference on Learning Representations.
+
+Rachel Bawden, Rico Sennrich, Alexandra Birch, and
+Barry Haddow. 2018. Evaluating discourse phenom-
+ena in neural machine translation. In Proceedings of
+the 2018 Conference of the North American Chap-
+ter of the Association for Computational Linguistics:
+Human Language Technologies, Volume 1 (Long Pa-
+pers), pages 1304–1313, New Orleans, Louisiana.
+Association for Computational Linguistics.
+
+Yoshua Bengio, Jérôme Louradour, Ronan Collobert,
+and Jason Weston. 2009. Curriculum learning. In
+Proceedings of the 26th Annual International Con-
+ference on Machine Learning, ICML ’09, pages 41–
+48, New York, NY, USA. ACM.
+
+Michael Bloodgood and Chris Callison-Burch. 2010.
+Bucking the trend: Large-scale cost-focused active
+learning for statistical machine translation. In ACL.
+
+Ondřej Bojar, Rajen Chatterjee, Christian Federmann,
+Yvette Graham, Barry Haddow, Shujian Huang,
+Matthias Huck, Philipp Koehn, Qun Liu, Varvara Lo-
+gacheva, et al. 2017a. Findings of the 2017 confer-
+ence on machine translation (wmt17). In Proceed-
+ings of the Second Conference on Machine Transla-
+tion, pages 169–214.
+
+Ondřej Bojar, Jindřich Helcl, Tom Kocmi, Jindřich Li-
+bovický, and Tomáš Musil. 2017b. Results of the
+WMT17 Neural MT Training Task. In Proceedings
+of the Second Conference on Machine Translation,
+Volume 2: Shared Task Papers, pages 525–533. As-
+sociation for Computational Linguistics.
+
+Mia Xu Chen, Orhan Firat, Ankur Bapna, Melvin
+Johnson, Wolfgang Macherey, George Foster, Llion
+Jones, Mike Schuster, Noam Shazeer, Niki Parmar,
+Ashish Vaswani, Jakob Uszkoreit, Lukasz Kaiser,
+Zhifeng Chen, Yonghui Wu, and Macduff Hughes.
+2018. The Best of Both Worlds: Combining Re-
+cent Advances in Neural Machine Translation. In
+
+https://arxiv.org/pdf/1409.0473
+https://arxiv.org/pdf/1409.0473
+http://www.aclweb.org/anthology/N18-1118
+http://www.aclweb.org/anthology/N18-1118
+https://doi.org/10.1145/1553374.1553380
+http://www.aclweb.org/anthology/W17-4757
+http://www.aclweb.org/anthology/W17-4757
+http://aclweb.org/anthology/P18-1008
+http://aclweb.org/anthology/P18-1008
+
+
+1171
+
+Proceedings of the 56th Annual Meeting of the As-
+sociation for Computational Linguistics (Long Pa-
+pers), pages 76–86. Association for Computational
+Linguistics.
+
+Josep Maria Crego, Jungi Kim, Guillaume Klein,
+Anabel Rebollo, Kathy Yang, Jean Senellart,
+Egor Akhanov, Patrice Brunelle, Aurelien Co-
+quard, Yongchao Deng, Satoshi Enoue, Chiyo Geiss,
+Joshua Johanson, Ardas Khalsa, Raoum Khiari,
+Byeongil Ko, Catherine Kobus, Jean Lorieux, Lei-
+diana Martins, Dang-Chuan Nguyen, Alexandra Pri-
+ori, Thomas Riccardi, Natalia Segal, Christophe Ser-
+van, Cyril Tiquet, Bo Wang, Jin Yang, Dakun Zhang,
+Jing Zhou, and Peter Zoldan. 2016. SYSTRAN’s
+Pure Neural Machine Translation Systems. CoRR,
+abs/1610.05540.
+
+Jeffrey L Elman. 1993. Learning and development in
+neural networks: The importance of starting small.
+Cognition, 48(1):71–99.
+
+Gholamreza Haffari, Maxim Roy, and Anoop Sarkar.
+2009. Active learning for statistical phrase-based
+machine translation. In Proceedings of Human Lan-
+guage Technologies: The 2009 Annual Conference
+of the North American Chapter of the Association
+for Computational Linguistics, NAACL ’09, pages
+415–423, Stroudsburg, PA, USA. Association for
+Computational Linguistics.
+
+Nal Kalchbrenner and Phil Blunsom. 2013. Recurrent
+continuous translation models. In Proceedings of
+the 2013 Conference on Empirical Methods in Natu-
+ral Language Processing, pages 1700–1709.
+
+Tom Kocmi and Ondřej Bojar. 2017. Curriculum
+Learning and Minibatch Bucketing in Neural Ma-
+chine Translation. In Proceedings of the Interna-
+tional Conference Recent Advances in Natural Lan-
+guage Processing, pages 379–386.
+
+Kai A Krueger and Peter Dayan. 2009. Flexible shap-
+ing: How learning in small steps helps. Cognition,
+110(3):380–394.
+
+Frederick Liu, Han Lu, and Graham Neubig. 2018.
+Handling homographs in neural machine translation.
+In Proceedings of the 2018 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+Volume 1 (Long Papers), pages 1336–1345, New
+Orleans, Louisiana. Association for Computational
+Linguistics.
+
+Emmanouil A. Platanios. 2018. TensorFlow Scala.
+https://github.com/eaplatanios/
+tensorflow_scala.
+
+Emmanouil Antonios Platanios, Mrinmaya Sachan,
+Graham Neubig, and Tom Mitchell. 2018. Con-
+textual Parameter Generation for Universal Neural
+Machine Translation. In Conference on Empirical
+Methods in Natural Language Processing (EMNLP),
+Brussels, Belgium.
+
+Martin Popel and Ondřej Bojar. 2018. Training Tips
+for the Transformer Model. The Prague Bulletin of
+Mathematical Linguistics, 110(1):43–70.
+
+Sashank J. Reddi, Satyen Kale, and Sanjiv Kumar.
+2018. On the Convergence of Adam and Beyond.
+In International Conference on Learning Represen-
+tations.
+
+Robert E. Schapire. 1999. A brief introduction to
+boosting. In Proceedings of the 16th International
+Joint Conference on Artificial Intelligence - Volume
+2, IJCAI’99, pages 1401–1406, San Francisco, CA,
+USA. Morgan Kaufmann Publishers Inc.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016. Neural Machine Translation of Rare Words
+with Subword Units. In Proceedings of the 54th An-
+nual Meeting of the Association for Computational
+Linguistics, pages 1715–1725.
+
+Burr Settles and Mark Craven. 2008. An analysis of ac-
+tive learning strategies for sequence labeling tasks.
+In Proceedings of the 2008 Conference on Empiri-
+cal Methods in Natural Language Processing, pages
+1070–1079, Honolulu, Hawaii. Association for Com-
+putational Linguistics.
+
+Noam Shazeer and Mitchell Stern. 2018. Adafac-
+tor: Adaptive Learning Rates with Sublinear Mem-
+ory Cost. In Proceedings of the 35th International
+Conference on Machine Learning, volume 80 of
+Proceedings of Machine Learning Research, pages
+4596–4604, Stockholmsmässan, Stockholm Sweden.
+PMLR.
+
+Ilya Sutskever, Oriol Vinyals, and Quoc V Le. 2014.
+Sequence to sequence learning with neural networks.
+In Advances in neural information processing sys-
+tems, pages 3104–3112.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is All
+you Need. In Advances in Neural Information Pro-
+cessing Systems, pages 5998–6008.
+
+Yonghui Wu, Mike Schuster, Zhifeng Chen, Quoc V.
+Le, Mohammad Norouzi, Wolfgang Macherey,
+Maxim Krikun, Yuan Cao, Qin Gao, Klaus
+Macherey, Jeff Klingner, Apurva Shah, Melvin John-
+son, Xiaobing Liu, Łukasz Kaiser, Stephan Gouws,
+Yoshikiyo Kato, Taku Kudo, Hideto Kazawa, Keith
+Stevens, George Kurian, Nishant Patil, Wei Wang,
+Cliff Young, Jason Smith, Jason Riesa, Alex Rud-
+nick, Oriol Vinyals, Greg Corrado, Macduff Hughes,
+and Jeffrey Dean. 2016. Google’s Neural Ma-
+chine Translation System: Bridging the Gap be-
+tween Human and Machine Translation. CoRR,
+abs/1609.08144.
+
+Dakun Zhang, Jungi Kim, Josep Crego, and Jean Senel-
+lart. 2016. Boosting neural machine translation.
+arXiv preprint arXiv:1612.06138.
+
+https://arxiv.org/abs/1610.05540
+https://arxiv.org/abs/1610.05540
+http://dl.acm.org/citation.cfm?id=1620754.1620815
+http://dl.acm.org/citation.cfm?id=1620754.1620815
+https://doi.org/10.26615/978-954-452-049-6_050
+https://doi.org/10.26615/978-954-452-049-6_050
+https://doi.org/10.26615/978-954-452-049-6_050
+http://www.aclweb.org/anthology/N18-1121
+https://github.com/eaplatanios/tensorflow_scala
+https://github.com/eaplatanios/tensorflow_scala
+https://arxiv.org/abs/1808.08493
+https://arxiv.org/abs/1808.08493
+https://arxiv.org/abs/1808.08493
+https://content.sciendo.com/view/journals/pralin/110/1/article-p43.xml
+https://content.sciendo.com/view/journals/pralin/110/1/article-p43.xml
+https://openreview.net/forum?id=ryQu7f-RZ
+http://dl.acm.org/citation.cfm?id=1624312.1624417
+http://dl.acm.org/citation.cfm?id=1624312.1624417
+http://www.aclweb.org/anthology/P16-1162
+http://www.aclweb.org/anthology/P16-1162
+http://www.aclweb.org/anthology/D08-1112
+http://www.aclweb.org/anthology/D08-1112
+http://proceedings.mlr.press/v80/shazeer18a.html
+http://proceedings.mlr.press/v80/shazeer18a.html
+http://proceedings.mlr.press/v80/shazeer18a.html
+http://papers.nips.cc/paper/7181-attention-is-all-you-need.pdf
+http://papers.nips.cc/paper/7181-attention-is-all-you-need.pdf
+https://arxiv.org/abs/1609.08144
+https://arxiv.org/abs/1609.08144
+https://arxiv.org/abs/1609.08144
+
+
+1172
+
+Xuan Zhang, Gaurav Kumar, Huda Khayrallah, Kenton
+Murray, Jeremy Gwinnup, Marianna J Martindale,
+Paul McNamee, Kevin Duh, and Marine Carpuat.
+2018. An Empirical Exploration of Curriculum
+Learning for Neural Machine Translation. CoRR,
+abs/1811.00739.
+
+Will Y. Zou, Richard Socher, Daniel Cer, and Christo-
+pher D. Manning. 2013. Bilingual Word Embed-
+dings for Phrase-Based Machine Translation. In
+Proceedings of the 2013 Conference on Empirical
+Methods in Natural Language Processing, pages
+1393–1398. Association for Computational Linguis-
+tics.
+
+https://arxiv.org/abs/1811.00739
+https://arxiv.org/abs/1811.00739
+http://aclweb.org/anthology/D13-1141
+http://aclweb.org/anthology/D13-1141
+

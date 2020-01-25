@@ -1,0 +1,1607 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Monte Carlo Syntax Marginals for Exploring and Using Dependency Parses
+
+
+Proceedings of NAACL-HLT 2018, pages 917–928
+New Orleans, Louisiana, June 1 - 6, 2018. c©2018 Association for Computational Linguistics
+
+Monte Carlo Syntax Marginals for Exploring and Using
+Dependency Parses
+
+Katherine A. Keith, Su Lin Blodgett, and Brendan O’Connor
+College of Information and Computer Sciences
+
+University of Massachusetts Amherst
+{kkeith,blodgett,brenocon}@cs.umass.edu
+
+Abstract
+
+Dependency parsing research, which has made
+significant gains in recent years, typically fo-
+cuses on improving the accuracy of single-
+tree predictions. However, ambiguity is inher-
+ent to natural language syntax, and communi-
+cating such ambiguity is important for error
+analysis and better-informed downstream ap-
+plications. In this work, we propose a tran-
+sition sampling algorithm to sample from the
+full joint distribution of parse trees defined by
+a transition-based parsing model, and demon-
+strate the use of the samples in probabilistic
+dependency analysis. First, we define the new
+task of dependency path prediction, inferring
+syntactic substructures over part of a sentence,
+and provide the first analysis of performance
+on this task. Second, we demonstrate the use-
+fulness of our Monte Carlo syntax marginal
+method for parser error analysis and calibra-
+tion. Finally, we use this method to propa-
+gate parse uncertainty to two downstream in-
+formation extraction applications: identifying
+persons killed by police and semantic role as-
+signment.1
+
+1 Introduction
+
+Dependency parsers typically predict a single tree
+for a sentence to be used in downstream applica-
+tions, and most work on dependency parsers seeks
+to improve accuracy of such single-tree predic-
+tions. Despite tremendous gains in the last few
+decades of parsing research, accuracy is far from
+perfect—but perfect accuracy may be impossible
+since syntax models by themselves do not incorpo-
+rate the discourse, pragmatic, or world knowledge
+necessary to resolve many ambiguities.
+
+In fact, although relatively unexamined, sub-
+stantial ambiguity already exists within commonly
+used discriminative probabilistic parsing models,
+
+1Supporting code available at https://github.com/slanglab/
+transition sampler
+
+Figure 1: Example of a sentence with inherent ambigu-
+ity. Top: output from a greedy parser. Bottom: edge
+marginal probabilities from 100 samples in parenthe-
+ses.
+
+which define a parse forest—a probability distri-
+bution p(y | x) over possible dependency trees
+y ∈ Y(x) for an input sentence x.
+
+For example, the top of Figure 1 shows the pre-
+dicted parse y(greedy) from such a parser (Chen
+and Manning, 2014), which resolves a preposi-
+tional (PP) attachment ambiguity in one manner;
+this prediction was selected by a standard greedy
+transition-based algorithm (§2.1). However, the
+bottom of Figure 1 shows marginal probabilities
+of individual (relation, governor, child) edges un-
+der this same model. These denote our estimated
+probabilities, across all possible parse structures,
+that a pair of words are connected with a particu-
+lar relation (§2.4). For example, the two different
+PP attachment readings both exist within this parse
+forest with marginal probabilities
+
+p( nmod(saw2, telescope7) | x) = 0.72 (1)
+p( nmod(man4, telescope7) | x) = 0.28, (2)
+
+where (1) implies she used a telescope to see the
+man, and (2) implies she saw a man who had a
+telescope.
+
+These types of irreducible syntactic ambiguities
+exist and should be taken into consideration when
+analyzing syntactic information; for instance, one
+could transmit multiple samples (Finkel et al.,
+2006) or confidence scores (Bunescu, 2008) over
+
+917
+
+
+
+ambiguous readings to downstream analysis com-
+ponents.
+
+In this work, we introduce a simple transi-
+tion sampling algorithm for transition-based de-
+pendency parsing (§2.2), which, by yielding ex-
+act samples from the full joint distribution over
+trees, makes it possible to infer probabilities of
+long-distance or other arbitrary structures over the
+parse distribution (§2.4). We implement transition
+sampling—a very simple change to pre-existing
+parsing software—and use it to demonstrate sev-
+eral applications of probabilistic dependency anal-
+ysis:
+
+• Motivated by how dependency parses are typ-
+ically used in feature-based machine learn-
+ing, we introduce a new parsing-related
+task—dependency path prediction. This task
+involves inference over variable length de-
+pendency paths, syntactic substructures over
+only parts of a sentence.
+
+• To accomplish this task, we define a Monte
+Carlo syntax marginal inference method
+which exploits information across samples of
+the entire parse forest. It achieves higher ac-
+curacy predictions than a traditional greedy
+parsing algorithm, and allows tradeoffs be-
+tween precision and recall (§4).
+• We provide a quantitative measure of the
+
+model’s inherent uncertainty in the parse,
+whole-tree entropy, and show how it can be
+used for error analysis (§3).
+• We demonstrate the method’s (surprisingly)
+
+reasonable calibration (§5).
+• Finally, we demonstrate the utility of our
+
+method to propagate uncertainty to down-
+stream applications. Our method improves
+performance for giving probabilistic seman-
+tics to a rule-based event extractor to identify
+civilians killed by police (§6), as well as se-
+mantic role assignment (§7).
+
+2 Monte Carlo dependency analysis
+
+2.1 Overview of transition-based dependency
+parsing
+
+We examine the basic form of the Universal De-
+pendencies formalism (Nivre et al., 2016), where,
+for a sentence x of length N , a possible depen-
+dency parse y is a set of (relation, governorToken,
+
+childToken) edges, with a tree constraint that ev-
+ery token in the parse has exactly one governor—
+that is, for every token w ∈ {1..N}, there is ex-
+actly one triple (r, g, w) ∈ y where it participates
+as a child. The governor is either one of the ob-
+served tokens, or a special ROOT vertex.
+
+There exist a wide variety of approaches to ma-
+chine learned, discriminative dependency parsing,
+which often define a probability distribution p(y |
+x) over a domain of formally legal dependency
+parse trees y ∈ Y(x). We focus on transition-
+based dependency parsers (Nivre, 2003; Kübler
+et al., 2009), which (typically) use a stack-based
+automaton to process a sentence, incrementally
+building a set of edges. Transition-based parsers
+are very fast, have runtimes linear in sentence
+length, feature high performance (either state-of-
+the-art, or nearly so), and are easier to implement
+than other modeling paradigms (§2.5).
+
+A probabilistic transition-based parser assumes
+the following stochastic process to generate a
+parse tree:
+
+• Initialize state S0
+• For n = 1, 2, . . .:
+
+(A) an ∼ p(an | Sn−1)
+(B) Sn := Update(Sn−1, an)
+(C) Break if InEndState(Sn)
+
+Most state transition systems (Bohnet et al., 2016)
+use shift and reduce actions to sweep through to-
+kens from left to right, pushing and popping them
+from a stack to create the edges that populate a
+new parse tree y. The action decision probabil-
+ity, p(anext | Scurrent), is a softmax distribution
+over possible next actions. It can be parameter-
+ized by any probabilistic model, such as log-linear
+features of the sentence and current state (Zhang
+and Nivre, 2011), multilayer perceptrons (Chen
+and Manning, 2014), or recurrent neural networks
+(Dyer et al., 2015; Kiperwasser and Goldberg,
+2016).
+
+To predict a single parse tree on new data, a
+common inference method is greedy decoding,
+which runs a close variant of the above transi-
+tion model as a deterministic automaton, replac-
+ing stochastic step (A) with a best-action decision,
+an := argmaxan p(an | Sn−1).2 An inferred ac-
+
+2Since greedy parsing does not require probabilistic se-
+mantics for the action model—the softmax normalizer does
+not need to be evaluated—non-probabilistic training, such as
+with hinge loss (SVMs), is a common alternative, including
+in some of the cited work.
+
+918
+
+
+
+tion sequence a1:n determines the resulting parse
+tree (edge set) y; the relationship can be denoted
+as y(a1:n).
+
+2.2 Transition sampling
+In this work, we propose to analyze the full joint
+posterior p(y | x), and use transition sampling,
+a very simple forward/ancestral sampling algo-
+rithm,3 to draw parse tree samples from that dis-
+tribution. To parse a sentence, we run the automa-
+ton stochastically, sampling the action probability
+in step (A). This yields one action sequence a1:n
+from the full joint distribution of action sequences,
+and therefore a parse y(a1:n) from the distribution
+of parses. We can obtain as many parse samples as
+desired by running the transition sampler S times,
+yielding a collection (multiset) of parse structures
+{y(s) | s ∈ {1..S}}, where each y(s) ∼ p(y | x)
+is a full dependency parse tree.4 Runtime to draw
+one parse sample is very similar to the greedy al-
+gorithm’s runtime. We denote the set of unique
+parses in the sample Ỹ(x).
+
+We implement a transition sampler by modi-
+fying an implementation of Chen and Manning’s
+multilayer perceptron transition-based parser5 and
+use it for all subsequent experiments.
+
+2.3 MC-MAP single parse prediction
+One minor use of transition sampling is a method
+for predicting a single parse, by selecting the most
+probable (common) parse tree in the sample,
+
+ŷMC-MAP = argmax
+y∈Ỹ
+
+p̃(y | x) (3)
+
+= argmax
+y∈Ỹ
+
+c(y)
+
+S
+(4)
+
+where p̃(y | x) denotes the Monte Carlo estimate
+of a parse’s probability, which is proportional to
+how many times it appears in the sample: c(y) ≡∑S
+
+s 1{y = y(s)}. Note that p̃(y | x) correctly
+accounts for the case of an ambiguous transition
+system where multiple different action sequences
+can yield the same tree—i.e., y(a1:n) is not one-to-
+one—since the transition sampler can sample the
+multiple different paths.
+
+3“Ancestral” refers to a directed Bayes net (e.g. Barber
+(2012)) of action decisions, each conditioned on the full his-
+tory of previous actions—not ancestors in a parse tree.
+
+4Dyer et al. (2016) use the same algorithm to draw sam-
+ples from a transition-based constituency parsing model, as
+an importance sampling proposal to support parameter learn-
+ing and single-tree inference.
+
+5CoreNLP 3.8.0 with its ‘english UD’ pretrained model.
+
+This “MC-MAP” method is asymptotically
+guaranteed to find the model’s most probable parse
+(argmaxy p(y | x)) given enough samples.6 By
+contrast, greedy decoding and beam search have
+no theoretical guarantees. MC-MAP’s disadvan-
+tage is that it may require a large number of sam-
+ples, depending on the difference between the top
+parse’s probability compared to other parses in the
+domain.
+
+2.4 Monte Carlo Syntax Marginal (MCSM)
+inference for structure queries
+
+Beyond entire tree structures, parse posteriors also
+define marginal probabilities of particular events
+in them. Let f(y) → {0, 1} be a boolean-valued
+structure query function of a parse tree—for ex-
+ample, whether the tree contains a particular edge:
+
+f(y) = 1{dobj(kill,Smith) ∈ y}
+
+or more complicated structures, such as a length-2
+dependency path:
+
+f(y) = 1{nsubj(kill, cop)∧dobj(kill,Smith) ∈ y}.
+
+More precisely, these queries are typically formu-
+lated to check for edges between specific tokens,
+and may check tokens’ string forms.
+
+Although f(y) is a deterministic function, since
+the parsing model is uncertain of the correct parse,
+we find the marginal probability, or expectation,
+of a structure query by integrating out the poste-
+rior parse distribution—that is, the predicted prob-
+ability that the parse has the property in question:
+
+p(f(y) | x) =
+∑
+
+y∈Y(x)
+f(y) p(y | x) (5)
+
+≈ p̃(f(y) | x) =
+∑
+
+y∈Ỹ(x)
+f(y)
+
+c(y)
+
+S
+. (6)
+
+Eq. 5 is the expectation with regard to the model’s
+true probability distribution (p) over parses from
+the domain of all possible parse trees Y(x) for a
+sentence, while Eq. 6 is a Monte Carlo estimate
+of the query’s marginal probability—the fraction
+of parse tree samples where the structure query is
+true. We use this simple method for all inference
+
+6This holds since the Monte Carlo estimated probability
+of any tree converges to its true probability, according to, e.g.,
+Hoeffding’s inequality or the central limit theorem. Thus,
+with enough samples, the tree with the highest true proba-
+bility will have estimated probability higher than any other
+tree’s.
+
+919
+
+
+
+in this work, though importance sampling (Dyer
+et al., 2016), particle filters (Buys and Blunsom,
+2015), or diverse k-best lists (Zhang and McDon-
+ald, 2014) could support more efficient inference
+in future work.
+
+2.5 Probabilistic inference for dependencies:
+related work
+
+Our transition sampling method aims to be an
+easy-to-implement algorithm for a highly perfor-
+mant class of dependency models, that conducts
+exact probabilistic inference for arbitrary structure
+queries in a reasonable amount of time. A wide
+range of alternative methods have been proposed
+for dependency inference that cover some, but per-
+haps not all, of these goals.
+
+For transition-based parsing, beam search is
+a commonly used inference method that tries to
+look beyond a single structure. Beam search can
+be used to yield an approximate K-best list by
+taking resulting structures on the beam, though
+there are no theoretical guarantees about the result,
+and runtime is no better than the transition sam-
+pler.7 Finkel et al. (2006) further discuss trade-
+offs between beam search and sampling, and find
+they give similar performance when propagating
+named entity recognition and PCFG parse infor-
+mation to downstream tasks.
+
+Graph-based parsers are the major alternative
+modeling paradigm for dependency parsing; in-
+stead of a sequence of locally normalized deci-
+sions, they directly parameterize an entire tree’s
+globally normalized probability. Parse samples
+could be drawn from a graph-based model via
+Markov chain Monte Carlo (Zhang et al., 2014),
+which is asymptotically correct, but may require a
+large amount of time to obtain non-autocorrelated
+parses. A range of methods address inference for
+specific queries in graph-based models—for ex-
+ample, edge marginals for edge-factored models
+via the matrix-tree theorem (Koo et al., 2007), or
+approximate marginals with loopy belief propa-
+gation (Smith and Eisner, 2008).8 By contrast,
+our method is guaranteed to give correct marginal
+
+7Loosely, if it takes N transitions to complete a parse,
+and B possible actions at each transition must be evaluated,
+our method evaluates KNB actions to obtain K trees. Beam
+search evaluates a similar number of actions when using a K-
+sized beam, but also requires non-parallelizable management
+of the beam’s priority queue.
+
+8These papers infer marginals to support parameter learn-
+ing, but we are not aware of previous work that directly ana-
+lyzes or uses dependency parse marginals.
+
+inferences for arbitrary, potentially long-distance,
+queries.
+
+Given the strong performance of graph-based
+parsers in the single-structure prediction setting
+(e.g. Zeman et al. (2017); Dozat et al. (2017)),
+it may be worthwhile to further explore proba-
+bilistic inference for these models. For example,
+Niculae et al. (2018) present an inference algo-
+rithm for a graph-based parsing model that infers
+a weighted, sparse set of highly-probable parse
+trees, and they illustrate that it can infer syntactic
+ambiguities similar to Figure 1.
+
+Dynamic programming for dependency parsing,
+as far as we are aware, has only been pursued for
+single-structure prediction (e.g. Huang and Sagae
+(2010)), but in principle could be generalized to
+calculate local structure query marginals via an
+inside-outside algorithm, or to sample entire struc-
+tures through an inside-outside sampler (Eisner,
+2016), which Finkel et al. (2006) use to propagate
+parse uncertainty for downstream analysis.
+
+3 Exploratory error analysis via
+whole-tree entropy calculations
+
+In this section we directly explore the model’s in-
+trinsic uncertainty, while §5 conducts a quantita-
+tive analysis of model uncertainty compared to
+gold standard structures. Parse samples are able
+to both pass on parse uncertainty and yield useful
+insights that typical error analysis approaches can-
+not. For a sentence x, we can calculate the whole-
+tree entropy, the model’s uncertainty of whole-tree
+parse frequencies in the samples:
+
+H(p) = −
+∑
+
+y∈Y(x)
+p(y | x) log p(y | x)
+
+≈ H(p̃) = −
+∑
+
+y∈Ỹ(x)
+
+c(y)
+
+S
+log
+
+c(y)
+
+S
+. (7)
+
+Since this entropy estimate is only based on an S-
+sample approximation of p, it is upper bounded at
+log(S) in the case of a uniform MC distribution.
+Another intuitive measure of uncertainty is sim-
+ply the number of unique parses, that is, the cardi-
+nality of the MC distribution’s domain (|Ỹ|); this
+quantity is not informative for the true distribution
+p, but in the MC distribution it is intuitively upper
+bounded by S.9
+
+9Shannon entropy, domain support cardinality, and top
+probability (maxy∈Ỹ p̃(y)), which we show in Table 1, are
+all instances of the more general Renyi entropy (Smith and
+Eisner, 2007).
+
+920
+
+
+
+Sentence Domain Size Top 3 Freq. Entropy
+
+In Ramadi , there was a big demonstration . 3 [ 98, 1, 1 ] 0.112
+US troops there clashed with guerrillas in a fight that left one Iraqi dead . 40 [ 33, 11, 6 ] 2.865
+The sheikh in wheel - chair has been attacked with a F - 16 - launched bomb . 98 [ 2, 2, 1 ] 4.577
+
+Table 1: Example sentences from the UD development set and summaries of their Monte Carlo parse distributions.
+Domain Size gives |Ỹ100|, the number of unique parse structures in 100 samples. Top 3 Freq. gives the frequencies
+of the 3 most probable structures in Ỹ100. Entropy is calculated according to Eq. 7; its upper bound is log(100) =
+4.605.
+
+Figure 2: Length of sentences (in number of tokens in
+UD development set) against entropy (100 samples per
+sentence).
+
+We run our dependency sampler on the 2002
+sentences in the Universal Dependencies 1.3 En-
+glish Treebank development set, generating 100
+samples per sentence; Table 1 shows example sen-
+tences along with |Ỹ| and entropy statistics for
+each sentence. We find that in general, as sentence
+length increases, so does the entropy of the parse
+distribution (Fig. 2). Moreover, we find that en-
+tropy is a useful diagnostic tool. For example, 7%
+of sentences in the UD development corpus with
+fewer than 15 tokens and H(p̃) ≥ 2 exhibit un-
+certainty around the role of ‘-’ (compare Sciences
+- principally biology and thought-provoking), and
+another 7% of such sentences exhibit uncertainty
+around ‘s’ (potentially representing a plural or a
+possessive).
+
+4 Monte Carlo Syntax Marginals for
+partial dependency parsing
+
+Here we examine the utility of marginal inference
+for predicting parts of dependency parses, using
+the UD 1.3 Treebank’s English development set to
+evaluate.10
+
+10UD 1.3 is the UD version that this parsing model
+is most similar to: https://mailman.stanford.edu/pipermail/
+
+4.1 Greedy decoding
+
+Using its off-the-shelf pretrained model with
+greedy decoding, the CoreNLP parser achieves
+80.8% labeled attachment score (LAS). LAS is
+equivalent to both the precision and recall of pre-
+dicting (rel,gov,child) triples in the parse tree.11
+
+4.2 Minimum Bayes risk (MBR) decoding
+
+A simple way to use marginal probabilities for
+parse prediction is to select, for each token, the
+governor and relation that has the highest marginal
+probability. This method gives a minimum Bayes
+risk (MBR) prediction of the parse, minimizing
+the model’s expected LAS with regards to lo-
+cal uncertainty; similar MBR methods have been
+shown to improve accuracy in tagging and con-
+stituent parsing (e.g. Goodman (1996); Petrov and
+Klein (2007)). This method yields 81.4% LAS,
+outperforming greedy parsing, though it may yield
+a graph that is not a tree.
+
+4.3 Syntax marginal inference for
+dependency paths
+
+An alternative view on dependency parsing is to
+consider what structures are needed for down-
+stream applications. One commonly used parse
+substructure is the dependency path between two
+words, which is widely used in unsupervised lex-
+ical semantics (Lin and Pantel, 2001), distantly
+supervised lexical semantics (Snow et al., 2005),
+relation learning (Riedel et al., 2013), and super-
+vised semantic role labeling (Hacioglu, 2004; Das
+et al., 2014), as well as applications in economics
+(Ghose et al., 2007), political science (O’Connor
+et al., 2013), biology (Fundel et al., 2006), and the
+humanities (Bamman et al., 2013, 2014).
+
+parser-user/2017-November/003460.html
+11LAS is typically defined as proportion of tokens whose
+
+governor (and relation on that governor-child edge) are cor-
+rectly predicted; this is equivalent to precision and recall of
+edges if all observed tokens are evaluated. If, say, punctu-
+ation is excluded from evaluation, this equivalence does not
+hold; in this work we always use all tokens for simplicity.
+
+921
+
+
+
+0.0 0.2 0.4 0.6 0.8 1.0
+
+0.
+0
+
+0.
+2
+
+0.
+4
+
+0.
+6
+
+0.
+8
+
+1.
+0
+
+Recall
+
+Pr
+ec
+
+is
+io
+
+n
+●
+
+d=1
+
+●
+
+d=2
+
+●
+
+d=3
+
+●
+
+d=4
+
+●
+
+d=5
+
+●
+
+d=6
+
+●
+
+d=7
+
+Path Greedy Marginal MC-MAP
+Len. F1 Max F1 Thresh. F1
+
+1 © 0.808 � 0.824 0.45 0.807
+2 © 0.663 � 0.694 0.44 0.660
+3 © 0.506 � 0.550 0.34 0.501
+4 © 0.370 � 0.420 0.28 0.363
+5 © 0.268 � 0.314 0.25 0.262
+6 © 0.192 � 0.241 0.25 0.188
+7 © 0.134 � 0.182 0.17 0.131
+
+N Conf≥0.9 H Conf≥0.1
+
+Figure 3: Precision-recall analysis against gold UD 1.3 English dev (§4.1) set for all dependency paths of lengths
+1 to 7. Left: Each path length is a different color (1 in top-right, 7 in bottom-left), with greedy performance (©) as
+well as the marginal path predictions’ PR curve, with points at confidence thresholds 0.9 (N), 0.1 (H), and where
+F1 is highest (�). Right: F1 for each method, as well as the confidence threshold for the marginal PR curve’s
+max-F1 point. For path length 1, Greedy and MC-MAP F1 are the same as labeled attachment score (LAS).
+
+In this work, we consider a dependency
+path to be a set of edges from the depen-
+dency parse; for example, a length-2 path p =
+{nsubj(3, 1), dobj(3, 4)} connects tokens 1 and 4.
+Let Pd(y) be the set of all length-d paths from
+a parse tree y.12 Figure 3’s “Greedy” table col-
+umn displays the F-scores for the precision and
+recall of retrieving Pd(y(gold)) from the prediction
+Pd(y(greedy)) for a series of different path lengths.
+P1 gives individual edges, and thus is the same
+as LAS (80.8%). Longer length paths see a rapid
+decrease in performance; even length-2 paths are
+retrieved with only ≈ 66% precision and recall.13
+We are not aware of prior work that evaluates de-
+pendency parsing beyond single edge or whole
+sentence accuracy.
+
+We define dependency path prediction as the
+task of predicting a set of dependency paths for
+a sentence; the paths do not necessarily have to
+come from the same tree, nor even be consistent
+with a single syntactic analysis. We approach
+this task with our Monte Carlo syntax marginal
+method, by predicting paths from the transition
+sampling parser. Here we treat each possible path
+
+12Path construction may traverse both up and down di-
+rected edges; we represent a path as an edge set to evaluate its
+existence in a parse. A path may not include the same vertex
+twice. The set of all paths for a parse includes all paths from
+all pairs of vertexes (observed tokens and ROOT).
+
+13For length 1 paths, precision and recall are identical; this
+does not hold for longer paths, though precision and recall
+from a single parse prediction are similar.
+
+as a structure query (§2.4) and return all paths
+whose marginal probabilities are at least threshold
+t. Varying t trades off precision and recall.
+
+We apply this method to 100 samples per sen-
+tence in the UD treebank. When we take all
+length-1 paths that appear in every single sample
+(i.e., estimated marginal probability 1.0), preci-
+sion greatly increases to 0.969, while recall drops
+to 0.317 (the top-left point on Figure 3’s teal
+length-1 curve.) We can also accommodate appli-
+cations which may prefer to have a higher recall:
+predicting all paths with at least 0.01 probability
+results in 0.936 recall (the bottom-right point on
+the curve in Figure 3).14
+
+This marginal path prediction method domi-
+nates the greedy parser: for length-1 paths, there
+are points on the marginal decoder’s PR curve that
+achieve both higher precision and recall than the
+greedy decoder, giving F1 of 82.4% when accept-
+ing all edges with marginal probability at least
+0.45. Furthermore, these advantages are more
+prominent for longer dependency paths. For ex-
+ample, for length-3 paths, the greedy parser only
+achieves 50.6% F1, while the marginal parser im-
+
+14 The 6.4% of gold-standard edges with predicted 0 prob-
+ability often correspond to inconsistencies in the formalism
+standards between the model and UD; for example, 0.7% of
+the gold edges are ‘name’ relations among words in a name,
+which the model instead analyzes as ‘compound’. Inspecting
+gold edges’ marginal probabilities helps error analysis, since
+when one views a single predicted parse, it is not always clear
+whether observed errors are systematic, or a fluke for that one
+instance.
+
+922
+
+
+
+0.0 0.2 0.4 0.6 0.8 1.0
+
+0.
+0
+
+0.
+2
+
+0.
+4
+
+0.
+6
+
+0.
+8
+
+1.
+0
+
+Predicted prob.
+
+E
+m
+
+pi
+ri
+
+ca
+l g
+
+ol
+d−
+
+st
+an
+
+da
+rd
+
+ p
+ro
+
+b.
+length 1
+length 2
+length 3
+length 7
+
+●●●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●●●
+●●●●
+
+●●●
+●●
+
+●
+●
+
+●
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+
+●
+●
+
+●●●
+●●●●
+
+●●
+●●●●●
+
+●
+●●
+
+●
+● ●
+
+●
+
+●
+●
+
+●
+●
+
+●
+
+●
+●
+
+●
+
+●●●●
+●●●
+
+● ●
+●
+
+●
+
+Figure 4: Calibration curves for marginal predictions
+for several path lengths. Predictions below the y = x
+line indicate overconfidence. Points denote the aver-
+age predicted probability versus empirical (gold) prob-
+ability among predicted paths within each dynamically
+allocated bin.
+
+proves a bit to 55.0% F1; strikingly, it is possible
+to select high-confidence paths to get much higher
+90.1% precision (at recall 11.6%, with confidence
+threshold t = 0.95). Figure 3 also shows the pre-
+cision/recall points on each curve for thresholds
+t = 0.9 and t = 0.1.
+
+We also evaluated the MC-MAP single-parse
+prediction method (§2.3), which slightly, but con-
+sistently, underperforms the greedy decoder at
+all dependency lengths. More work is required
+to understand whether this is is an inference or
+modeling problem: for example, we may not
+have enough samples to reliably predict a high-
+probability parse; or, as some previous work finds
+in the context of beam search, the label bias
+phenomenon in this type of locally-normalized
+transition-based parser may cause it to assign
+higher probability to non-greedy analyses that
+in fact have lower linguistic quality (Zhang and
+Nivre, 2012; Andor et al., 2016).
+
+5 Calibration
+
+The precision-recall analysis shows that the pre-
+dicted marginal probabilities are meaningful in a
+ranking sense, but we can also ask whether they
+are meaningful in a sense of calibration: predic-
+tions are calibrated if, among all structures with
+predicted probability q ± �, they exist in the gold
+parses with probability q. That is, predictions with
+
+confidence q have precision q.15 If probabilities
+are calibrated, that implies expectations with re-
+gard to their distribution are unbiased, and may
+also justify intuitive interpretations of probabili-
+ties in exploratory analysis (§3). Calibration may
+also have implications for joint inference, EM, and
+active learning methods that use confidence scores
+and confidence-based expectations.
+
+We apply Nguyen and O’Connor (2015)’s adap-
+tive binning method to analyze the calibration of
+structure queries from an NLP system, by taking
+the domain of all seen length-d paths from the
+100 samples’ parse distribution for the treebank,
+grouping by ranges of predicted probabilities to
+have at least 5000 paths per bin, to ensure stability
+of the local precision estimate.16
+
+We find that probabilities are reasonably well
+calibrated, if slightly overconfident—Figure 4
+shows the average predicted probability per bin,
+compared to how often these paths appear in the
+gold standard (local precision). For example, for
+edges (length-1 paths), predictions near 60% con-
+fidence (the average among predictions in range
+[0.42, 0.78]) correspond to edges that are actually
+in the gold standard tree only 52.8% of the time.
+The middle confidence range has worse calibra-
+tion error, and longer paths perform worse. Still,
+this level of calibration seems remarkably good,
+considering there was no attempt to re-calibrate
+predictions (Kuleshov and Liang, 2015) or to use a
+model that specifically parameterizes the energy of
+dependency paths (Smith and Eisner, 2008; Mar-
+tins et al., 2010)—these predictions are simply a
+side effect of the overall joint model for incremen-
+tal dependency parsing.
+
+6 Probabilistic rule-based IE: classifying
+police fatalities
+
+Supervised learning typically gives the most ac-
+curate information extraction or semantic parsing
+systems, but for many applications where train-
+
+15This is a local precision, as opposed to the more usual tail
+probability of measuring precision of all predictions higher
+than some t—the integral of local precision. For example,
+Figure 3’s length-1 t = 0.9 precision of 0.942 (4) is the av-
+erage y value of several rightmost bins in Figure 4. This con-
+trast corresponds to Efron (2010)’s dichotomy of local versus
+global false discovery rates.
+
+16This does not include gold-standard paths with zero pre-
+dicted probability. As Nguyen and O’Connor found for se-
+quence tagging and coreference, we find the prediction distri-
+bution is heavily skewed to near 0 and 1, necessitating adap-
+tive bins, instead of fixed-width bins, for calibration analysis
+(Niculescu-Mizil and Caruana, 2005; Bennett, 2000).
+
+923
+
+
+
+ing data is scarce, Chiticariu et al. (2013) argue
+that rule-based systems are useful and widespread
+in practice, despite their neglect in contemporary
+NLP research. Syntactic dependencies are a use-
+ful abstraction with which to write rule-based ex-
+tractors, but they can be brittle due to errors in the
+parser. We propose to integrate over parse sam-
+ples to infer a marginal probability of a rule match,
+increasing robustness and allowing for precision-
+recall tradeoffs.
+
+6.1 Police killings victim extraction
+
+We examine the task of extracting the list of names
+of persons killed by police from a test set of
+web news articles in Sept–Dec 2016. We use the
+dataset released by Keith et al. (2017), consisting
+of 24,550 named entities e ∈ E and sentences from
+noisy web news text extractions (that can be diffi-
+cult to parse), each of which contains at least one
+e (on average, 2.8 sentences/name) as well as key-
+words for both police and killing/shooting. The
+task is to classify whether a given name is a person
+who was killed by police, given 258 gold-standard
+names that have been verified by journalists.
+
+6.2 Dependency rule exractor
+
+Keith et al. present a baseline rule-based method
+that uses Li and Ji (2014)’s off-the-shelf RPI-
+JIE ACE event parser to extract (event type,
+agent, patient) tuples from sentences, and assigns
+fJIE(xi, e) = 1 iff the event type was a killing,
+the agent’s span included a police keyword, and
+the patient was the candidate entity e. An entity
+is classified as a victim if at least one sentence is
+classified as true, resulting in a 0.17 F1 score (as
+reported in previous work).17
+
+We define a similar syntactic dependency rule
+system using a dependency parse as input: our ex-
+tractor f(x, e, y) returns 1 iff the sentence has a
+killing keyword k,18 which both
+
+1. has an agent token a (defined as, governed by
+nsubj or nmod) which is a police keyword, or
+a has a (amod or compound) modifier that is
+a police keyword; and,
+
+2. has a patient token p (defined as, governed by
+nsubjpass or dobj) contained in the candidate
+name e’s span.
+
+17This measures recall of the entire gold-standard victim
+database, though the corpus only includes 57% of the victims.
+
+18Police and killing/shooting keywords are from Keith
+et al.’s publicly released software.
+
+0.0 0.1 0.2 0.3 0.4 0.5
+Entity-level recall
+
+0.0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1.0
+
+E
+nt
+
+ity
+-l
+
+ev
+el
+
+pr
+ec
+
+is
+io
+
+n
+
+10-sample
+100-sample
+1-sample
+greedy
+
+Method F1
+
+RPI-JIE 0.170
+Greedy 0.215
+1 samp. 0.212
+10 samp. 0.219
+100 samp. 0.222
+
+Figure 5: Left: Rule-based entity precision and re-
+call for police fatality victims, with greedy parsing and
+Monte Carlo inference. Right: F1 scores for RPI-JIE,
+Greedy, and 1-sample methods, and maximum F1 on
+PR curve for probabilistic (multiple sample) inference.
+
+Applying this f(x, e, y) classifier to greedy parser
+output, it performs better than the RPI-JIE-based
+rules (Figure 5, right), perhaps because it is better
+customized for the particular task.
+
+Treating f as a structure query, we then use our
+Monte Carlo marginal inference (§2) method to
+calculate the probability of a rule match for each
+sentence—that is, the fraction of parse samples
+where f(x, e, y(s)) is true—and infer the entity’s
+probability with the noisy-or formula (Craven and
+Kumlien, 1999; Keith et al., 2017). This gives soft
+classifications for entities.
+
+6.3 Results
+
+The Monte Carlo method achieves slightly higher
+F1 scores once there are at least 10 samples
+(Fig. 5, right). More interestingly, the soft entity-
+level classifications also allow for precision-recall
+tradeoffs (Fig. 5, left), which could be used to
+prioritize the time of human reviewers updating
+the victim database (filter to higher precision), or
+help ensure victims are not missed (with higher
+recall). We found the sampling method retrieved
+several true-positive entities where only a single
+sentence had a non-zero rule prediction at proba-
+bility 0.01—that is, the rule was only matched in
+one of 100 sampled parses. Since current prac-
+titioners are already manually reviewing millions
+of news articles to create police fatality victim
+databases, the ability to filter to high recall—even
+with low precision—may be useful to help ensure
+victims are not missed.
+
+6.4 Supervised learning
+
+Sampling also slightly improves supervised learn-
+ing for this problem. We modify Keith et al.’s
+logistic regression model based on a dependency
+
+924
+
+
+
+path feature vector f(xi, y), instead creating fea-
+ture vectors that average over multiple parse sam-
+ples (Ep̃(y)[f(xi, y)]) at both train and test time.
+With the greedy parser, the model results in 0.229
+F1; using 100 samples slightly improves perfor-
+mance to 0.234 F1.
+
+7 Semantic role assignment
+
+Semantic role labeling (SRL), the task to predict
+argument structures (Gildea and Jurafsky, 2002),
+is tightly tied to syntax, and previous work has
+found it beneficial to conduct it with joint infer-
+ence with constituency parsing, such as with top-k
+parse trees (Toutanova et al., 2008) or parse tree
+samples (Finkel et al., 2006). Since §4 shows
+that Monte Carlo marginalization improves de-
+pendency edge prediction, we hypothesize depen-
+dency sampling could improve SRL as well.
+
+SRL includes both identifying argument spans,
+and assigning spans to specific semantic role la-
+bels (argument types). We focus on just the second
+task of semantic role assignment: assuming argu-
+ment spans are given, to predict the labels. We
+experiment with English OntoNotes v5.0 annota-
+tions (Weischedel et al., 2013) according to the
+CoNLL 2012 test split (Pradhan et al., 2013). We
+focus only on predicting among the five core argu-
+ments (Arg0 through Arg4) and ignore spans with
+gold-standard adjunct or reference labels. We fit
+a separate model for each predicate19 among the
+2,160 predicates that occur at least once in both
+the training and test sets (115,811 and 12,216 sen-
+tences respectively).
+
+Our semantic model of label zt ∈ {A0..A4}
+for argument head token t and predicate token p,
+psem(zt | p, y), is simply the conditional probabil-
+ity of the label, conditioned on y’s edge between
+t and p if one exists.20 (If they are not directly
+connected, the model instead conditions on a ‘no
+edge’ feature.) Probabilities are maximum likeli-
+hood estimates from the training data’s (predicate,
+argument label, path) counts, from either greedy
+
+19That is, for each unique (lemma, framesetID) pair, such
+as (view, view-02).
+
+20The dataset’s argument spans must be reconciled with
+predicted parse structures to define the argument head t; 90%
+of spans are consistent with the greedy parser in that all the
+span’s tokens have the same highest ancestor contained with
+the span, which we define as the argument head. For incon-
+sistent cases, we select the largest subtree (that is, highest
+within-span ancestor common to the largest number of the
+span’s tokens). It would be interesting to modify the sampler
+to restrict to parses that are consistent with the span, as a form
+of rejection sampling.
+
+Method Accuracy
+
+Baseline (most common) 0.393
+Greedy 0.496
+MCSM method, 100-samples 0.529
+
+Table 2: Semantic role assignment accuracy on English
+OntoNotes v5.0. The baseline is for each unique pred-
+icate, predict the argument that was seen the most at
+training time.
+
+parses, or averaged among parse samples. To pre-
+dict at test time, the greedy parsing model simply
+uses p(zt | p, y(greedy)). The Monte Carlo model,
+by contrast, treats it as a directed joint model and
+marginalizes over syntactic analyses:
+
+pMC(zt | p, x) =
+∑
+
+y∈Ỹ(x)
+psem(zt | p, y) p̃syn(y | x).
+
+The baseline accuracy of predicting the predicate’s
+most common training-time argument label yields
+0.393 accuracy, and the greedy parser performs at
+0.496. The Monte Carlo method (with 100 sam-
+ples) improves accuracy to 0.529 (Table 2). De-
+pendency samples’ usefulness in this limited case
+suggests they may help systems that use depen-
+dency parses more broadly for SRL (Hacioglu,
+2004; Das et al., 2014).
+
+8 Conclusion
+
+In this work, we introduce a straightforward al-
+gorithm for sampling from the full joint distri-
+bution of a transition-based dependency parser.
+We explore using these parse samples to dis-
+cover both parsing error and structural ambigu-
+ities. Moreover, we find that our Monte Carlo
+syntax marginal method not only dominates the
+greedy method for dependency path prediction
+(especially for longer paths), but also allows for
+control of precision-recall tradeoffs. Propagat-
+ing dependency uncertainty can potentially help a
+wide variety of semantic analysis and information
+extraction tasks.
+
+Acknowledgments
+
+The authors would like to thank Rajarshi Das,
+Daniel Cohen, Abe Handler, Graham Neubig,
+Emma Strubell, and the anonymous reviewers for
+their helpful comments.
+
+References
+Daniel Andor, Chris Alberti, David Weiss, Aliaksei
+
+Severyn, Alessandro Presta, Kuzman Ganchev, Slav
+
+925
+
+
+
+Petrov, and Michael Collins. 2016. Globally nor-
+malized transition-based neural networks. In Pro-
+ceedings of ACL.
+
+David Bamman, Brendan O’Connor, and Noah A.
+Smith. 2013. Learning latent personas of film char-
+acters. In Proceedings of ACL.
+
+David Bamman, Ted Underwood, and Noah A. Smith.
+2014. A Bayesian mixed effects model of literary
+character. In Proceedings of ACL.
+
+David Barber. 2012. Bayesian Reasoning and Machine
+Learning. Cambridge University Press.
+
+Paul N. Bennett. 2000. Assessing the calibration of
+naive Bayes’ posterior estimates. Technical report,
+Carnegie Mellon University.
+
+Bernd Bohnet, Ryan McDonald, Emily Pitler, and
+Ji Ma. 2016. Generalized transition-based depen-
+dency parsing via control parameters. In Pro-
+ceedings of ACL. http://www.aclweb.org/anthology/
+P16-1015.
+
+Razvan Bunescu. 2008. Learning with probabilistic
+features for improved pipeline models. In Proceed-
+ings of EMNLP. http://www.aclweb.org/anthology/
+D08-1070.
+
+Jan Buys and Phil Blunsom. 2015. A bayesian
+model for generative transition-based dependency
+parsing. In Proceedings of the Third International
+Conference on Dependency Linguistics (Depling
+2015). Uppsala, Sweden. http://www.aclweb.org/
+anthology/W15-2108.
+
+Danqi Chen and Christopher Manning. 2014. A fast
+and accurate dependency parser using neural net-
+works. In Proceedings of EMNLP. http://www.
+aclweb.org/anthology/D14-1082.
+
+Laura Chiticariu, Yunyao Li, and Frederick R. Reiss.
+2013. Rule-based information extraction is dead!
+long live rule-based information extraction systems!
+In Proceedings of EMNLP. http://www.aclweb.org/
+anthology/D13-1079.
+
+Mark Craven and Johan Kumlien. 1999. Constructing
+biological knowledge bases by extracting informa-
+tion from text sources. In ISMB. pages 77–86.
+
+Dipanjan Das, Desai Chen, Andre F. T. Martins,
+Nathan Schneider, and Noah A. Smith. 2014.
+Frame-semantic parsing. Computational Linguistics
+.
+
+Timothy Dozat, Peng Qi, and Christopher D Manning.
+2017. Stanford’s graph-based neural dependency
+parser at the conll 2017 shared task. Proceedings
+of the CoNLL 2017 Shared Task: Multilingual Pars-
+ing from Raw Text to Universal Dependencies pages
+20–30.
+
+Chris Dyer, Miguel Ballesteros, Wang Ling, Austin
+Matthews, and Noah A. Smith. 2015. Transition-
+based dependency parsing with stack long short-
+term memory. In Proceedings of ACL. http://www.
+aclweb.org/anthology/P15-1033.
+
+Chris Dyer, Adhiguna Kuncoro, Miguel Ballesteros,
+and Noah A. Smith. 2016. Recurrent neural net-
+work grammars. In Proceedings of NAACL. http:
+//www.aclweb.org/anthology/N16-1024.
+
+Bradley Efron. 2010. Large-Scale Inference: Empiri-
+cal Bayes Methods for Estimation, Testing, and Pre-
+diction. Cambridge University Press, 1st edition.
+
+Jason Eisner. 2016. Inside-outside and forward-
+backward algorithms are just backprop (tutorial pa-
+per). In Proceedings of the Workshop on Struc-
+tured Prediction for NLP. Association for Compu-
+tational Linguistics, Austin, TX, pages 1–17. http:
+//aclweb.org/anthology/W16-5901.
+
+Jenny Rose Finkel, Christopher D. Manning, and An-
+drew Y. Ng. 2006. Solving the problem of cascading
+errors: Approximate Bayesian inference for linguis-
+tic annotation pipelines. In Proceedings of EMNLP.
+
+Katrin Fundel, Robert Küffner, and Ralf Zimmer. 2006.
+Relex—relation extraction using dependency parse
+trees. Bioinformatics 23(3):365–371.
+
+Anindya Ghose, Panagiotis Ipeirotis, and Arun Sun-
+dararajan. 2007. Opinion mining using economet-
+rics: A case study on reputation systems. In Pro-
+ceedings of ACL. Prague, Czech Republic. http:
+//www.aclweb.org/anthology/P07-1053.
+
+Daniel Gildea and Daniel Jurafsky. 2002. Automatic
+labeling of semantic roles. Computational linguis-
+tics 28(3):245–288.
+
+Joshua Goodman. 1996. Parsing algorithms and met-
+rics. In Proceedings of ACL. https://doi.org/10.
+3115/981863.981887.
+
+Kadri Hacioglu. 2004. Semantic role labeling using
+dependency trees. In Proceedings of the 20th inter-
+national conference on Computational Linguistics.
+Association for Computational Linguistics.
+
+Liang Huang and Kenji Sagae. 2010. Dynamic pro-
+gramming for linear-time incremental parsing. In
+Proceedings of the 48th Annual Meeting of the As-
+sociation for Computational Linguistics. Associa-
+tion for Computational Linguistics, Uppsala, Swe-
+den, pages 1077–1086. http://www.aclweb.org/
+anthology/P10-1110.
+
+Katherine Keith, Abram Handler, Michael Pinkham,
+Cara Magliozzi, Joshua McDuffie, and Brendan
+O’Connor. 2017. Identifying civilians killed by po-
+lice with distantly supervised entity-event extrac-
+tion. In Proceedings of EMNLP.
+
+926
+
+
+
+Eliyahu Kiperwasser and Yoav Goldberg. 2016. Sim-
+ple and accurate dependency parsing using bidirec-
+tional LSTM feature representations. Transactions
+of ACL .
+
+Terry Koo, Amir Globerson, Xavier Carreras, and
+Michael Collins. 2007. Structured prediction mod-
+els via the matrix-tree theorem. In Proceedings of
+EMNLP. http://www.aclweb.org/anthology/D/D07/
+D07-1015.
+
+Sandra Kübler, Ryan McDonald, and Joakim Nivre.
+2009. Dependency parsing. Synthesis Lectures on
+Human Language Technologies .
+
+Volodymyr Kuleshov and Percy S. Liang. 2015. Cali-
+brated structured prediction. In Advances in Neural
+Information Processing Systems.
+
+Qi Li and Heng Ji. 2014. Incremental joint extraction
+of entity mentions and relations. In Proceedings of
+ACL. pages 402–412.
+
+Dekang Lin and Patrick Pantel. 2001. DIRT – discov-
+ery of inference rules from text. In Proceedings of
+KDD.
+
+Andre Martins, Noah Smith, Eric Xing, Pedro Aguiar,
+and Mario Figueiredo. 2010. Turbo parsers: Depen-
+dency parsing by approximate variational inference.
+In Proceedings of EMNLP. http://www.aclweb.org/
+anthology/D10-1004.
+
+Khanh Nguyen and Brendan O’Connor. 2015. Pos-
+terior calibration and exploratory analysis for natu-
+ral language processing models. In Proceedings of
+EMNLP. http://aclweb.org/anthology/D15-1182.
+
+Vlad Niculae, André FT Martins, Mathieu Blondel,
+and Claire Cardie. 2018. SparseMAP: Differen-
+tiable sparse structured inference. arXiv preprint
+arXiv:1802.04223 .
+
+Alexandru Niculescu-Mizil and Rich Caruana. 2005.
+Predicting good probabilities with supervised learn-
+ing. In Proceedings of ICML.
+
+Joakim Nivre. 2003. An efficient algorithm for pro-
+jective dependency parsing. In Proceedings of the
+8th International Workshop on Parsing Technologies
+(IWPT).
+
+Joakim Nivre, Marie-Catherine de Marneffe, Filip Gin-
+ter, Yoav Goldberg, Jan Hajic, Christopher D Man-
+ning, Ryan McDonald, Slav Petrov, Sampo Pyysalo,
+Natalia Silveira, Reut Tsarfaty, and Daniel Zeman.
+2016. Universal dependencies v1: A multilingual
+treebank collection. In Proceedings of LREC.
+
+Brendan O’Connor, Brandon Stewart, and Noah A.
+Smith. 2013. Learning to extract international rela-
+tions from political context. In Proceedings of ACL.
+
+Slav Petrov and Dan Klein. 2007. Improved inference
+for unlexicalized parsing. In Proceedings of NAACL
+HLT 2007.
+
+Sameer Pradhan, Alessandro Moschitti, Nianwen Xue,
+Hwee Tou Ng, Anders Björkelund, Olga Uryupina,
+Yuchen Zhang, and Zhi Zhong. 2013. Towards ro-
+bust linguistic analysis using ontonotes. In CoNLL.
+pages 143–152.
+
+Sebastian Riedel, Limin Yao, Andrew McCallum, and
+Benjamin M. Marlin. 2013. Relation extraction with
+matrix factorization and universal schemas. In Pro-
+ceedings of NAACL. Atlanta, Georgia. http://www.
+aclweb.org/anthology/N13-1008.
+
+David Smith and Jason Eisner. 2008. Depen-
+dency parsing by belief propagation. In Proceed-
+ings of EMNLP. http://www.aclweb.org/anthology/
+D08-1016.
+
+David A. Smith and Jason Eisner. 2007. Bootstrapping
+feature-rich dependency parsers with entropic pri-
+ors. In Proceedings of EMNLP. http://www.aclweb.
+org/anthology/D/D07/D07-1070.
+
+Rion Snow, Dan. Jurafsky, and Andrew Y. Ng. 2005.
+Learning syntactic patterns for automatic hypernym
+discovery. In Advances in Neural Information Pro-
+cessing Systems.
+
+Kristina Toutanova, Aria Haghighi, and Christopher D.
+Manning. 2008. A global joint model for semantic
+role labeling. Computational Linguistics 34(2):161–
+191.
+
+Ralph Weischedel, Martha Palmer, Mitchell Marcus,
+Eduard Hovy, Sameer Pradhan, Lance Ramshaw,
+Nianwen Xue, Ann Taylor, Jeff Kaufman, Michelle
+Franchini, et al. 2013. Ontonotes release 5.0
+LDC2013T19. Linguistic Data Consortium,
+Philadelphia, PA .
+
+Daniel Zeman, Martin Popel, Milan Straka, Jan Ha-
+jic, Joakim Nivre, Filip Ginter, Juhani Luotolahti,
+Sampo Pyysalo, Slav Petrov, Martin Potthast, Fran-
+cis Tyers, Elena Badmaeva, Memduh Gokirmak,
+Anna Nedoluzhko, Silvie Cinkova, Jan Hajic jr.,
+Jaroslava Hlavacova, Václava Kettnerová, Zdenka
+Uresova, Jenna Kanerva, Stina Ojala, Anna Mis-
+silä, Christopher D. Manning, Sebastian Schuster,
+Siva Reddy, Dima Taji, Nizar Habash, Herman Le-
+ung, Marie-Catherine de Marneffe, Manuela San-
+guinetti, Maria Simi, Hiroshi Kanayama, Valeria de-
+Paiva, Kira Droganova, Héctor Martı́nez Alonso,
+Çağr Çöltekin, Umut Sulubacak, Hans Uszkor-
+eit, Vivien Macketanz, Aljoscha Burchardt, Kim
+Harris, Katrin Marheinecke, Georg Rehm, Tolga
+Kayadelen, Mohammed Attia, Ali Elkahky, Zhuoran
+Yu, Emily Pitler, Saran Lertpradit, Michael Mandl,
+Jesse Kirchner, Hector Fernandez Alcalde, Jana Str-
+nadová, Esha Banerjee, Ruli Manurung, Antonio
+Stella, Atsuko Shimada, Sookyoung Kwak, Gustavo
+Mendonca, Tatiana Lando, Rattima Nitisaroj, and
+Josie Li. 2017. Conll 2017 shared task: Multilin-
+gual parsing from raw text to universal dependen-
+cies. In Proceedings of the CoNLL 2017 Shared
+Task: Multilingual Parsing from Raw Text to Univer-
+sal Dependencies. Association for Computational
+
+927
+
+
+
+Linguistics, Vancouver, Canada, pages 1–19. http:
+//www.aclweb.org/anthology/K17-3001.
+
+Hao Zhang and Ryan McDonald. 2014. Enforcing
+structural diversity in cube-pruned dependency pars-
+ing. In Proceedings of ACL. http://www.aclweb.
+org/anthology/P14-2107.
+
+Yuan Zhang, Tao Lei, Regina Barzilay, and Tommi
+Jaakkola. 2014. Greed is good if randomized: New
+inference for dependency parsing. In Proceedings
+of EMNLP. Doha, Qatar. http://www.aclweb.org/
+anthology/D14-1109.
+
+Yue Zhang and Joakim Nivre. 2011. Transition-based
+dependency parsing with rich non-local features.
+In Proceedings of ACL. http://www.aclweb.org/
+anthology/P11-2033.
+
+Yue Zhang and Joakim Nivre. 2012. Analyzing
+the effect of global learning and beam-search on
+transition-based dependency parsing. In Proceed-
+ings of COLING. http://www.aclweb.org/anthology/
+C12-2136.
+
+928
+
+

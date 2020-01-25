@@ -1,0 +1,1034 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Multi-threaded composition of finite-state-automata
+
+
+Proceedings of the 11th International Conference on Finite State Methods and Natural Language Processing, pages 81–89,
+St Andrews–Sctotland, July 15–17, 2013. c©2013 Association for Computational Linguistics
+
+Multi-threaded composition of finite-state automata
+
+Bryan Jurish
+Berlin-Brandenburg Academy of Sciences
+
+Jägerstr 22/23 · 10117 Berlin · Germany
+jurish@bbaw.de
+
+Kay-Michael Würzner
+University of Potsdam · Psychology Dept.
+
+Karl-Liebknecht-Str. 24-25 · 14476 Potsdam · Germany
+wuerzner@uni-potsdam.de
+
+Abstract
+
+We investigate the composition of finite-
+state automata in a multiprocessor envi-
+ronment, presenting a parallel variant of
+a widely-used composition algorithm. We
+provide an approximate upper bound for
+composition speedup of the parallel vari-
+ant with respect to serial execution, and
+empirically evaluate the performance of
+our implementation with respect to this
+bound.
+
+1 Introduction
+
+Finite-state automata1 allow for efficient imple-
+mentations in terms of directed graphs with des-
+ignated initial and final states, as well as labeled
+edges facilitating efficient storage and lookup.
+Complex systems based on (weighted) finite-state
+automata have been successfully used in language
+processing (Mohri et al., 2007), image compres-
+sion (Culik II and Kari, 1993), computational bi-
+ology (Krogh et al., 1994), and many other ap-
+plications. Composition is a binary operation on
+finite-state transducers (FSTs) which creates tran-
+sitions for matching output- and input-labels of
+the outgoing transitions of two operand states. It
+is an important operation in both compile-time
+construction (where it may be employed e.g. to
+combine different levels of representation) and –
+since lookup may be considered a special case of
+composition – run-time querying of the aforemen-
+tioned systems.
+
+Despite the increasing trend towards multipro-
+cessor systems and the resulting demand for ef-
+ficient parallel implementations for common op-
+erations (Sutter, 2005), no generic parallel algo-
+rithm for the composition of FSTs has yet been es-
+tablished, although many efforts have been made
+
+1Where appropriate, we use the term automata as a
+generic subsuming both acceptors and transducers.
+
+to improve composition performance in special
+cases. In Holub and Štekr (2009), a parallel imple-
+mentation for the case of string lookup in a deter-
+ministic finite-state acceptor (FSA) is presented.
+A generalization to n operands which prevents the
+construction of large intermediate results is given
+in Allauzen and Mohri (2009). A good deal of
+work has focussed on dynamic, on-the-fly, or lazy
+implementations (Hori et al., 2004; Cheng et al.,
+2007; Mohri et al., 2007), in which the compo-
+sition of FSTs is only partly computed, new states
+and transitions being added to the result only when
+necessary.
+
+In this article, we present a parallel variant of a
+widely-used composition algorithm (Hanneforth,
+2004; Allauzen et al., 2007, etc.) which can make
+use of multiprocessor architectures by employing
+multiple concurrent threads of execution. We pro-
+vide an approximate upper bound for composition
+speedup using a state-wise parallel algorithm with
+respect to serial execution, and empirically eval-
+uate the performance of our implementation with
+respect to this bound.
+
+2 Preliminaries
+
+2.1 Definitions
+Definition 1 (FST). A finite-state transducer2 is a
+6-tuple T = 〈Σ,Γ, Q, q0, F, E〉 with Σ a finite in-
+put alphabet, Γ a finite output alphabet, Q a finite
+set of automaton states, q0 ∈ Q the designated
+initial state, F ⊆ Q a set of final states, and
+E ⊆ Q × Q × (Σ ∪ {ε}) × (Γ ∪ {ε}) a set of
+transitions.
+
+For a transition e = (q1, q2, a, b) ∈ E, we de-
+note by p[e] its source state q1, by n[e] its destina-
+tion state q2, by i[e] its input label a, and by o[e]
+
+2Here and in the sequel, we restrict our attention to un-
+weighted automata. The algorithms described here trivially
+extend to the weighted case. In fact, the implementations
+used in the current experiments (Sec. 4) operate on weighted
+automata.
+
+81
+
+
+
+its output label b. A finite-state acceptor (FSA) can
+be regarded as an FST with Σ = Γ and i[e] = o[e]
+for all e ∈ E.
+
+A path π is a sequence e1 . . . en of n transi-
+tions such that n[ei] = p[ei+1] for 1 ≤ i < n.
+We denote by |π| the length of π: |e1 . . . en| =
+n. Extending the notation for transitions, we de-
+fine the source and destination states of a path as
+p[π] = p[e1] and n[π] = n[en], respectively. The
+input label string i[π] yielded by a path π is the
+concatenation of the input labels of its transitions:
+i[π] = i[e1]i[e2] . . . i[en]; the output label string
+o[π] is defined analogously.
+
+For q ∈ Q, x ∈ Σ∗, y ∈ Γ∗, and R ⊆ Q,
+Π(q, x, y, R) denotes the set of paths from q to
+some r ∈ R with input string x and output string
+y, and Π(q,R) =
+
+⋃
+x∈Σ∗,y∈Γ∗ Π(q, x, y, R) de-
+
+notes the set of paths originating at q and ending
+at some r ∈ R. A state r ∈ Q is said to be ac-
+cessible from a state q ∈ Q if there exists a path
+π with p[π] = q and n[π] = r; r is accessible if it
+is accessible from q0. JT K ⊆ Σ∗ × Γ∗ denotes the
+string relation associated with T , and is defined as
+the set of input- and output-string pairs labelling
+successful paths in T : JT K = {(i[π], o[π]) : π ∈
+Π(q0, F )}
+Definition 2 (Depth). For any accessible q ∈ Q,
+depth(q) denotes the depth of q, defined as the
+length of the shortest path from the initial state to
+q:
+
+depth(q) =
+
+{
+0 if q = q0
+minπ∈Π(q0,{q}) |π| otherwise
+
+The depth of a transducer T is defined as the
+maximum depth over all its accessible states:
+depth(T ) = maxq∈Q:Π(q0,{q}) 6=∅ depth(q).
+
+2.2 Composition
+
+Composition is a binary operation on FSTs T1
+and T2 which share an “inner” alphabet. Infor-
+mally, the composition operation matches transi-
+tions from T1 to transitions from T2 if the corre-
+sponding output and input labels coincide. For-
+mally:
+
+Definition 3 (Composition of FSTs). Given two
+FSTs T1 = 〈Σ, Γ, Q1, q01 , F1, E1〉 and T2 = 〈Γ,
+∆, Q2, q02 , F2, E2〉, the composition of T1 and T2
+is denoted by T1 ◦ T2, and is itself an FST whose
+string relation is the composition of the string re-
+lations of T1 and T2, JT1 ◦ T2K = JT1K ◦ JT2K,
+
+i.e. for all x ∈ Σ∗, y ∈ ∆∗, (x, y) ∈ JT1 ◦ T2K
+if and only if there exists some z ∈ Γ∗ such
+that (x, z) ∈ JT1K and (z, y) ∈ JT2K. Further,
+C = 〈Σ,∆, (Q1 × Q2), E, (q01 , q02), (F1 × F2)〉
+is such an FST, JCK = JT1 ◦ T2K, where:
+
+E =
+⋃
+
+(q,r,a,b)∈E1
+(s,t,b,c)∈E2
+
+{
+((q, s), (r, t), a, c)
+
+}
+(1)
+
+The construction above is only correct if T1 and
+T2 are ε-free on their output and input tapes, re-
+spectively. The generalization to ε-transitions has
+been discussed e.g. by Mohri (2009). Since the
+generalization can be reduced to the above con-
+struction applied to ε-free WFSTs, we ignore it
+here in the interest of clarity.
+
+The most common serial algorithm (Mohri,
+2009) for computing the composition of two WF-
+STs is presented here as Algorithm 1, and can be
+considered a variant of the standard intersection
+algorithm for unweighted FSAs as described by
+Hopcroft and Ullman (1979). Unlike the “brute
+force” construction of Definition 3, the algorithm
+generates only those states and transitions of the
+output automaton which are accessible from the
+initial state. In this manner, the algorithm man-
+ages to avoid the combinatorial explosion of states
+and transitions implicit in Definition 3 in the over-
+whelming majority of cases.
+
+2.3 Amdahl’s Law
+Amdahl’s law (Amdahl, 1967) describes the theo-
+retical bound on speeding up a program in terms of
+improvements made to specific parts of that pro-
+gram. In particular, it can be used to predict the
+maximum speedup resulting from executing spe-
+cific parts of a program in parallel on a multipro-
+cessor architecture.
+
+SN =
+1
+
+(1− P ) + PN
+(2)
+
+Equation (2) states that the maximum speedup
+SN of a parallel program is the inverse sum of
+the serial proportion of that program (those parts
+which cannot be executed in parallel, 1 − P ) and
+the parallel proportion P divided by the number
+of processors N . As the number of available pro-
+cessors increases, PN approaches zero and SN ap-
+proaches 11−P .
+
+3 State-wise parallelization
+
+Using a first-in-first-out protocol for the visita-
+tion queue V , Algorithm 1 effectively performs a
+
+82
+
+
+
+Algorithm 1: COMPOSE: serial composition of ε-free FSTs
+Input: T1 = 〈Σ,Γ, Q1, q01 , F1, E1〉 an FST
+Input: T2 = 〈Γ,∆, Q2, q02 , F2, E2〉 an FST
+
+1 function COMPOSE(T1, T2)
+2 Q,F,E ← ∅ /* initialize */
+3 V ← {(q01 , q02)} /* visitation queue */
+4 while V 6= ∅ do
+5 (q1, q2)← pop(V ) /* visit state */
+6 Q← Q ∪ {(q1, q2)}
+7 if (q1, q2) ∈ F1 × F2 then /* final state */
+8 F ← F ∪ {(q1, q2)}
+9 for (e1, e2) ∈ E[q1]× E[q2] with o[e1] = i[e2] do /* align transitions */
+
+10 E ← E ∪
+{
+((q1, q2), (n[e1], n[e2]), i[e1], o[e2])
+
+}
+
+11 if (n[e1], n[e2]) /∈ Q then
+12 push
+
+(
+V , (n[e1], n[e2])
+
+)
+/* enqueue for visitation */
+
+13 return C = 〈Σ,∆, Q, (q01 , q02), F, E〉
+
+breadth-first traversal of the output automaton C.
+Pairs of destination states for aligned transitions
+are enqueued only if they have not yet been vis-
+ited. Our parallelization scheme is based on con-
+current processing of multiple result states – multi-
+ple concurrent executions of the while loop at lines
+4-12. Such state-wise parallelization is a common
+approach for breadth-first traversals of graphs in a
+multiprocessor environment (Roosta, 2000).
+
+3.1 An approximate upper bound for
+state-wise parallel speedup
+
+In this section, we investigate the potential
+speedup resulting from a state-wise paralleliza-
+tion of Algorithm 1 as described above. We as-
+sume that Algorithm 1 constructs an automaton
+C = 〈Σ,Γ, Q, q0, F, E〉, and show that the maxi-
+mum speedup of a state-wise parallel composition
+algorithm depends on the topological properties of
+C, specifically on its state-to-depth ratio.
+
+We call a single evaluation of lines 4-12 a visi-
+tation of the state q = (q1, q2) ∈ Q, and we call
+a state discovered when it has been pushed to the
+visitation queue during the visitation of a prede-
+cessor at line 12. For each q ∈ Q, let t0(q) repre-
+sent the time at which the visitation of q begins, let
+t1(q) be the earliest time at which the visitation of
+q has completed. We assume a strict breadth-first
+visitation order on states: for all q, q′ ∈ Q,
+
+depth(q) < depth(q′) =⇒ t1(q) ≤ t0(q′) (3)
+
+i.e. visitation of all states at depth d must have
+completed before any state with depth d′ > d can
+
+itself be visited. In order to approximate a worst-
+case scenario for state-wise parallelization, we as-
+sume that the duration of a visitation tvisit(q) is
+independent of the state q being visited, defining
+this constant as our elementary time unit:
+
+∀q ∈ Q, (t1(q)− t0(q)) = tvisit(q) = 1 (4)
+
+We restrict our attention to the execution of the
+visitation loop of lines 4-12, ignoring the constant
+administrative overhead of lines 2-3 and 13, and
+assume the convention that visitation of the initial
+state begins at t0(q0) = 0.
+
+Lemma 1 (Serial composition running time). Let
+C = 〈Σ,Γ, Q, q0, F, E〉 be an FST constructed by
+Algorithm 1. Serial execution of the algorithm re-
+quires exactly tserial = |Q| time units.
+Proof. Since each state is visited exactly once and
+no two states can be visited concurrently, the algo-
+rithm terminates after exactly |Q| visitations. No
+code is executed between visitations, so tserial =∑
+
+q∈Q tvisit(q) = |Q| by Equation 4.
+Lemma 2 (Parallel state visitation bound). Let
+C = 〈Σ,Γ, Q, q0, F, E〉 be an FST constructed by
+Algorithm 1 executed in state-wise parallel fash-
+ion using an unbounded number of processors
+N ≥ |Q|. The completion time of any given state’s
+visitation is determined by that state’s depth:
+
+∀q ∈ Q, t1(q) = depth(q) + 1
+
+Proof. We proceed by induction over depth(q).
+For depth(q) = 0, it must be that q = q0 and
+
+83
+
+
+
+t0(q) = t0(q0) = 0 by convention. Since visita-
+tion time is constant, t1(q) = t0(q) + tvisit(q) =
+1 = depth(q) + 1, so the lemma holds.
+
+For the inductive step, consider an arbitrary
+q ∈ Q with depth(q) = d and assume that the
+lemma holds for all q′ ∈ Q with depth(q′) < d.
+Since depth(q) = d, there exist p ∈ Q and
+e ∈ E with p[e] = p, n[e] = q, and depth(p) =
+d − 1 by Definition 2. By inductive hypothe-
+sis, t1(p) = depth(p) + 1 = d. Since we have
+N ≥ Q processors available and at most |Q| vis-
+itations to perform, we can begin processing q as
+soon as it is discovered during the visitation of p:
+t0(p) < t0(q) ≤ t1(p), but the strict breadth-first
+visitation constraint of Equation (3) dictates that
+visitation of q cannot begin until all states of lesser
+depth have been visited, so t0(q) = t1(p) = d
+and t1(q) = t0(q) + tvisit(q) = d + 1 by Equa-
+tion (4).
+
+Lemma 3 (State-wise parallel composition run-
+ning time). Let C = 〈Σ,Γ, Q, q0, F, E〉 be an
+FST constructed by Algorithm 1. State-wise par-
+allel execution of the algorithm with N ≥ Q
+available processors requires exactly tparallel:N =
+1 + depth(C) time units.
+Proof. The algorithm terminates when all states
+have been visited at time t1(C) = maxq∈Q t1(q).
+By Lemma 2, all states in each depth-slice
+depth−1(d) ⊆ Q are visited concurrently, com-
+pleting at time d + 1. Since depth(C) =
+maxq∈Q depth(Q) by Definition 2, tparallel:N =
+t1(C) = 1 + depth(C).
+
+Having derived approximate running times of
+both serial and parallel executions, we can now
+compute the maximum speedup of a state-wise
+parallel execution.
+
+Theorem 1 (Maximum speedup of state-wise par-
+allelization). The maximum speedup Smax of a
+state-wise parallel execution of Algorithm 1 con-
+structing an output FST C = 〈Σ,Γ, Q, q0, F, E〉
+with respect to serial execution is approximated
+for N ≥ |Q| by:
+
+Smax =
+tserial(C)
+
+tparallel:N (C)
+=
+
+|Q|
+1 + depth(C)
+
+Proof. Follows from Lemmas 1 and 3.
+
+Corollary 1 (Composition parallelizability).
+Pmax is an approximate upper bound on the pro-
+portion of the total execution time of Algorithm 1
+
+peer0 peer1
+
+peer3 peer2
+
+Figure 1: Data-flow diagram for the peer-to-
+peer parallel composition algorithm using 4 peers.
+Lock-free data access is displayed with dotted
+lines, data channels shared by exactly two peers
+appear as dashed lines, and globally shared data
+channels which can be locked by any peer are solid
+black.
+
+which can be effectively run in parallel:
+
+Pmax = 1−
+1
+
+Smax
+
+Proof. Follows from Theorem 1 and Amdahl’s
+law (Eq. 2).
+
+3.2 Algorithm
+Apart from the bounds implied by automaton
+topology, practical issues such as shared data
+structures and the necessarily associated synchro-
+nization between otherwise independent threads
+must be considered in the development of any par-
+allel algorithm. Access to shared data is typically
+controlled by mutual exclusion locks (mutexes):
+when altering a shared data structure s, a thread
+t must first lock that structure. Other threads must
+then wait for t to unlock s before they can ac-
+cess it themselves. Competition for mutex locks
+therefore has a strong impact on the overall perfor-
+mance of multi-threaded implementations, since
+lock acquisition is an inherently synchronous op-
+eration, and thus decreases the proportion of the
+program which can actually be executed in paral-
+lel.
+
+Our approach is presented as pseudo-code in
+Algorithm 2 and schematically depicted in Fig-
+ure 1. We make use of a set of N > 1 “peer”
+threads pi∈N , each of which simulates the execu-
+tion of lines 4-12 from Algorithm 1. To minimize
+competition over shared data structures, each peer
+allocates and maintains its own local partition of
+
+84
+
+
+
+Algorithm 2: PPCOMPOSE: peer-to-peer parallel composition
+Input: T1 = 〈Σ,Γ, Q1, q01 , F1, E1〉 an FST
+Input: T2 = 〈Γ,∆, Q2, q02 , F2, E2〉 an FST
+Input: N ∈ N, number of peer threads to spawn
+
+1 function PPCOMPOSE(T1, T2, N)
+2 for 0 ≤ i, j < N do Vi,j ← ∅ /* initialize queue matrix */
+3 V0,r(q01 ,q02 ) = {(q01 , q02)}
+4 nup = 1 /* shared queue-size counter */
+5 for 0 ≤ i < N do spawn PEER(i) /* spawn peer threads */
+6 wait on all peers()
+7 return C =
+
+〈
+Σ,∆,
+
+⋃
+i∈N Q
+
+′
+i, (q01 , q02),
+
+⋃
+i∈N F
+
+′
+i ,
+⋃
+
+i∈N E
+′
+i
+
+〉
+
+8 procedure PEER(i)
+9 Q′i, F
+
+′
+i , E
+
+′
+i ← ∅ /* initialize peer-local data */
+
+10 while true do
+11 find j with 0 ≤ j < N and Vj,i 6= ∅
+12 v ← pop(Vj,i)
+13 if v = eof then return /* terminate thread */
+14 if v 6∈ Q′i then VISIT(i, v) /* visit state */
+15 if nup = 1 then
+16 for 0 ≤ j < N do push(Vi,j , eof) /* terminate peers */
+17 nup ← nup − 1 /* update shared counter */
+18 procedure VISIT(i, (q1, q2))
+19 Q′i ← Q′i ∪ {(q1, q2)}
+20 if (q1, q2) ∈ F1 × F2 then /* final state */
+21 F ′i ← F ′i ∪ {(q1, q2)}
+22 for (e1, e2) ∈ E[q1]× E[q2] with o[e1] = i[e2] do /* align transitions */
+23 E′i ← E′i ∪
+
+{
+((q1, q2), (n[e1], n[e2]), i[e1], o[e2])
+
+}
+
+24 nup ← nup + 1 /* update shared counter */
+25 push
+
+(
+Vi,r(n[e1],n[e2]), (n[e1], n[e2])
+
+)
+/* enqueue for visitation */
+
+the output automaton structure (Q′i, F
+′
+i , E
+
+′
+i), and
+
+the visitation queue V is replaced by an (N ×N)
+matrix of peer-to-peer local message queues: Vi,j
+contains messages originating at peer pi and des-
+tined for peer pj .
+
+This technique relies for its correctness on the
+prior specification of a partitioning function r :
+Q1 × Q2 → N over states of the result automa-
+ton, used to determine which peer is responsible
+for visiting any such state. For the experiments
+described in section 4, our input automata pro-
+vided injective functions J·K1 : Q1 → N and
+J·K2 : Q2 → N, and we used the partitioning func-
+tion given in Equation (5).
+
+r(q1, q2) =
+
+⌊Jq1K1 + Jq2K2
+2
+
+⌋
+mod N (5)
+
+Since the visitation queue V is no longer
+a shared atomic structure, an additional shared
+
+global counter nup is required to keep track of the
+number of visitation requests currently enqueued
+in any Vi,j . Only when the last such request has
+been processed does the algorithm terminate by
+sending a designated message eof 6∈ Q1 × Q2
+to all peers at line 16.
+
+Also worth noting is that due to the peer-wise
+partitioning of result data – in particular that of Q
+into Q′i∈N – a new visitation request must be en-
+queued at line 25 for every aligned transition, and
+the decision of whether or not a visit is actually
+required deferred to the responsible peer at line
+14. This can be expected to result in larger queues,
+correspondingly increased memory requirements,
+and an additionalO(E−Q) copy operations com-
+pared to Algorithm 1. Any additional computa-
+tional load – in particular the inclusion of an im-
+plicit epsilon-filter such as described by Mohri
+
+85
+
+
+
+(2009) – associated only with a single state visi-
+tation will remain confined to a single peer, and
+can thus only serve to improve the performance
+of the parallel algorithm with respect to its serial
+counterpart.
+
+Our parallelization strategy does not alter the
+worst-case complexity of the composition algo-
+rithm, since the partitioning function may fail for
+certain pathological configurations. More pre-
+cisely, whenever there is an i ∈ N such that
+r(q1, q2) = i for all accessible (q1, q2) ∈ Q,
+then the unique peer-thread pi will be responsible
+for visiting all of the states of the output trans-
+ducer. In this case, Algorithm 2 essentially re-
+duces to Algorithm 1 with the worst-case com-
+plexityO(|Q1×Q2|+ |E1×E2|), which is dom-
+inated by O(|E1 × E2|).
+
+Many other operations on finite-state transduc-
+ers have traditional implementations in terms of a
+state-processing queue, exhibiting the same high-
+level structure as Algorithm 1. The parallelization
+strategy used here may also be employed in such
+cases, whenever a suitable state-partitioning func-
+tion (analogous to r) can be defined. Consider
+for example the case of unweighted acceptor de-
+terminization as presented by Hopcroft and Ull-
+man (1979): output automaton states are identified
+by sets of prefix-equivalent states of the input au-
+tomaton. A generic partitioning function for map-
+ping state sets to peers would suffice to extend our
+parallelization strategy to this algorithm.
+
+4 Experiment
+
+To investigate the practical utility of our multi-
+threaded composition algorithm, we compared
+running times of Algorithms 1 and 2.
+
+4.1 Materials
+
+We began by generating a sample set of ran-
+dom input FSTs Ti∈I . Each input Ti was built
+from a deterministic trie “skeleton” of a given size
+|Qi| with maximum depth 32. The trie skeleton
+was then augmented by adding random edges be-
+tween existing states, and finally randomizing all
+edge labels. The target size parameters |Qi| were
+piecewise-uniformly distributed within exponen-
+tially sized bins such that 25 ≤ |Qi| ≤ 221,
+i.e. input automata had between 32 and 2,097,152
+states. The number ei of randomly added edges
+was dependent on the number of states, ei =
+ci×|Qi|, where the coefficients ci were uniformly
+
+distributed over the interval [0, 16]. In- and output-
+alphabets were identical for each Ti with alpha-
+bet sizes uniformly distributed over the discrete set⋃10
+
+i=0{2i}, i.e. between 2 and 1024. For each input
+automaton Ti so generated, we measured the run-
+ning time tserial,i of the serial composition algo-
+rithm COMPOSE(T −1i , Ti), and retained only those
+samples Ti for which 164 sec ≤ tserial,i ≤ 8 sec.
+
+We implemented Algorithms 1 and 2 in C++,
+using the GNU C compiler (g++ version 4.4.5),
+the C++ standard template library, as well as the
+auxiliary libraries boost (Schäling, 2011) and
+TBB (Reinders, 2007) for common data structures
+and programming idioms. Automata were rep-
+resented using adjacency vectors, and the edge
+alignments of Algorithm 1 line 9 (respectively
+Alg. 2 line 22) were implemented using an opti-
+mized routine3 for sorted edge-vectors in order to
+minimize running times for both conditions. The
+implementations were tested on a dedicated 64-bit
+machine with 16 logical processors running de-
+bian linux.
+
+4.2 Method
+
+For each of the 2,266 random input automata Ti,
+we measured the time required4 to compute the
+composition Ci = (T −1i ◦ Ti) using the serial al-
+gorithm (tserial,i) as well as the parallel algorithm
+(tpp:N,i), varying the number of peer-threads em-
+ployed by the latter, N ∈ {2, 4, 8, 16}.5 Each of
+these 11,330 invocations was iterated 8 times in
+order to ameliorate cache effects. Raw and mean
+running times were stored for each invocation, to-
+gether with various structural properties of the in-
+put and result automata.
+
+4.3 Results & Discussion
+
+Inspection of the generated sample set revealed
+that all of the tested compositions exhibited
+an “embarrassingly parallel” topology: applying
+Corollary 1 yielded Pmax > 99% for all Ci (µ =
+
+3Specifically, we used a modified version of the edge
+alignment code from the GFSM (Jurish, 2009) library func-
+tion gfsm automaton compose visit () to imple-
+ment a generic function template shared by both serial and
+parallel implementations.
+
+4Neither I/O nor serialization of the result transducer were
+included in our measurements of the running time.
+
+5While not necessarily representative of FST composi-
+tions in general, restricting our attention to compositions of
+the form (T −1 ◦T ) ensures that the output automaton C is at
+least as large as T itself, since the main diagonal of the out-
+put state-set Id(QT ) will be accessible whenever T contains
+no non-accessible states.
+
+86
+
+
+
+ 1
+
+ 2
+
+ 4
+
+ 8
+
+ 0.1  1
+
+S
+ =
+
+ t.
+se
+
+ria
+l /
+
+ t.
+pp
+
+t.serial
+
+serial
+pp:  2
+pp:  4
+pp:  8
+pp:16
+
+Figure 2: Observed speedup for peer-to-peer parallel composition with respect to serial running time for
+randomly generated automata (log-scaled).
+
+.9998, σ = 2.949 × 10−4). Although it is cer-
+tainly the case that not all FST compositions pos-
+sess such characteristics (as follows from Theorem
+1), the uniformly large state-to-depth ratio exhib-
+ited by our sample set makes it a particularly good
+testing ground for state-wise parallel processing
+techniques such as Algorithm 2.
+
+Results of the runtime measurements are de-
+picted in Figure 2, expressed as the measured
+speedup for the parallel implementation with re-
+spect to the serial one. The samples i were sorted
+into 10 exponentially sized bins by serial run-
+ning time tserial,i, and the speedup data SN,i =
+tserial,i/tpp:N,i are plotted on logarithmic scales
+for each n ∈ N as a piecewise linear fit over bin-
+wise averages.6
+
+Immediately apparent from the data in Figure
+2 is a typical pattern of diminishing returns for in-
+creasing values of N , reflecting an empirical value
+of P ≪ 1. Solving Equation (2) for P and ap-
+plying it to the measured speedup values yields
+the data in Table 1, corresponding to an estimated
+P = .749 (σ = .154) over all tested parallel
+compositions. Interestingly, the empirically esti-
+mated values for P increase monotonically with
+N , which indicates that the use of a distributed
+
+6Since Pmax ≈ 1 for all of our test automata, we ignore
+the contribution of automaton topology to actual observed
+speedup here. For a more heterogeneous test set, it would
+make more sense to measure speedup relative to the respec-
+tive automaton-dependent maxima, i.e. SN,i/Smax,N,i.
+
+N µS σS µP σP
+
+2 1.474 0.209 0.615 0.207
+4 2.372 0.423 0.751 0.116
+8 3.585 0.788 0.806 0.083
+
+16 4.701 1.156 0.824 0.066
+
+Table 1: Global mean (µ) and standard deviation
+(σ) of observed speedup (S) and associated de-
+gree of parallelization (P ) for peer-to-peer parallel
+composition using N concurrent threads.
+
+message queue did in fact reduce the competi-
+tion over shared resources between peer-threads,
+thereby effectively reducing the serial portion of
+the program itself.
+
+Despite this tendency, the data from Table 1
+clearly indicate that the measured performance of
+our implementation remained well below the up-
+per bound given by Theorem 1 for our sample
+set. This discrepancy can be attributed in part
+to constant overhead associated with thread allo-
+cation and maintenance (cf. Section 3.2), whose
+effects can also be observed in the tendency of
+speedup to improve with increasing serial running
+time as seen in Figure 2. Restricting our atten-
+tion to the 598 samples with tserial,i ≥ 1 sec-
+ond, we computed an average empirical estimate
+of P = .8867 for N = 16 (σ = .01676). The
+remaining discrepancy between the empirical esti-
+mates and the “embarrassingly parallel” theoreti-
+
+87
+
+
+
+cal upper bounds must be attributed to the neces-
+sarily serial aspects of inter-thread communication
+and synchronization.
+
+5 Conclusion
+
+We have presented a generic state-wise parallel al-
+gorithm for computing the composition of ε-free
+finite-state transducers which minimizes compe-
+tition for global locks by employing distributed
+data structures and localized communication chan-
+nels. This algorithm relies on the prior specifi-
+cation of a partitioning function which effectively
+maps each state of the result automaton to the exe-
+cution thread responsible for processing that state.
+
+An approximate upper bound for composition
+speedup using a state-wise parallel algorithm such
+as that presented here was proposed and defined
+in terms of the state-to-depth ratio of the result
+automaton. Empirical investigation of the actual
+speedup achieved by our algorithm on a test set
+of “embarrassingly parallel” compositions showed
+that although the use of distributed data structures
+and communication channels was successful in
+reducing the serial proportion of the code when
+more processors were used, constant overhead and
+the remaining synchronizations led to the pattern
+of diminishing returns associated with an actual
+parallel execution of about 89% of the program.
+
+We are interested in evaluating the performance
+of our approach in other scenarios, including
+string lookup in (weighted) FSTs, n-way or “cas-
+caded” composition, and “lazy” online construc-
+tions. We believe that the peer-to-peer paralleliza-
+tion strategy can also be employed to improve the
+performance of other common finite-state alge-
+braic operations in a multiprocessor context.
+
+Acknowledgements
+
+Research was supported by the Deutsche
+Forschungsgemeinschaft grants KL 337/12-2 and
+KL 955/19-1. Additionally, we would like to
+thank this article’s anonymous reviewers for their
+helpful comments.
+
+References
+Cyril Allauzen and Mehryar Mohri. 2009. N-way
+
+composition of weighted finite-state transducers. In-
+ternational Journal of Foundations of Computer Sci-
+ence, 20(4):613–627.
+
+Cyril Allauzen, Michael Riley, Johan Schalkwyk, Wo-
+jciech Skut, and Mehryar Mohri. 2007. OpenFst: A
+
+General and Efficient Weighted Finite-State Trans-
+ducer Library. In Jan Holub and Jan Ždárek, edi-
+tors, Implementation and Application of Automata,
+volume 4783 of Lecture Notes in Computer Science,
+pages 11–23. Springer, Berlin/Heidelberg.
+
+Gene M. Amdahl. 1967. Validity of the single proces-
+sor approach to achieving large scale computing ca-
+pabilities. In Proceedings of the AFIPS spring joint
+computer conference, pages 483–485, New York,
+NY. ACM.
+
+Octavian Cheng, John Dines, and Mathew Magimai
+Doss. 2007. A Generalized Dynamic Composi-
+tion Algorithm of Weighted Finite State Transducers
+for Large Vocabulary Speech Recognition. In IEEE
+International Conference on Acoustics, Speech and
+Signal Processing (ICASSP 2007), volume 4, pages
+345–348. IEEE.
+
+Karel Culik II and Jarkko Kari. 1993. Image compres-
+sion using weighted finite automata. Computers &
+Graphics, 17(3):305–313.
+
+Thomas Hanneforth. 2004. FSM<2.0> – C++ li-
+brary for manipulating (weighted) finite automata.
+http://www.fsmlib.org.
+
+Jan Holub and Stanislav Štekr. 2009. On par-
+allel implementations of deterministic finite au-
+tomata. In Sebastian Maneth, editor, Implementa-
+tion and Application of Automata, volume 5642 of
+Lecture Notes in Computer Science, pages 54–64,
+Berlin/Heidelberg. Springer.
+
+John E. Hopcroft and Jeffrey D. Ullman. 1979. Intro-
+duction to Automata Theory, Languages, and Com-
+putation. Addison Wesley, Reading, MA.
+
+Takaaki Hori, Chiori Hori, and Yasuhiro Minami.
+2004. Fast On-The-Fly Composition for Weighted
+Finite-State Transducers in 1.8 Million-Word Vo-
+cabulary Continuous Speech Recognition. INTER-
+SPEECH, pages 289–292.
+
+Bryan Jurish. 2009. libgfsm C library, ver-
+sion 0.0.10. http://kaskade.dwds.de/
+˜moocow/projects/gfsm/.
+
+Anders Krogh, Michael Brown, I. Saira Mian, Kim-
+men Sjölander, and David Haussler. 1994. Hidden
+Markov models in computational biology : applica-
+tions to protein modeling. Journal of Molecular Bi-
+ology, 235(5):1501–1531.
+
+Mehryar Mohri, Fernando Carlos Pereira, and
+Michael Dennis Riley. 2007. Speech Recogni-
+tion with Weighted Finite-State Transducers. In
+Larry Rabiner and Fred Juang, editors, Handbook
+on Speech Processing and Speech Communication,
+Part E: Speech recognition, pages 1–31. Springer,
+Berlin/Heidelberg.
+
+Mehryar Mohri. 2009. Weighted automata algo-
+rithms. In Manfred Droste, Werner Kuich, and
+
+88
+
+
+
+Heiko Vogler, editors, Handbook of Weighted Au-
+tomata, Monographs in Theoretical Computer Sci-
+ence, chapter Concepts of Weighted Recognizabil-
+ity, pages 213–254. Springer, Berlin/Heidelberg.
+
+James Reinders. 2007. Intel Threading Building
+Blocks. O’Reilly, Sebastopol, CA.
+
+Seyed H. Roosta. 2000. Parallel Processing and
+Parallel Algorithms: Theory and Computation.
+Springer, Berlin/Heidelberg.
+
+Boris Schäling. 2011. The Boost C++ Libraries.
+XML Press.
+
+Herb Sutter. 2005. The free lunch is over – a fun-
+damental turn toward concurrency in software. Dr.
+Dobb’s Journal, 30(3).
+
+89
+
+

@@ -1,0 +1,1521 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Spotting Spurious Data with Neural Networks
+
+
+Proceedings of NAACL-HLT 2018, pages 2006–2016
+New Orleans, Louisiana, June 1 - 6, 2018. c©2018 Association for Computational Linguistics
+
+Spotting Spurious Data with Neural Networks
+
+Hadi Amiri, Timothy A. Miller, Guergana Savova
+Boston Children’s Hospital Informatics Program, Harvard Medical School
+
+{firstname.lastname}@childrens.harvard.edu
+
+Abstract
+
+Automatic identification of spurious instances
+(those with potentially wrong labels in
+datasets) can improve the quality of exist-
+ing language resources, especially when an-
+notations are obtained through crowdsourc-
+ing or automatically generated based on coded
+rankings. In this paper, we present an ef-
+fective approach inspired by queueing the-
+ory and psychology of learning to automati-
+cally identify spurious instances in datasets.
+Our approach discriminates instances based
+on their “difficulty to learn,” determined by a
+downstream learner. Our method can be ap-
+plied to any dataset assuming the existence
+of a neural network model for the target task
+of the dataset. Our best approach outper-
+forms competing state-of-the-art baselines and
+has a MAP of 0.85 and 0.22 in identifying
+spurious instances in synthetic and carefully-
+crowdsourced real-world datasets respectively.
+
+1 Introduction
+
+The importance of error-free language resources
+cannot be overstated as errors can inversely af-
+fect interpretations of the data, models developed
+from the data, and decisions made based on the
+data. Although the quality of language resources
+can be improved through good annotation guide-
+lines, test questions, etc., annotation noise still
+exists (Gupta et al., 2012; Lasecki et al., 2013).
+For example, Figure 1 shows sample spurious in-
+stances (those with potentially wrong labels) in
+CIFAR-10 (Krizhevsky, 2009) which is a bench-
+mark dataset for object classification. Spurious
+instances can mislead systems, and, if available
+in test data, lead to unrealistic comparison among
+competing systems.
+
+Previous works either directly identify noise
+in datasets (Hovy et al., 2013; Dickinson and
+Meurers, 2003; Eskin, 2000; Loftsson, 2009),
+
+(a) Truck (b) Airplane (c) Cat
+
+Figure 1: Spurious instances in CIFAR-10. (a) not a
+truck, (b) missing annotation for car as another object
+category, (c) incomplete image of a cat.
+
+or develop models that are more robust against
+noise (Guan et al., 2017; Natarajan et al., 2013;
+Zhu et al., 2003; Zhu and Wu, 2004). Furthermore,
+recent works on adversarial perturbation have
+tackled this problem (Goodfellow et al., 2015;
+Feinman et al., 2017). However, most previous
+approaches require either annotations generated
+by each individual annotator (Guan et al., 2017),
+or both task-specific and instance-type (genuine
+or adversarial) labels for training (Hendrik Met-
+zen et al., 2017; Zheng et al., 2016), or noise-free
+data (Xiao et al., 2015). Such information is often
+not available in the final release of most datasets.
+
+Current approaches utilize prediction probabil-
+ity/loss of instances to tackle the above challenges
+in identifying spurious instances. This is because
+prediction probability/loss of spurious instances
+tend to be lower than that of genuine instances (He
+and Garcia, 2009). In particular, the Bayesian
+Uncertainty model (Feinman et al., 2017) defines
+spurious instances as those that have greater un-
+certainty (variance) in their stochastic predictions,
+and the Variational Inference model (Rehbein and
+Ruppenhofer, 2017; Hovy et al., 2013) expects
+greater posterior entropy in predictions made for
+spurious instances.
+
+In this paper, our hypothesis is that spurious
+instances are frequently found to be difficult to
+
+2006
+
+
+
+learn during training process. This difficulty in
+learning stems from the intrinsic discrepancy be-
+tween spurious and the cohort of genuine instances
+which frequently makes a learner less confident in
+predicting the wrong labels of spurious instances.
+Based on this hypothesis, we present two frame-
+works which are inspired by findings in queue-
+ing theory and psychology, namely Leitner queue
+network (Leitner, 1974) and Curriculum Learn-
+ing (Bengio et al., 2009). Our frameworks can be
+considered as schedulers that schedule instances to
+train a downstream learner (e.g. a neural network)
+with respect to “easiness”/“difficulty” of instances
+- determined by the extent to which the learner can
+correctly label (e.g. classify) instances during the
+training process. The two frameworks, however,
+differ in their views on the theory of learning as
+we describe below:
+
+Curriculum learning is inspired by the learning
+principle that humans can learn more effectively
+when training starts with easier concepts and
+gradually proceeds with more difficult ones (Ben-
+gio et al., 2009). On the other hand, Leitner system
+is inspired by spaced repetition (Dempster, 1989;
+Cepeda et al., 2006), the learning principle that ef-
+fective and efficient learning can be achieved by
+working more on difficult concepts and less on
+easier ones. Both frameworks are effective, con-
+ceptually simple, and easy to implement.
+
+The contributions of this paper are as follows:
+(a) we develop a cognitively-motivated and effec-
+tive algorithm for identifying spurious instances in
+datasets, (b) our approach can be applied to any
+dataset without modification if there exists a neu-
+ral network architecture for the target task of the
+dataset, and (c) we release a tool that can be easily
+used to generate a ranked list of spurious instances
+in datasets.1 Our tool requires a dataset and its
+corresponding network architecture to generate a
+ranked list of spurious instances in the dataset.
+
+Our best approach (Leitner model) has a mean
+average precision (MAP) of 0.85 and 0.22 in iden-
+tifying spurious instances on real-world and syn-
+thetic datasets and outperforms competing state-
+of-the-art baselines.
+
+2 Method
+
+We assume that our learner is a neural network
+which trains for k iterations until convergence.
+Furthermore, we assume that spurious and gen-
+
+1https://scholar.harvard.edu/hadi/spot
+
+Algorithm 1. Curriculum Spotter
+Input: H : training data, V : validation data, k : num-
+ber of iterations
+Output: Ranked list of spurious instances
+
+0 batch = H
+1 S0[hj ] = 0 for hj ∈ H
+2 For epoch = 1 to k:
+8 model = train(batch,V)
+3 loss = Loss(model,H)
+4 λ = compute lambda(model, loss,H)
+5 easy batch = sample easy(λ, loss,H)
+6 hard batch = H− easy batch
+7 batch = easy batch+ top( epoch
+
+k
+, hard batch)
+
+9 Sepoch = update stat(Sepoch−1, hard batch,
+loss)
+
+10 End for
+11 return sort(Sk,H, loss)
+
+Figure 2: Curriculum Spotter. Loss(.) computes
+loss of a network with respect to given instances,
+compute lambda(.) computes the average loss
+of current model for correctly classified instances,
+sample easy(.) creates list of easy instances using
+current loss values, top(.) returns epoch/k fraction
+of easiest hard instances, update stat(.) scores in-
+stances according to Eq. (1), and sort(.) ranks in-
+stances based on the resulting scores S updated by
+Eq. (2).
+
+uine instances are mixed at training time and the
+network is only provided with task-specific but not
+genuine/spurious labels for the instances.
+
+2.1 Curriculum Learning
+
+Bengio et al. (2009) and Kumar et al. (2010) de-
+veloped training paradigms which are inspired by
+the learning principle that humans can learn more
+effectively when training starts with easier con-
+cepts and gradually proceeds with more difficult
+ones. Since easiness of information is not read-
+ily available in most datasets, previous approaches
+used heuristic techniques (Spitkovsky et al., 2010;
+Basu and Christensen, 2013) or optimization algo-
+rithms (Jiang et al., 2015, 2014) to quantify easi-
+ness for instances. These approaches consider an
+instance as easy if its prediction loss is smaller
+than a threshold (λ). Given a neural network as
+the learner, we adopt curriculum learning to iden-
+tify spurious instances as follows (see Figure 2):
+
+At each iteration i, we divide all instances into
+easy and hard batches using the iteration-specific
+threshold λi and the loss values of instances at iter-
+ation i, obtained from the current partially-trained
+network. All instances with a loss smaller than
+λi are considered as easy and the rest are consid-
+
+2007
+
+
+
+ered as hard. All easy instances in conjunction
+with δi ∈ [0, 1] fraction of easiest hard instances
+(those with smallest loss values greater than λi)
+are used for training at iteration i. We set each λi
+to the average2 loss of training instances that are
+correctly classified by the current partially-trained
+network. Furthermore, at each iteration i > 1, we
+set δi = i/k where k is the total number of itera-
+tions. In this way, difficult instances are gradually
+introduced to the network at every new iteration.
+
+The update stat(.) function in Figure 2
+scores instances based on their frequency of oc-
+currence in the hard batch. In particular, for each
+instance hi:
+
+Se(hi) = S
+e−1(hi)+ (1)
+
+1hard batche(hi)×
+( 1
+|hard batche| + loss
+
+e(hi)
+)
+,
+
+where Se(hi) is the score of hi at iteration e,
+1Y (x) is an indicator function which is 1 when
+x ∈ Y and otherwise 0, hard batche indicates the
+set of hard instances at iteration e, and losse(hi)
+is the loss of the network for hi at iteration e. The
+above function assigns higher scores to instances
+that are frequently considered as hard instances
+by the curriculum learning framework (such in-
+stances are ranked higher in the final ranked list of
+spurious instances). It also assigns a final score of
+Sk(hi) = 0 to instances that are treated as easy in-
+stances throughout the training process, i.e. those
+that have a loss smaller than the iteration-specific
+threshold λi at each iteration i and, therefore, are
+always placed in the easy batch. To break the tie
+for these instances in the final ranking, we resort
+to their final loss values as follows:
+
+Sk(hi) = loss
+k(hi), if Sk(hi) = 0. (2)
+
+2.2 Leitner System
+
+The Leitner System is inspired by the broad evi-
+dence in psychology that shows human ability to
+retain information improves with repeated expo-
+sure and exponentially decays with delay since last
+exposure (Cepeda et al., 2006). Spaced repetition
+forms the building block of many educational de-
+vices, such as flashcards, in which small pieces of
+information are repeatedly presented to a learner
+on a schedule determined by a spaced repetition
+
+2We also considered maximum and median loss, but aver-
+age loss led to greater training gain in terms of effectiveness.
+
+Algorithm 2. Leitner Spotter
+Input: H : training data, V : validation data, k : num-
+ber of iterations, n : number of queues
+Output: Ranked list of spurious instances
+
+0 Q = [q0, q1, . . . , qn−1]
+1 q0 = [H], qi = [] for i ∈ [1, n− 1]
+2 S0[hj ] = 0 for hj ∈ H
+3 For epoch = 1 to k:
+4 batch = []
+5 For i = 0 to n− 1:
+6 If epoch%2i == 0:
+7 batch = batch+ qi
+8 End For
+9 promos, demos, loss = train(batch,V)
+10 update queue(Q, promos, demos)
+11 Sepoch = update stat(Sepoch−1, Q, loss)
+12 End for
+13 return sort(Sk,H, loss)
+q0 epochs = {1, 2, 3, 4, 5, . . . }
+q1 epochs = {2, 4, 6, 8, 10, . . . }
+q2 epochs = {4, 8, 12, 16, 20, . . . }
+. . .
+
+Figure 3: Leitner Spotter. The train(.) func-
+tion trains the network using instances in the cur-
+rent batch, update queue(.) promotes the correctly
+classified instances–promos–to their next queues and
+demotes the wrongly classified ones–demos–to q0,
+update stat(.) scores instances according to Eq. (3),
+and sort(.) ranks instances based on resulting scores
+S updated by Eq. (4).
+
+algorithm. Such algorithms show that human
+learners can learn efficiently and effectively by in-
+creasing intervals of time between subsequent re-
+views of previously learned materials (Dempster,
+1989; Novikoff et al., 2012). We adopt the Leitner
+system to identify spurious instances as follows:
+
+Suppose we have n queues {q0, q1, . . . , qn−1}.
+The Leitner system initially places all instances in
+the first queue, q0. As Figure 3 shows, the system
+trains with instances of qi at every 2i iterations.
+At each iteration, only instances in the selected
+queues will be used for training the network. Dur-
+ing training, if an instance from qi is correctly clas-
+sified by the network, the instance will be “pro-
+moted” to qi+1, otherwise it will be “demoted”
+to the first queue, q0. Therefore, as the network
+trains through time, higher queues will accumu-
+late easier instances which the network is most ac-
+curate about, while lower queues carry either hard
+or potentially spurious instances. This is because
+of the intrinsic discrepancy between spurious in-
+stances and the cohort of genuine instances which
+makes the network less confident in predicting the
+wrong labels of spurious instances. Figure 3 (bot-
+
+2008
+
+
+
+tom) provides examples of queues and their corre-
+sponding processing epochs.
+
+The update stat(.) function in Figure 3
+scores instances based on their occurrence in q0.
+In particular, for each instance hi:
+
+Se(hi) = S
+e−1(hi)+1qe0(hi)×
+
+( 1
+|qe0|
+
++losse(hi)
+)
+,
+
+(3)
+where |qe0| indicates the number of instance in q0
+at iteration e. The above function assigns higher
+scores to instances that frequently occur in q0. It
+also assigns a final score of Sk(hi) = 0 (at the
+last iteration) to instances that have never been de-
+moted to q0. To break the tie for such instances,
+we use their final loss value as follows:
+
+Sk(hi) = loss
+k(hi), if Sk(hi) = 0. (4)
+
+3 Experiments
+
+3.1 Evaluation Metrics
+
+We employ a TREC-like evaluation setting to
+compare models against each other. For this, we
+create a pool of K most spurious instances iden-
+tified by different models. If needed, e.g. in case
+of real-world datasets, we manually label all in-
+stances in the pool and come to agreement about
+their labels. Then, we compare the resulting labels
+with the original labels in the dataset to determine
+spurious/genuine instances. We compare mod-
+els based on the standard TREC evaluation mea-
+sures, namely mean average precision (MAP), pre-
+cision after r instances are retrieved (P@r), and,
+only for synthetic data, precision after all spuri-
+ous instances are retrieved (Rprec). We use the
+trec-eval toolkit to compute performance of
+different models.3
+
+3.2 Datasets
+
+We develop synthetic and real-world datasets for
+our experiments. Since, in contrast to real-world
+datasets, (most4) synthetic datasets do not con-
+tain any noisy instances, we can conduct large-
+scale evaluation by injecting spurious instances
+into such datasets. Table 1 shows detail informa-
+tion about our datasets.
+
+3http://trec.nist.gov/trec_eval/
+4Some synthetic datasets may contain noise, see sam-
+
+ple inconsistencies that our model identified in the bAbi
+dataset (Weston et al., 2016) in Table 3.
+
+Dataset Train/Val SpRatio Input Output
+Synthetic Dataset
+
+Addition 10K/2K α ∈ (0, 0.5] (x,y ≥ 0) x+ y
+Real-world Datasets
+
+Twitter 10K/1K 0.30 brand tweet pos/neg
+Reddit 4K/400 0.23 cancer post rel/irel
+
+Table 1: Dataset Information. “SpRatio” shows the
+fraction of spurious instances in the TREC pool; size of
+the pool for Addition is 10K instances with no limit on
+the top K retrieved instances; the corresponding value
+for Twitter and Reddit datasets are 198 and 152 posts
+respectively for top K = 50.
+
+3.2.1 Synthetic Dataset
+The Addition dataset, initially developed
+by Zaremba and Sutskever (2014), is a syn-
+thetic dataset in which an input instance is a pair
+of non-negative integers smaller than 10l and
+the corresponding output is the arithmetic sum
+of the input; we set l = 4 in our experiments.
+Since this dataset contains only genuine instances,
+we create noisy datasets by injecting α × N
+spurious instances into (1 − α) × N genuine
+instances, where N = 10K is the total number
+of training instances and α ≤ 0.5 indicates the
+noise level in the dataset. We create spurious
+instances as follows: given three random numbers
+xi, xj , xk ∈ [0, 10l) such that xj 6= xk, the wrong
+sum (output) for the pair (xi, xj) is computed as:
+
+max(0, xi + (−1)o × xk),
+
+where o is a random variable that takes values
+from O = {1, 2} with equal probability.
+3.2.2 Real-world Datasets
+We crowdsource annotations for two real-world
+datasets, namely Twitter and Reddit posts (see Ta-
+ble 1). For quality control, we carefully develop
+annotation schemas as well as high quality test
+questions (see below) to minimize the chances of
+spurious labels in the resulting annotations.
+
+The Twitter dataset contains tweets about a
+telecommunication brand. Tweets contain brand
+name or its products and services. Annotators
+are instructed to label tweets as positive/negative
+if they describe positive/negative sentiment about
+the target brand. We use 500 labeled instances for
+annotation quality assurance and ignore data gen-
+erated by annotators who have less than 80% ac-
+curacy on these instances. The resulting Fleiss’
+kappa (Fleiss, 1971) is κ = 0.66 on our Twitter
+dataset which indicates substantial agreement.
+
+2009
+
+
+
+The Reddit dataset includes posts about colon,
+breast, or brain cancer. These posts contain
+phrases like colon cancer, breast cancer, or brain
+cancer. Annotators are instructed to label a post
+as “relevant” if it describes a patient’s experience
+(including sign and symptoms, treatments, etc.,)
+with respect to the cancer. In contrast, “irrele-
+vant” posts are defined as generic texts (such as
+scientific papers, news, etc.,) that discuss cancer
+in general without describing a real patient expe-
+rience. We use 300 labeled instances for annota-
+tion quality assurance and ignore annotations gen-
+erated by users who have less than 80% accuracy
+on these instances. The resulting Fleiss’ kappa is
+κ = 0.48 for the Reddit dataset which indicates
+moderate agreement.
+
+3.3 Settings
+
+For the synthetic Addition dataset, we set the size
+of the TREC pool to K = 10, 000 (size of training
+data) which indicates there is no limitation on the
+number of spurious instances that a model can re-
+trieve; note that we have a spurious/genuine label
+for each instance in the Addition dataset and there-
+fore do not need to label the resulting TREC pool
+manually. Furthermore, we consider the LSTM
+network developed by Sutskever et al. (2014) as
+the downstream learner.5 Without noise in data,
+this network obtains a high accuracy of 99.7% on
+the Addition task.
+
+For the real-world datasets, we allow each
+model to submits its top 50 most spurious in-
+stances to the TREC pool (we have five models in-
+cluding our baselines). As mentioned before, we
+manually label these instances to determine their
+spurious/genuine labels. This leads to TREC pools
+of size 198 and 152 posts (with 59 and 35 spuri-
+ous instances) for the Twitter and Reddit datasets
+respectively.
+
+We use the MLP network fastText (Joulin
+et al., 2017) as the downstream learner - for more
+effective prediction, we add a Dense layer of size
+512 before the last layer of fastText. This net-
+work obtains accuracy of 74.6% and 70.2% on
+Twitter and Reddit datasets respectively.
+
+Finally, for the Leitner system, we experiment
+with different queue lengths, n = {3, 5, 7}, and
+set n = 5 in the experiments as this value leads to
+slightly better performance in our experiments.
+
+5http://github.com/fchollet/keras/
+blob/master/examples/addition_rnn.py
+
+3.4 Baselines
+We consider the following baselines; each baseline
+takes a dataset and a model as input and generates
+a ranked list of spurious instances in the dataset:
+• Prediction Probability (PP): Since predic-
+
+tion loss of spurious instances tend to be higher
+than that of genuine ones (He and Garcia, 2009;
+Hendrycks and Gimpel, 2016), this baseline ranks
+instances in descending order of their prediction
+loss after networks are trained through standard
+(rote) training.
+• Variational inference (VI) (Hovy et al.,
+
+2013; Rehbein and Ruppenhofer, 2017): This
+model approximates posterior entropy from sev-
+eral predictions made for each individual instance
+(see below).6
+
+• Bayesian Uncertainty (BU) (Feinman et al.,
+2017): This model ranks instances with respect to
+the uncertainty (variance) in their stochastic pre-
+dictions.7
+
+BU estimates an uncertainty score for each indi-
+vidual instance by generating T = 50 predictions
+for the instance from a distribution of network
+configurations. The prediction disagreement tends
+to be common among spurious instances (high un-
+certainty) but rare among genuine instances (low
+uncertainty). Uncertainty of instance x with pre-
+dictions {y1, . . . ,yT } is computed as follows:
+
+1
+
+T
+
+T∑
+
+i=1
+
+y>i yi −
+( 1
+T
+
+T∑
+
+i=1
+
+yi
+
+)>( 1
+T
+
+T∑
+
+i=1
+
+yi
+
+)
+.
+
+Variational inference (VI) (Rehbein and Rup-
+penhofer, 2017; Hovy et al., 2013) detects spu-
+rious instances by approximating the posterior
+p(y|x) with a simpler distribution q(y) (called
+variational approximation to the posterior) which
+models the prediction for each instance. The
+model jointly optimizes the two distributions
+through EM: in the E-step, q is updated to mini-
+mize the divergence between the two distributions,
+D(q||p); in the M-step, q is kept fixed while p is
+adjusted. The two steps are repeated until conver-
+gence. Instances are then ranked based on their
+posterior entropies. Similar to BU, we generate
+T = 50 predictions for each instance.
+
+For both BU and VI baselines, we apply a
+dropout rate of 0.5 after the first and last hidden
+
+6http://isi.edu/publications/
+licensed-sw/mace/
+
+7http://github.com/rfeinman/
+detecting-adversarial-samples
+
+2010
+
+
+
+layers of our downstream networks to generate
+predictions. See (Gal and Ghahramani, 2016) for
+the ability of dropout neural networks in represent-
+ing model uncertainty.
+
+3.5 Experimental Results
+
+The overall mean average precisions (MAPs)
+of different models on synthetic and real-world
+datasets are reported in Table 2. For the synthetic
+dataset (Addition), we report average MAP across
+all noise levels, and for real-world datasets (Twit-
+ter and Reddit), we report average MAP at their
+corresponding noise levels obtained from corre-
+sponding TREC pools. We use t-test for signifi-
+cance testing and asterisk mark (*) to indicate sig-
+nificant difference at ρ = 0.05 between top two
+competing systems.
+
+The results show that Leitner (Lit) and Bayesian
+uncertainty (BU) models considerably outperform
+prediction probability (PP) and curriculum learn-
+ing (CL) on both synthetic and real-world datasets.
+In case of real-world datasets, we didn’t find sig-
+nificant difference between top two models per-
+haps because of the small size of corresponding
+TREC pools (198 Twitter posts and 152 Reddit
+posts, see Table 1). Overall, BU and Lit show aver-
+age MAP of 0.81, and 0.85 on the synthetic dataset
+and 0.15, 0.22 on real-world datasets respectively.
+The higher performance of Lit indicates that spu-
+rious instances often appear in q0. The lower per-
+formance of CL, however, can be attributed to
+its training strategy which may label spurious in-
+stances as easy instances if their loss values are
+smaller than the loss threshold (section 2.1). The
+large difference between the performances of Lit
+and CL (two methods based on repeated scoring
+across training epochs) shows that the way that
+repetition is utilized by different methods largely
+affects their final performance in spotting spuri-
+ous instances. In addition, VI shows lower perfor-
+mance than BU and Lit on synthetic data, but com-
+parable performance to BU on real-world datasets.
+
+Furthermore, the results show that the perfor-
+mance of all models are considerably lower on
+real-world datasets than the synthetic dataset. This
+could be attributed to the more complex nature
+of our real-world datasets which leads to weaker
+generalizability of downstream learners on these
+datasets (see next section for discussion on train-
+ing performance). This can in turn inversely affect
+the performance of different spotters, e.g. by en-
+
+Synthetic Real-world
+noise = [0.1, 0.5] noise = {0.28, 0.35}
+
+PP 0.719 0.100
+CL 0.718 0.067
+VI 0.757 0.142
+BU 0.811 0.148
+Lit 0.851∗ 0.225
+
+Table 2: Average overall MAP performance across
+datasets and noise levels.
+
+couraging most instances to be considered as hard
+and thus placed in lower queues of Lit or in the
+hard batch of CL, or by increasing the prediction
+uncertainty and entropy in case of BU and VI re-
+spectively. In addition, as we mentioned before,
+we carefully setup the annotation task to minimize
+the chances of spurious labels in the resulting an-
+notations. Therefore, we expect a considerably
+smaller fraction of spurious instances in our real-
+world datasets.
+
+Figures 4(a) and 4(d) report MAP and precision
+after all spurious instances have been retrieved
+(Rprec) on Addition at different noise levels re-
+spectively; note that α = 0.5 means equal num-
+ber of spurious and genuine instances in training
+data (here, we do not report the performance of
+CL due to its lower performance and for better pre-
+sentation). First, the results show that Lit and BU
+considerably outperform PP and VI. Furthermore,
+BU shows considerably high performance at lower
+noise levels, α ≤ 0.2, while Lit considerably out-
+performs BU at greater noise levels, α > 0.2.
+The lower performance of BU at higher noise lev-
+els might be because of the poor generalizability
+of LSTM in the context of greater noise which
+may increase the variance in the prediction prob-
+abilities of most instances (see section 3.6 for our
+note on training performance). In terms of aver-
+age Rprec, the overall performance of PP, CL, VI,
+BU, and Lit models is 0.62, 0.57, 0.65, 0.70, and
+0.74 respectively on the Addition dataset across
+all noise levels (see the corresponding values for
+MAP in Table 2). The lower Rprec values than
+MAP indicate that some spurious instances are
+ranked very low by models. These are perhaps the
+most difficult spurious instances to identify.
+
+For the real-world datasets, we only report MAP
+and P@r (precision at rank r) as spurious/genuine
+labels are only available for those instances that
+make it to the TREC pool but not for all instances.
+The results on Reddit, Figures 4(b) and 4(e) re-
+spectively, show that Lit outperforms other mod-
+
+2011
+
+
+
+ADDITION REDDIT TWITTER
+
+0.1 0.2 0.3 0.4 0.5
+noise (α)
+
+0.70
+
+0.75
+
+0.80
+
+0.85
+
+0.90
+
+M
+A
+
+P
+PP VI BU Lit
+
+(a) MAP
+
+PP BU VI Lit
+method
+
+0.0
+
+0.1
+
+0.2
+
+0.3
+
+M
+A
+
+P
+
+(b) MAP
+
+PP BU VI Lit
+method
+
+0.0
+
+0.1
+
+0.2
+
+M
+A
+
+P
+
+(c) MAP
+
+0.1 0.2 0.3 0.4 0.5
+noise (α)
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+R
+p
+re
+
+c
+
+PP VI BU Lit
+
+(d) Rprec
+
+5 10 15 20 30 40 50
+rank
+
+0.0
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+P
+re
+
+ci
+si
+
+o
+n
+
+PP VI BU Lit
+
+(e) Precision@Rank
+
+5 10 15 20 30 40 50
+rank
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+0.9
+
+P
+re
+
+ci
+si
+
+o
+n
+
+PP VI BU Lit
+
+(f) Precision@Rank
+
+Figure 4: Models performance across datasets. MAP indicates mean average precision, Rprec indicates precision
+after all spurious instances are retrieved, and P@r indicates precision after r instances are retrieved. In (a) and (b)
+performance values are reported at different noise levels α ∈ (0, 0.5].
+
+els, but VI and BU show comparable MAP (in
+contrast to their performance on Addition). Fur-
+thermore, Figure 4(e) shows that Lit generates a
+more accurate ranked list of spurious instances and
+consistently outperforms other models at almost
+all ranks. In particular, it maintains a MAP of
+around 60% at rank 20, while other models have
+consistently lower MAP than 50% at all ranks.
+
+The results on the Twitter dataset, Fig-
+ures 4(c) and 4(f), show that Lit outperforms other
+models. However, interestingly, PP outperforms
+BU in terms of both MAP and P@r across almost
+all ranks. This result could be attributed to the sub-
+stantial annotation agreement on Twitter dataset
+(Fleiss’ κ = 0.66 ) which could make network
+predictions/loss values more representative of gold
+labels. Figure 4(f) also shows that Lit is the most
+precise model in identifying spurious instances.
+Note that P@5 is an important metric in search
+applications and as Figures 4(e) and 4(f) show, at
+rank 5, Lit is 2-3 times more precise than the best-
+performing baseline on our real-world datasets.
+
+Given any dataset and its corresponding neural
+network, our Leitner model simultaneously trains
+the network and generates a ranked list of spuri-
+ous instances in the dataset. For this purpose, the
+model tracks loss values and occurrences of in-
+stances in the lower Leitner queue during training.
+
+3.6 Notes on Training Performance
+
+Figure 5(a) shows the accuracy of the LSTM net-
+work (Sutskever et al., 2014) trained with differ-
+ent training regimes on the validation data of Ad-
+dition with different noise levels; note that Rote
+represents standard training where at each itera-
+tion all instances are used to train the network. As
+the results show, at lower noise levels, the training
+performance (i.e. the generalizability/accuracy of
+the LSTM network) is generally high and compa-
+rable across different training regimes, e.g. close
+to 100% at α = 0. However, Lit leads to a slightly
+weaker training performance than CL and Rote as
+the noise level increases. This is because Lit learns
+from spurious instances more frequently than gen-
+uine ones. This may decrease the training perfor-
+mance of Lit, especially with greater amount of
+noise in data. However, this training strategy in-
+creases the spotting performance of Lit as spurious
+instances seem to occur in lower queues of Leitner
+more frequently, see Figure 4.
+
+In addition, the accuracy of fastText (Joulin
+et al., 2017) is reported in Figure 5(b). The re-
+sults show that different training regimes lead to
+comparable performance on both datasets (accu-
+racy of around 75% and 70% on Twitter and Red-
+dit respectively). The relatively lower training per-
+
+2012
+
+
+
+0.0 0.1 0.2 0.3 0.4 0.5
+noise (α)
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+0.9
+
+1.0
+
+A
+cc
+
+u
+ra
+
+cy
+
+Rote CL Lit
+
+(a) Addition/LSTM
+
+twitter reddit
+Dataset
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+A
+cc
+
+u
+ra
+
+cy
+
+Rote CL Lit
+
+(b) Twitter and Reddit/fastText
+
+Figure 5: Accuracy of LSTM/fastText trained with different schedulers. Rote: standard training.
+
+0 15 30 45 60 75 90 105 120
+epoch
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+
+#
+In
+
+st
+a
+n
+ce
+
+s 
+(1
+
+0
+3
+)
+
+SL SH GL GH
+
+(a) Spurious/genuine instances with low/high loss
+
+15 30 45 60 75 90 105 120
+epoch
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+M
+A
+
+P
+ o
+
+f 
+P
+P
+
+(b) MAP of prediction loss (PP)
+
+Figure 6: Behavior of prediction loss across training epochs. (a) S: spurious, G: genuine; L: low, H: high.
+
+formance on these datasets can contribute to the
+weaker performance of spotters on these datasets.
+
+3.7 Discussion
+We first report insights on why prediction loss
+alone is not enough to identify spurious instances.
+For this analysis, we track the loss of spurious and
+genuine instances at each training iteration.8 Fig-
+ure 6(a) shows the number of spurious/genuine in-
+stances with low/high loss at each epoch; where,
+we use the average loss of correctly classified
+training instances at each epoch as a pivot value
+to determine the low and high loss values for that
+epoch. Initially, almost all spurious and genuine
+instances have high loss values (see SH and GH
+in Figure 6(a)). However, the sheer imbalance
+of genuine instances relative to spurious instances
+means that there will still be a relatively large
+number of genuine instances with large loss - these
+are simply difficult instances. Furthermore, the
+number of spurious instances with lower loss val-
+ues (SL) slowly increases as the network gradu-
+ally learns the wrong labels of some spurious in-
+stances; this, in turn, decreases the expected loss
+
+8Here we use Addition with N = 10K training instances
+and noise level of α = 0.2.
+
+of such instances. Since PP merely ranks instances
+based on loss values, the above two factors may
+cause some spurious instances to be ranked lower
+than genuine ones by PP; see Figure 6(b) for MAP
+of PP in detecting spurious instances at every it-
+eration. Using queue information from the Leit-
+ner system adds information that loss alone does
+not; we suspect that the learner can find principled
+solutions that trade off losses between one diffi-
+cult genuine instance and another (causing them
+to bounce between q0 and higher queues) with-
+out harming total loss, but that the more random
+nature of spurious instances means that they are
+consistently misclassified, staying in q0. Verifying
+this hypothesis will be the subject of future work.
+
+For our second analysis, we manually inspect
+highly ranked instances in q0 of Lit. We use the
+synthetic dataset bAbi (Weston et al., 2016) which
+is a systematically generated QA dataset for which
+the task is to generate an answer given a ques-
+tion and its corresponding story. As the learner,
+we use an effective LSTM network specifically
+developed for this task.9 Table 3 shows sample
+instances from bAbi which are highly ranked by
+
+9https://github.com/fchollet/keras/
+blob/master/examples/babi_rnn.py
+
+2013
+
+
+
+Story: Mary traveled to the garden. Daniel went to
+the garden. Mary journeyed to the kitchen. Mary went
+back to the hallway. Daniel traveled to the office.
+Daniel moved to the garden. Sandra went back to the
+kitchen. John traveled to the bathroom.
+Question: Where is Mary?
+Answer: hallway
+Story: John went to the office. Daniel journeyed to
+the office. Sandra picked up the football there. San-
+dra went to the bedroom. Sandra left the football there.
+Sandra went back to the kitchen. Sandra traveled to
+the hallway. Sandra moved to the garden.
+Question: Where is the football?
+Answer: bedroom
+
+Table 3: Sample inconsistencies in bAbi dataset.
+
+Lit. We observe inconsistencies in the given sto-
+ries. In the first case, the story contains the sen-
+tence “Mary went back to the hallway,” while the
+previous sentences indicate that Mary was in the
+“garden/kitchen” but not “hallway” before. In the
+second case, the sentence “Sandra picked up the
+football there” is inconsistent with story because
+the word “there” doesn’t refer to any specific loca-
+tion. We conjecture that these inconsistencies can
+mislead the learner or at least make the learning
+task more complex. Our model can be used to ex-
+plore language resources for such inconsistencies.
+
+4 Related Work
+
+There is broad evidence in psychology that shows
+human ability to retain information improves with
+repeated exposure and exponentially decays with
+delay since last exposure. Ebbinghaus (1913,
+2013), and recently Murre and Dros (2015), stud-
+ied the hypothesis of the exponential nature of
+forgetting in humans. Three major indicators
+were identified that affect memory retention in hu-
+mans: delay since last review of learning materi-
+als and strength of human memory (Ebbinghaus,
+1913; Dempster, 1989; Wixted, 1990; Cepeda
+et al., 2006; Novikoff et al., 2012), and, more
+recently, difficulty of learning materials (Reddy
+et al., 2016).
+
+The above findings show that human learners
+can learn efficiently and effectively by increasing
+intervals of time between subsequent reviews of
+previously learned materials (spaced repetition).
+In (Amiri et al., 2017), we built on these find-
+ings to develop efficient and effective training
+paradigms for neural networks. Previous research
+also investigated the development of cognitively-
+motivated training paradigms named curriculum
+learning for artificial neural networks (Bengio
+
+et al., 2009; Kumar et al., 2010). The difference
+between the above models is in their views to
+learning: curriculum learning is inspired by the
+learning principle that training starts with easier
+concepts and gradually proceeds with more diffi-
+cult ones (Bengio et al., 2009). On the other hand,
+spaced repetition models are inspired by the learn-
+ing principle that effective and efficient learning
+can be achieved by working more on difficult con-
+cepts and less on easier ones.
+
+In this research, we extend our spaced repeti-
+tion training paradigms to simultaneously train ar-
+tificial neural networks and identify training in-
+stances with potentially wrong labels (spurious in-
+stances) in datasets. Our work is important be-
+cause spurious instances may inversely affect in-
+terpretations of the data, models developed from
+the data, and decisions made based on the data.
+Furthermore, spurious instances lead to unrealis-
+tic comparison among competing systems if they
+exist in test data.
+
+5 Conclusion and Future Work
+
+We present a novel approach based on queueing
+theory and psychology of learning to identify spu-
+rious instances in datasets. Our approach can be
+considered as a scheduler that iteratively trains a
+downstream learner (e.g. a neural network) and
+detects spurious instances with respect to their dif-
+ficulty to learn during the training process. Our ap-
+proach is robust and can be applied to any dataset
+without modification given a neural network de-
+signed for the target task of the dataset.
+
+Our work can be extended by: (a) utilizing sev-
+eral predictions for each training instance, (b) in-
+vestigating the extent to which a more sophisti-
+cated and effective downstream learner can affect
+the performance of different spotters, (c) devel-
+oping models to better distinguish hard genuine
+instances from spurious ones, and (d) developing
+ranking algorithms to improve the performance of
+models on real-world datasets.
+
+Acknowledgments
+
+We thank anonymous reviewers for their thought-
+ful comments. This work was supported
+by National Institutes of Health (NIH) grant
+R01GM114355 from the National Institute of
+General Medical Sciences (NIGMS). The content
+is solely the responsibility of the authors and does
+not represent the official views of the NIH.
+
+2014
+
+
+
+References
+Hadi Amiri, Timothy Miller, and Guergana Savova.
+
+2017. Repeat before forgetting: Spaced repeti-
+tion for efficient and effective training of neural
+networks. In Proceedings of the 2017 Conference
+on Empirical Methods in Natural Language Pro-
+cessing. Association for Computational Linguistics,
+Copenhagen, Denmark, pages 2401–2410.
+
+Sumit Basu and Janara Christensen. 2013. Teaching
+classification boundaries to humans. In Proceedings
+of the Twenty-Seventh AAAI Conference on Artificial
+Intelligence. AAAI Press, pages 109–115.
+
+Yoshua Bengio, Jérôme Louradour, Ronan Collobert,
+and Jason Weston. 2009. Curriculum learning. In
+Proceedings of the 26th annual international con-
+ference on machine learning. pages 41–48.
+
+Nicholas J Cepeda, Harold Pashler, Edward Vul,
+John T Wixted, and Doug Rohrer. 2006. Distributed
+practice in verbal recall tasks: A review and quanti-
+tative synthesis. Psychological bulletin 132(3):354–
+380.
+
+Frank N Dempster. 1989. Spacing effects and their im-
+plications for theory and practice. Educational Psy-
+chology Review 1(4):309–330.
+
+Markus Dickinson and W Detmar Meurers. 2003. De-
+tecting errors in part-of-speech annotation. In Pro-
+ceedings of the tenth conference on European chap-
+ter of the Association for Computational Linguistics-
+Volume 1. pages 107–114.
+
+Hermann Ebbinghaus. 1913. Memory: A contribution
+to experimental psychology. 3. University Micro-
+films.
+
+Hermann Ebbinghaus. 2013. Memory: A contribu-
+tion to experimental psychology. Annals of neuro-
+sciences 20(4):155.
+
+Eleazar Eskin. 2000. Detecting errors within a corpus
+using anomaly detection. In Proceedings of North
+American chapter of the Association for Computa-
+tional Linguistics conference. pages 148–153.
+
+Reuben Feinman, Ryan R Curtin, Saurabh Shintre,
+and Andrew B Gardner. 2017. Detecting ad-
+versarial samples from artifacts. arXiv preprint
+arXiv:1703.00410 .
+
+Joseph L Fleiss. 1971. Measuring nominal scale agree-
+ment among many raters. Psychological bulletin
+76(5):378.
+
+Yarin Gal and Zoubin Ghahramani. 2016. Dropout as a
+bayesian approximation: Representing model uncer-
+tainty in deep learning. In international conference
+on machine learning. pages 1050–1059.
+
+Ian J Goodfellow, Jonathon Shlens, and Christian
+Szegedy. 2015. Explaining and harnessing adversar-
+ial examples. International Conference on Learning
+Representations .
+
+Melody Y. Guan, Varun Gulshan, Andrew M. Dai,
+and Geoffrey E. Hinton. 2017. Who said what:
+Modeling individual labelers improves classifica-
+tion. CoRR abs/1703.08774.
+
+Aakar Gupta, William Thies, Edward Cutrell, and
+Ravin Balakrishnan. 2012. mclerk: enabling mobile
+crowdsourcing in developing regions. In Proceed-
+ings of the SIGCHI Conference on Human Factors
+in Computing Systems. ACM, pages 1843–1852.
+
+Haibo He and Edwardo A Garcia. 2009. Learning from
+imbalanced data. IEEE Transactions on knowledge
+and data engineering 21(9):1263–1284.
+
+Jan Hendrik Metzen, Tim Genewein, Volker Fischer,
+and Bastian Bischoff. 2017. On detecting adver-
+sarial perturbations. International Conference on
+Learning Representations .
+
+Dan Hendrycks and Kevin Gimpel. 2016. A baseline
+for detecting misclassified and out-of-distribution
+examples in neural networks. International Confer-
+ence on Learning Representations .
+
+Dirk Hovy, Taylor Berg-Kirkpatrick, Ashish Vaswani,
+and Eduard Hovy. 2013. Learning whom to trust
+with mace. In Proceedings of the 2013 Conference
+of the North American Chapter of the Association
+for Computational Linguistics: Human Language
+Technologies. Association for Computational Lin-
+guistics, Atlanta, Georgia, pages 1120–1130.
+
+Lu Jiang, Deyu Meng, Shoou-I Yu, Zhenzhong Lan,
+Shiguang Shan, and Alexander Hauptmann. 2014.
+Self-paced learning with diversity. In Advances in
+Neural Information Processing Systems 27, pages
+2078–2086.
+
+Lu Jiang, Deyu Meng, Qian Zhao, Shiguang Shan, and
+Alexander G. Hauptmann. 2015. Self-paced cur-
+riculum learning. In Proceedings of the Twenty-
+Ninth AAAI Conference on Artificial Intelligence.
+AAAI’15, pages 2694–2700.
+
+Armand Joulin, Edouard Grave, and Piotr Bo-
+janowski Tomas Mikolov. 2017. Bag of tricks for
+efficient text classification. Proceedings of the 15th
+Eropean Chapter of the Association for Computa-
+tional Linguistics page 427.
+
+Alex Krizhevsky. 2009. Learning multiple layers of
+features from tiny images. Technical Report, Uni-
+versity of Toronto .
+
+M Pawan Kumar, Benjamin Packer, and Daphne Koller.
+2010. Self-paced learning for latent variable mod-
+els. In Advances in Neural Information Processing
+Systems. pages 1189–1197.
+
+Walter S Lasecki, Christopher D Miller, and Jeffrey P
+Bigham. 2013. Warping time for more effective
+real-time crowdsourcing. In Proceedings of the
+SIGCHI Conference on Human Factors in Comput-
+ing Systems. ACM, pages 2033–2036.
+
+2015
+
+
+
+Sebastian Leitner. 1974. So lernt man lernen: der Weg
+zum Erfolg (How to learn to learn). Herder.
+
+Hrafn Loftsson. 2009. Correcting a pos-tagged corpus
+using three complementary methods. In Proceed-
+ings of the 12th Conference of the European Chap-
+ter of the Association for Computational Linguistics.
+pages 523–531.
+
+Jaap MJ Murre and Joeri Dros. 2015. Replication and
+analysis of ebbinghaus’ forgetting curve. PloS one
+10(7):e0120644.
+
+Nagarajan Natarajan, Inderjit S Dhillon, Pradeep K
+Ravikumar, and Ambuj Tewari. 2013. Learning with
+noisy labels. In Advances in neural information pro-
+cessing systems. pages 1196–1204.
+
+Timothy P Novikoff, Jon M Kleinberg, and Steven H
+Strogatz. 2012. Education of a model student.
+Proceedings of the National Academy of Sciences
+109(6):1868–1873.
+
+Siddharth Reddy, Igor Labutov, Siddhartha Banerjee,
+and Thorsten Joachims. 2016. Unbounded human
+learning: Optimal scheduling for spaced repetition.
+In Proceedings of SIGKDD. pages 1815–1824.
+
+Ines Rehbein and Josef Ruppenhofer. 2017. Detecting
+annotation noise in automatically labelled data. In
+Proceedings of the 55th Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers). Association for Computational Lin-
+guistics, pages 1160–1170.
+
+Valentin I Spitkovsky, Hiyan Alshawi, and Daniel Ju-
+rafsky. 2010. From baby steps to leapfrog: How
+less is more in unsupervised dependency parsing.
+In North American Chapter of the Association for
+Computational Linguistics. pages 751–759.
+
+Ilya Sutskever, Oriol Vinyals, and Quoc V Le. 2014.
+Sequence to sequence learning with neural net-
+works. In Proceedings of Advances in neural infor-
+mation processing systems. pages 3104–3112.
+
+Jason Weston, Antoine Bordes, Sumit Chopra, Alexan-
+der M Rush, Bart van Merriënboer, Armand Joulin,
+and Tomas Mikolov. 2016. Towards ai-complete
+question answering: A set of prerequisite toy tasks.
+International Conference on Learning Representa-
+tions .
+
+John T Wixted. 1990. Analyzing the empirical course
+of forgetting. Journal of Experimental Psychology:
+Learning, Memory, and Cognition 16(5):927.
+
+Tong Xiao, Tian Xia, Yi Yang, Chang Huang, and Xi-
+aogang Wang. 2015. Learning from massive noisy
+labeled data for image classification. In Proceed-
+ings of the IEEE Conference on Computer Vision
+and Pattern Recognition. pages 2691–2699.
+
+Wojciech Zaremba and Ilya Sutskever. 2014. Learning
+to execute. arXiv preprint arXiv:1410.4615 .
+
+Stephan Zheng, Yang Song, Thomas Leung, and Ian
+Goodfellow. 2016. Improving the robustness of
+deep neural networks via stability training. In Pro-
+ceedings of the IEEE Conference on Computer Vi-
+sion and Pattern Recognition. pages 4480–4488.
+
+Xingquan Zhu and Xindong Wu. 2004. Class noise
+vs. attribute noise: A quantitative study. Artificial
+Intelligence Review 22(3):177–210.
+
+Xingquan Zhu, Xindong Wu, and Qijun Chen. 2003.
+Eliminating class noise in large datasets. In Pro-
+ceedings of the Twentieth International Conference
+on International Conference on Machine Learning.
+AAAI Press, ICML’03, pages 920–927.
+
+2016
+
+

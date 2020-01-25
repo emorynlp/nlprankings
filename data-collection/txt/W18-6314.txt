@@ -1,0 +1,1379 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Denoising Neural Machine Translation Training with Trusted Data and Online Data Selection
+
+
+Proceedings of the Third Conference on Machine Translation (WMT), Volume 1: Research Papers, pages 133–143
+Belgium, Brussels, October 31 - Novermber 1, 2018. c©2018 Association for Computational Linguistics
+
+https://doi.org/10.18653/v1/W18-64014
+
+Denoising Neural Machine Translation Training with
+Trusted Data and Online Data Selection
+
+Wei Wang
+Google Research
+
+wangwe@google.com
+
+Taro Watanabe
+Google Research
+
+tarow@google.com
+
+Macduff Hughes
+Google Research
+
+macduff@google.com
+
+Tetsuji Nakagawa
+Google Research
+
+tnaka@google.com
+
+Ciprian Chelba
+Google Research
+
+ciprianchelba@google.com
+
+Abstract
+
+Measuring domain relevance of data and iden-
+tifying or selecting well-fit domain data for
+machine translation (MT) is a well-studied
+topic, but denoising is not yet. Denoising is
+concerned with a different type of data qual-
+ity and tries to reduce the negative impact of
+data noise on MT training, in particular, neu-
+ral MT (NMT) training. This paper general-
+izes methods for measuring and selecting data
+for domain MT and applies them to denoising
+NMT training. The proposed approach uses
+trusted data and a denoising curriculum real-
+ized by online data selection. Intrinsic and
+extrinsic evaluations of the approach show its
+significant effectiveness for NMT to train on
+data with severe noise.
+
+1 Introduction
+
+Data noise is an understudied topic in the machine
+translation (MT) field. Recent research has found
+that data noise has a bigger impact on neural ma-
+chine translation (NMT) than on statistical ma-
+chine translation (Khayrallah and Koehn, 2018),
+but learning what data quality (or noise) means in
+NMT and how to make NMT training robust to
+data noise remains an open research question.
+
+On the other hand, a rich body of MT data re-
+search focuses on domain data relevance and se-
+lection for domain adaptation purpose. As a re-
+sult, effective and successful methods have been
+published and shown to work for both SMT and
+NMT. For example, (Axelrod et al., 2011) intro-
+duce a metric for measuring the data relevance
+to a domain by using n-gram language models
+(LM). (van der Wees et al., 2017) employ a neural-
+network version of it and propose a gradually-
+refining strategy to dynamically schedule data dur-
+ing NMT training. In these methods, a large
+amount of in-domain data are used to help mea-
+sure data domain relevance.
+
+Data noise is a different quality that has been
+shown to affect NMT performance in particular.
+In MT, the use of web crawl, automatic methods
+for parallel data mining, sentence alignment pro-
+vide us with parallel data of variable quality from
+many points of view: sentence breaking, poor sen-
+tence alignments, translations, domain adequacy,
+tokenization and so forth. To deal with such
+data noise, a commonly used practice is (static)
+data filtering with simple heuristics or classifica-
+tion. The NMT community increasingly realizes
+that this type of quality matters for general NMT
+translation accuracy. For example, (Khayrallah
+and Koehn, 2018) studies the types of data noise
+and their impact on NMT; WMT 2018 introduces
+a Parallel Corpus Filtering task on noisy web-
+crawled data.
+
+Unfortunately, the ingredients that made do-
+main data selection methods successful have not
+been studied in the NMT denoising context.
+Specifically,
+
+• How to measure noise?
+
+• How does noise dynamically interact with the
+training progress?
+
+• How to denoise the model training with a
+small, trusted parallel dataset?
+
+In the denoising scenario, the trusted data would
+be the counterpart of in-domain monolingual data
+of domain data selection. Trusted data can be hu-
+man translations, a small amount of which can be
+easily available as a development set or validation
+set from a normal MT setup.
+
+We use the example in Table 1 to illustrate the
+challenges in the NMT denoising problem, as well
+as the issue of directly applying existing domain
+methods as is for this purpose. Both sentences in
+the example appear to be relevant to travel con-
+versations, but the sentence pair is “noisy” in that,
+
+133
+
+https://doi.org/10.18653/v1/W18-64014
+
+
+zh gongche zhan zai nali?
+zh-gloss bus stop is where?
+en Where is the bus stop? For bus 81.
+
+Table 1: A noisy sentence pair.
+
+a part of the English sentence does not align to
+anything on the Chinese side, yet the pair con-
+tains some translation and the sentences are flu-
+ent. An LM-based domain-data selection method
+would generally treat it as a suitable domain ex-
+ample for building a travel NMT model and may
+not consider this noise.
+
+A simple data filtering method based on length
+or a bilingual dictionary can easily filter it, but, in-
+tuitively, the example may still be useful for train-
+ing the NMT model, especially in a data-scarce
+scenario – the Chinese sentence and the first half
+of the English sentence are still a translation pair.
+This suggests the subtlety in identifying noisy data
+for MT – It is not a simple binary problem: Some
+training samples may be partially useful to train-
+ing a model, and their usefulness may also change
+as training progresses.
+
+An NMT model alone may be incapable of
+identifying noise. Under a conditional seq2seq
+NMT model that translates Chinese into English,
+a word, e.g., 81, in the extra English fragment may
+receive a low probability (or a high loss), but that
+could as well mean that is hard but still correct
+translation. Here is then where the trusted data can
+play a role – It can help produce a (slightly) bet-
+ter model for the first model to compare against to
+be able to distinguish informative hard examples
+from harmful noisy ones.
+
+In this paper, we propose an approach to denois-
+ing online NMT training. It uses a small amount
+of trusted data to help models measure noise in a
+sentence pair. The noise is defined based on com-
+parison between a pair of a noisy NMT model and
+another, slightly denoised NMT model, inspired
+by the contrastive in-domain LM vs out-of-domain
+LM idea. It employs online data selection to sort
+sentence pairs by noise level so that the model is
+trained on gradually noise-reduced data batches.
+We show that language model based domain data
+selection method as is does not work well whereas
+the proposed approach is quite effective in denois-
+ing NMT training.
+
+2 Related Research
+
+One line of research that is related to our work
+is data selection for machine translation. It has
+been mostly studied in the domain adaptation con-
+text. Under this context, a popular metric to mea-
+sure domain relevance of data is based on cross
+entropy difference (CED) between an in-domain
+and an out-of-domain language models. For ex-
+ample, (Moore and Lewis, 2010) selects LM train-
+ing data with CED according to an in-domain LM
+and a generic LM. (Axelrod et al., 2011) propose
+the contrastive data selection idea to select par-
+allel domain data. It ranks data by the bilingual
+CED that is computed, for each language, with a
+generic n-gram LM and a domain one. Even more
+recently, (van der Wees et al., 2017) employ a
+neural-network version of it along with a dynamic
+data selection idea and achieve better domain data
+selection outcome. (Mansour et al., 2011) com-
+pute the CED using IBM translation Model 1 and
+achieve the best domain data selection/filtering ef-
+fect for SMT combined with LM selection; The
+case of partial or misalignments with a bilingual
+scoring mechanism rather than LMs is also dis-
+cussed.
+
+Another effective method to distinguish domain
+relevance is to build a classifier. A small amount
+of trusted parallel data is used in classifier training.
+For example, (Chen and Huang, 2016) use semi-
+supervised convolutional neural networks (CNNs)
+as LMs to select domain data. Trusted data is used
+to adapt the classifier/selector. (Chen et al., 2016)
+introduce a bilingual data selection method that
+uses CNNs on bitokens; The method uses parallel
+trusted data and is targeted at selecting data to im-
+prove SMT; In addition to domain relevance, the
+work also examines its noise-screening capability;
+The method is tried on NMT and does not seem to
+improve.
+
+Previous work on domain data selection has
+shown that the order in which data are scheduled
+matters a lot for NMT training, a research that
+is relevant to curriculum learning (Bengio et al.,
+2009) in machine learning literature. (van der
+Wees et al., 2017) show the effectiveness of a nice
+“gradually-refining” dynamic data schedule. (Saj-
+jad et al., 2017) find the usefulness of a simi-
+lar idea, called model stacking for NMT domain
+adaptation. Data ordering could be viewed as a
+way of data weighting, which can be also done
+by example weighting/mixing, e.g., (Wang et al.,
+
+134
+
+
+
+2017; Britz et al., 2017; Matsoukas et al., 2009).
+In the context of denoising, the quality that the or-
+dering uses would be the amount of noise in a sen-
+tence pair, not (only) how much the data fits the
+domain of interest.
+
+SMT models tend to be fairly robust to data
+noise and denoising in SMT seems to have been
+a lightly studied topic. For example, (Mediani,
+2017) uses a small, clean seed corpus and designs
+classifier filter to identify noisy data with lexical
+features; and also there is a nice list of works ac-
+cumulated over years, compiled on the SMT Re-
+search Survey Wiki1.
+
+The importance of NMT denoising has been
+increasingly realized. (Khayrallah and Koehn,
+2018) study the impact of five types of artificial
+noise in parallel data on NMT training and find
+that NMT is less robust to data noise. (Vyas et al.,
+2018) select well-translated examples by identify-
+ing semantic divergences in parallel data. (Lample
+et al., 2017) bootstrap backtranslations with a de-
+noising loss term, in an unsupervised NMT con-
+text. Label noise is also a generally studied topic,
+e.g., (Natarajan et al., 2013).
+
+In a sense, our approach is an application of ac-
+tive learning (Settles, 2010). Active learning is
+usually employed for the model to interactively
+choose novel examples to obtain labels for fur-
+ther training a given model. In our case we use
+the idea to select the already labeled data that the
+model finds useful at a given point during training.
+The usefulness signal is guided by a small trusted
+dataset.
+
+3 Online NMT Training
+
+We usually train NMT models with online opti-
+mization, e.g., stochastic gradient descent. At a
+time step t, we have an NMT model p(y|x; θt)
+translating from sentence x to y with parame-
+terization θt. The model choice could be, for
+example, RNN-based (Wu et al., 2016), CNN-
+based (Gehring et al., 2017), Transformer model
+(Vaswani et al., 2017) or RNMT+ (Chen et al.,
+2018). To move p(y|x; θt) to next step, t + 1, a
+random data batch bt is normally used to compute
+the cross entropy loss. The prediction accuracy of
+p(y|x; θt) does not depend on the data of this batch
+alone, but on all data the model has seen so far.
+
+1http://www.statmt.org/survey/Topic/
+CorpusCleaning
+
+4 The Denoising Problem
+
+The problem we address in the paper is as follows.
+We have a large, noisy, mixed-domain dataset D̃
+whose size is on the order of hundreds of millions
+of sentence pairs or larger. An NMT model trained
+on this noisy data may suffer from low transla-
+tion accuracy or severe translation errors. We also
+have a small trusted dataset D̂ consisting of sev-
+eral thousand sentence pairs or even less. We ad-
+dress the denoising scenario where the trust frac-
+tion |D̂|/|D̃| � 1 (|D̂| being the size of D̂).
+
+Trusted data can be human translations or any
+other source of parallel data of higher quality
+than the translations produced by our model. The
+trusted data we use in experiments contains noise,
+too. We think that, for the trusted data to improve,
+it needs to be stronger than the translation quality
+from the model we are improving, and as we will
+show, we define the noise level of a sentence pair
+relative to a model.
+
+We are concerned with a method for select-
+ing noise-reduced data batches to train the NMT
+model using online training. The trusted data is
+used to help measure data noise in a sentence pair.
+Training data is digested by training in terms of
+(cross entropy) loss, thus selecting noise-reduced
+sentence pairs to train on would be equivalent to
+denoising the training loss term (thus the training
+process).
+
+5 Our Approach
+
+We first define how to measure noise with the help
+of the small trusted dataset. Then we use it to con-
+trol the schedule of the data batches to train the
+NMT model.
+
+5.1 Incremental denoising with trusted data
+Given a model p(y|x; θ̃) trained on noisy data D̃,
+a practical way to denoise it with a small amount
+of trusted data D̂ would be to simply fine-tune the
+model on the trusted data, considering that a small
+trusted dataset alone is not enough to reliably train
+an NMT model from scratch. Fine-tuning has
+been used in NMT domain adaptation to adapt
+an existing NMT model on a small amount of in-
+domain data, for example, in (van der Wees et al.,
+2017). We hypothesize that it would be effective
+for denoising, too, which will be verified by our
+experiments.
+
+To facilitate the introduction of our denoising
+method, we introduce a denoise function that de-
+
+135
+
+
+
+noises a model, p(y|x; θ̃), on the trusted data D̂ by
+fune-tuning:
+
+p(y|x; θ̂) = denoise
+(
+p(y|x; θ̃), D̂
+
+)
+(1)
+
+Eq 1 represents that model p(y|x; θ̃) with initial
+parameterization θ̃ is fine-tuned on the trusted data
+D̂ to yield a denoised model, p(y|x; θ̂). With a
+small trusted dataset, the fine-tuning may take a
+small number of training steps.
+
+5.2 Definition of data noise
+MT training samples can be noisy in many ways,
+and different types of noise might have different
+impact on NMT. Furthermore, human’s definition
+of data noise may not be completely consistent
+with NMT model’s perspective. Therefore, in-
+stead of defining noise in these aspects, we sim-
+ply use model probabilities and rely on the quality
+of the trusted data. After all, data needs to be in-
+gested by model training via (cross-entropy) loss.
+
+Supposed we are given a noisy model, p(y|x, θ̃),
+that has been trained on noisy data and a denoised
+model, p(y|x, θ̂), obtained by Eq 1, with the de-
+noised model being a slightly more accurate prob-
+ability distribution than the noisy version. For a
+sentence pair (x, y) of a source sentence x and its
+target translation y, we can compute its “noisy log-
+prob” under the noisy model:
+
+L
+p(y|x,θ̃) = log p(y|x, θ̃) (2)
+
+We can also compute its “denoised logprob” under
+the denoised model:
+
+L
+p(y|x,θ̂) = log p(y|x, θ̂) (3)
+
+We then define the noise level of a sentence pair
+(x, y) as the difference of a noisy model score over
+a denoised model score:
+
+noise(x, y; θ̃, θ̂) = L
+p(y|x;θ̃t) − Lp(y|x;θ̂t) (4)
+
+The noise level of a sentence pair is the sum of
+the per-word noise over all the target words (under
+conditional translation models). Noise(x, y; θ̃, θ̂)
+could also be normalized by the length of sen-
+tence y empirically. The bigger noise(x, y; θ̃, θ̂)
+is, the higher noise level the sentence pair has. A
+negative value of noise(x, y; θ̃, θ̂) means that the
+sentence pair has more information to learn from
+(cleaner).
+
+The noise in a sentence pair is defined in terms
+of the comparison between two models: the noisy
+model, θ̃, and the denoised model, θ̂. Under
+this definition, noise is relative – A sentence pair
+could have negative noise(x, y; θ̃, θ̂) (not noise)
+for weeker models (i.e., an earlier checkpoint of
+θ̃ in an NMT training), but could become noisy
+(positive value) for stronger models (i.e., a later
+checkpoint of θ̃). This would address one of the
+issues we illustrated in Section 1 with the example
+in Table 1.
+
+Notice that this definition of noise is a gener-
+alization of the bilingual cross-entropy difference
+(CED) defined and used in (Axelrod et al., 2011;
+van der Wees et al., 2017) to measure domain rel-
+evance of a sentence pair. We use seq2seq NMT
+models to directly model a sentence pair, while
+previous works use language models to model
+monolingual sentences independently. A language
+model corresponds just to the decoder compo-
+nent of a translation model and thus cannot model
+the translation quality. The lack of the encoder
+component (thus translation) makes the LM-based
+method unsuitable for denoising, as we show in
+experiments. Additionally, we use a small, bilin-
+gual trusted dataset (semi-supervision) rather than
+lots of in-domain data (heavier supervision).
+
+5.3 Denoising by online data selection
+
+5.3.1 The idea
+
+Our main idea for online denoising of NMT train-
+ing is to train an NMT model on a progressively-
+denoised curriculum (data batches). As a re-
+sult, the entire training becomes a continuous
+fine-tuning. We realize the denoising curriculum
+through dynamic data selection to “anneal” the
+noise level in data batches over training steps.
+Therefore, our method tries to control the way
+how noise dynamically interacts with training loss
+by data selection, instead of directly altering per-
+example loss. The assumption is that D̃ contains
+good examples to select, which is usally true with
+a big enough training dataset D̃.
+
+More concretely, at each step with an initial (po-
+tentially still noisy) model, p(y|x; θ̃t), the method
+denoises it (by Eq 1) with the trusted data D̂ into a
+slightly better model p(y|x; θ̂t) for that step. With
+this pair of noisy and denoised models, we then
+compute noise scores for examples in a buffer
+B̃randomt that is randomly drawn from D̃ per step
+and maintained during training. We sort the noise
+
+136
+
+
+
+Algorithm 1: Denoising NMT training
+with trusted data and online data selection.
+
+1: Input: Noisy data D̃, trusted data D̂
+2: Output: A denoised, better model
+3: t = 0; Randomly initialize θ̃0.
+4: while t < T do
+5: p(y|x; θ̂t)← denoise(p(y|x; θ̃t), D̂).
+6: Randomly draw B̃randomt from D̃.
+7: Compute noise for examples in B̃randomt by
+
+Eq 4.
+8: Sort B̃randomt by noise scores.
+9: Sample bt from top rt of above sorted
+
+buffer.
+10: Train p(y|x; θ̃t) on bt to produce new
+
+model p(y|x; θ̃t+1).
+11: Discard the denoised model p(y|x; θ̂t).
+12: t← t+ 1.
+13: end while
+
+scores. The final, actual data batch bt is then ran-
+domly sampled from the top rt portion of Brandomt
+based on the sorted scores, where rt, called se-
+lection ratio, is increasingly tightened. Averaged
+noise level of examples in the top rt portion ex-
+pects to become less over time. As a result, the
+data batches bt’s that are actually fed to train the
+final model are gradually denoised. Algorithm 1
+summarizes the idea. It is worth pointing out that
+this denoising method is realized by a bootstrap-
+ping process, in which, θ̃t and θ̂t iteratively boot-
+strap each other by interacting with the trusted
+data and selected denoised data.
+
+We choose to use the following exponential de-
+caying function for selection ratio, rt, to anneal
+data noise by data selection2:
+
+rt = 0.5
+t/H (5)
+
+It keeps decreasing/tightening over time t. The en-
+tire training thus becomes a continuous fine-tuning
+process, in a self-paced learning (Kumar et al.,
+2010) fashion.
+
+In Equation 5, H is a hyper-parameter control-
+ling the decaying pace: It halves rt every H steps.
+For instance, H = 106 means that, at step 1 mil-
+lion, data batch bt will be drawn from the top-50%
+out of sorted buffer.
+
+2We simply use one of the ways to anneal learning rate as the
+decaying function to anneal training data selection.
+
+In practice, it may be desirable to set a floor
+value for rt (e.g., 0.2) to avoid potential selection
+bias. Brandomt needs also to be big enough such
+that there are enough examples in the top rt range
+to select from to form the final training batch bt,
+which is usally a constant size – It needs to con-
+tain at least |bt|/rfloor examples.
+
+The noise annealing is inspired by (van der
+Wees et al., 2017), but we anneal data quality
+at per step to make the approach more friendly
+to NMT online optimization, instead of per data
+epoch. Compared to static selection, the noise
+annealing idea also makes every training exam-
+ple useful, by digesting noisy examples earlier and
+fine-tuning on good-quality examples later on.
+
+Note that there are two reasons that this process
+does not overfit on the trusted data, even though
+it is kept being used to denoise the initial model
+at every step. First, the noisy model, p(y|x; θ̃)
+being trained over steps is never trained on the
+trusted data – It is the denoised model, p(y|x; θ̂),
+that is trained on it and then gets discarded at the
+end of that step. Second, the online data selection
+progressively anneals from noisy examples to less
+noisy ones, instead of greedily keeping selecting
+out of the least noisy examples.
+
+5.3.2 Data selection per-step overhead
+Compared to normal NMT training, there is a per-
+step data selection overhead in Algorithm 1. The
+overhead includes (1) training the denoised model
+on a small trusted dataset, which requires a small
+number of training steps; and (2) scoring all ex-
+amples in the random buffer Brandomt with both
+the noisy model and the denoised model. Both
+cases will in general depend on model size, but
+will probably depend even more on model type
+and configuration.
+
+5.3.3 Lightweight implementation
+We make Algorithm 1 more lightweight by decou-
+pling model training from example noise scoring:
+We score all examples in D̃ offline and use scores
+for online data selection.
+
+Algorithm 2 shows the details of this idea. To
+enable offline scoring, we train the noisy model
+and the denoised model prior to the final, target
+training, on the noisy data D̃ and the trusted data
+D̂, respectively. We then use this pair of models to
+score all examples in D̃ and save the scores. In tar-
+get model training, the example are retrieved into
+the buffer with scores, without the need of com-
+
+137
+
+
+
+Algorithm 2: Lightweight implementa-
+tion of Algorithm 1. Actually used in ex-
+periments.
+
+1: Input: Noisy data D̃, trusted data D̂
+2: Output: A denoised, better model with
+
+learned parameters Θ.
+3: Train p(y|x; θ̃) with small θ̃ on D̃.
+4: p(y|x; θ̂)← denoise
+
+(
+p(y|x; θ̃); D̂
+
+)
+.
+
+5: Score D̃ with θ̃ and θ̂ by Eq 4.
+6: t = 0; Randomly initialize Θ̃0.
+7: while t < T do
+8: Randomly sample B̃randomt from D̃.
+9: Sort B̃randomt by offline-computed noise
+
+scores.
+10: Sample bt from top rt of above sorted
+
+buffer.
+11: Train p(y|x; Θ̃t) on bt to produce new
+
+model p(y|x; Θ̃t+1).
+12: t← t+ 1.
+13: end while
+
+puting on the fly. Then the remaining is similar
+to Algorithm 1. This effectively turns the per-step
+data selection overhead in Algorithm 1 into con-
+stant overhead.
+
+We can also use smaller parameterization for
+the noisy model and denoised model than the
+target model. This may not affect their noise-
+discerning capability as long as they are still
+seq2seq models, the same as the target model.
+This is because we define the noise score in terms
+of logprob difference and use the scores for rank-
+ing/selection (e.g., via top rt),
+
+In summary, here is the lightweight method
+that we eventually use to denoise NMT train-
+ing with trusted data and online data selection:
+Train p(y|x; θ̃) on noisy data D̃ with a small
+parametrization. Denoise p(y|x; θ̃) on trusted data
+D̂ to produce denoised model p(y|x; θ̂) (Eq 1).
+Score the entire noisy data D̃ with the above two
+models by Eq 4. Train the target model with the
+above online, dynamic data selection. Algorithm 2
+describes the idea.
+
+We are going to use this implementation in ex-
+periments. Note, however, that we find that the
+general method in Algorithm 1 is very useful in
+understanding the nature of the denoising problem
+and thus cannot be ignored in the context. For ex-
+ample, it makes us realize the denoising problem
+
+is about how to (actively) meet what the model
+needs, i.e., not standalone filtering. And also, the
+bootstrapping behavior in Algorithm 1 further mo-
+tivates the use of the noise-annealing online data
+selection strategy and helps refine the lightweight
+implementation.
+
+6 Experiments
+
+6.1 Setup
+
+We carry out experiments for en/fr with two train-
+ing datasets (D̃), respectively. Paracrawl3 en/fr
+training raw data has 4 billion sentence pairs. Af-
+ter removing identities and empty source/target,
+about 300 million (M) sentence pairs are left.
+WMT 2014 en/fr training data has about 36M sen-
+tence pairs, with provided sentence alignment.
+
+WMT newstest 2012-2013 is used as the de-
+velopment set for early stopping of training. We
+use three test sets: WMT (n)ewstest 2014 (n2014),
+news (d)iscussion test 2015 (d2015), and a 2000-
+line patent test set (patent)4. More test sets
+than just n2014 are used in order to confirm that
+the gain obtained is not only from news domain
+adaptation but cross-domain, general accuracy im-
+provement.
+
+The WMT newstest 2010-2011 is used as the
+trusted data. It contains 5500 sentence pairs. We
+acknowledge that ideal trusted data would proba-
+bly be both well-translated and domain-matched,
+but we leave the study of trusted data properties to
+future research.
+
+We compute the detokenized and mixed-cased
+BLEU scores against the original references (per
+(Post, 2018)) with an in-house implementation of
+script mteval-v14.pl.
+
+We use an RNN-based NMT architecture sim-
+ilar to (Wu et al., 2016). Our final model has 8
+layers of encoder/decoder, 1024 dimensions with
+512-dimension attention. The smaller selector
+(noisy and denoised) models (in Algorithm 2) are
+of 3 layers and 512 dimensions.5
+
+Denoising a model on the small trusted dataset
+is done by fine-tuning on it by SGD. The train-
+ing is terminated with early stopping by checking
+the perplexity on the development set. It is a tiny
+dataset, but as we will show, its denoising impact
+is quite impressive and surprising. Training on
+
+3http://statmt.org/paracrawl
+4Obtained from https://www.epo.org.
+5Even smaller models like 2-layer x 256-dimension works,
+too, when we examined on an internal dataset.
+
+138
+
+
+
+such a small data can easily overfit, we thus use
+a very small learning rate 5e-5 so that the training
+progresses slow enough for us to reliably catch a
+good checkpoint before training stops.
+
+In Paracrawl trainings, we train for 3M steps
+using SGD with learning rate 0.5 and start to an-
+neal/reduce the learning rate at step 2M by halving
+it every 200k steps. In WMT training, we train for
+2M steps with learning rate 0.5 but start to anneal
+learning rate at step 1.2M with the same pace. We
+use dropout 0.2 for the WMT training. We did not
+use dropout for Paracrawl training due to its large
+training data amount.
+
+To dynamically anneal the data batch quality
+(Eq 5), we set hyper-parameter H to step 1.1M.
+0.2 is used as the floor selection ratio, rt. The ra-
+tionale for the choice ofH is so that when learning
+rate annealing happens, rt is close to its minimum
+value to ensure the training is indeed trained on the
+desired, best selected data.
+
+6.2 Training data cleanness
+To measure how noisy the datasets are, we ran-
+domly sample 2000 sentence pairs from the WMT
+dataset. Human raters were asked to label each
+sentence pair with scales in Table 2.
+
+These ratings generally reflect how well-
+translated a sentence pair is, however, a rating 4
+does not necessarily mean that is exactly the type
+of data a model needs – Model’s perspective on
+good data may not completely consistent with hu-
+man, because these ratings are not necessarily con-
+nected to data loss of a model. We use these rat-
+ings mainly to assess if our noise definition corre-
+lates to these ratings to some extent, but the noise
+definition could do more. The rater agreement on
+good (>= 3) or bad (< 3) is 70% and we find
+the averaged rating is very reliable and stable to
+measure a small sentence pair sample.
+
+Table 3 shows that WMT 2014 data is relatively
+clean: it has 40% rated as perfect; its averaged
+rating is 3.0 (4 being perfect). Noise introduced
+by sentence alignment accounts for part of the low
+ratings. We did not rate a Paracrawl sample, since
+just eyeballing a sample of the data reveals that it
+was noisy consisting of many boilerplates, wrong
+language identification, wrong translations.
+
+6.3 Noise score vs human rating
+We expect the noise definition (Eq 4) to correlate
+with the averaged cleanness of selected data and
+the dynamic scheduling method schedules data
+
+ 2.9
+
+ 3
+
+ 3.1
+
+ 3.2
+
+ 3.3
+
+ 3.4
+
+ 3.5
+
+ 20  40  60  80  100
+
+A
+v
+g
+ h
+
+u
+m
+
+a
+n
+ r
+
+a
+ti
+n
+g
+ s
+
+c
+o
+re
+
+top x% selection based on noise score
+
+WMT
+Paracrawl
+
+NNLM
+
+Figure 1: Noise-discerning capability of different noise
+scoring models. Curves are drawn by selecting, ac-
+cording to Eq 4, top x% (x-axis) out of a rated sample
+of 2000 random sentence pairs from the WMT en/fr
+dataset. WMT: noise scoring models trained on WMT
+training data, and trusted data. Paracrawl: noise scor-
+ing models trained on Paracrawl data, and trusted data.
+NNLM: neural net based LM selection models trained
+on Paracrawl data, and trusted data. Trusted data are
+the same dataset.
+
+from noisy to clean. We verify this on the sam-
+ple with human ratings.
+
+We carry out steps 1 and 2 of the practical im-
+plementation in Section 5.3.3 to produce the small
+noisy model and its denoised model. Recall that
+they are used to compute the noise in each sen-
+tence pair by Eq 4. We repeat this on the Paracrawl
+data and the WMT data, respectively, and thus we
+have two pairs of models, one for each dataset.
+
+We apply each pair of models to score the rated
+WMT sample, sort the sentence pairs by noise
+scores. We then select x% least noisy sentence
+pairs. Each x% corresponds to a subset and we
+compute the averaged human rating for that sub-
+set. In Figure 1, x-axis shows x%, the percentage
+out of the entire sample; y-axis shows the averaged
+human rating for the x% selection subset. Going
+from right to left, data indeed becomes cleaner as
+selection becomes tighter for the scoring models
+in our proposed method: WMT is noise scoring
+models trained on WMT training data, and trusted
+data. Paracrawl is the noise scoring models trained
+on Paracrawl data, and trusted data. Trusted data
+are the same dataset. We explain the dot-dashed
+line in a later experiment (Section 6.6).
+
+Ranking capability of the Paracrawl selector
+
+139
+
+
+
+Rating scale Explanation
+4 (Perfect) Almost all information (90-100%) in the sentences is conveyed in each other.
+3 (Good) Most information (70-90%) in the sentences is conveyed.
+2 (Not good) Some (30-70%) information in the sentences is conveyed, but some is not.
+1 (Bad) (10-30%) A large amount of information in the sentences is lost or misinterpreted.
+0 (Poor) (0-10%) The two sentences are nearly or completely unrelated, or in wrong languages.
+
+Table 2: Scales for human rating sentence pairs. Percentage ranges refer to the amount of words well translated
+across sentences in a pair.
+
+Rating scale 4 3 2 1 0
+WMT 47% 31% 10% 3% 9%
+
+Table 3: Rating stats on an en/fr WMT training data
+sample of 2000 sentence pairs.
+
+System n2014 d2015 patent
+Paracrawl dataset
+P1 Paracrawl baseline 31.6 30.7 37.2
+P2 Incr-denoise P1 34.0 33.7 44.7
+P3 Online denoised 35.2 35.6 46.9
+WMT dataset
+W1 WMT baseline 36.2 35.8 45.7
+W2 Incr-denoise W1 36.2 35.8 45.7
+W3 Online denoised 36.9 36.4 46.1
+
+Table 4: BLEU scores of Denoising experiments with
+en/fr Paracrawl data and WMT data. “Incr-denoise
+P1” refers to applying the incremental denoising on the
+noisy baseline P1 with method in Section 5.1. Similarly
+for “incr-denoise W1”. Under paired bootstrapped test
+at p < 0.05, P3 is significantly better than P2, P3 than
+P1, P2 than P1, on all test sets. W3 is significantly bet-
+ter than W1 on n2014.
+
+seems slightly better than the WMT one in dis-
+cerning noisier sentence pairs. We speculate this
+is because the noisy Paracrawl data “amplifies” the
+contrastive effect of the pair of models.
+
+6.4 BLEU scores
+BLEU scores in Table 4 show the impact of de-
+noising. For each training dataset, we have three
+experiments: baseline, noisy training with random
+data batch selection (P1 and W1); Denoising base-
+line with trusted data by fine-tuning the baseline
+on it (Eq 1) (P2 and W2); Training a model from
+scratch with online training by dynamic, gradually
+noise-reduced data selection (P3 and W3).
+
+First of all, P1 vs P2, it is impressive that just
+fine-tuning a noisy baseline on a small trusted
+dataset yiels a big impact. P2 improves P1 by
++2.4 BLEU on n2014, +3 BLEU on d2015 and
+
++7.5 BLEU on patent. The Paracrawl experiments
+and the above rating ranking curves (Figure 1) in-
+dicate the power of simple incremental denoising
+on trusted data (Section 5.1) when the background
+data is very noisy. In NMT domain adaptation
+literature (e.g., (van der Wees et al., 2017)), it is
+known that fine-tuning on domain data improves
+domain test sets, but it is also known that it may
+hurt test sets that are out of domain (forgetting).
+We think our experiments are the first to report
+the incremental denoising power of fine-tuning on
+a tiny trusted data. Notice incremental denoising
+does not improve on WMT data (W1 vs W2) prob-
+ably because WMT data is relatively cleaner. This,
+however, would indicate that the gain for P1 vs P2
+is less likely a domain adaptation effect.
+
+P2 vs P3 shows that the online denoising ap-
+proach reduced the training noise further more and
+gains +1.2 n2014 BLEU, +1.9 d2015 BLEU and
++2.2 patent BLEU, on top of incremental denois-
+ing on trusted data. On the WMT dataset, W2 vs
+W3 shows that, even though the trusted data does
+not directly help, the online denoising helps by
++0.7 n2014 BLEU, +0.6 d2015 BLEU and +0.4
+patent BLEU. We carried out paired bootstrapped
+statistical significance test (Koehn, 2004) between
+systems, at p < 0.05, P3 is significantly better
+than P2, P3 than P1, P2 than P1, across all test
+sets; W3 is significantly better than W1 only on
+n2014.
+
+We also would like to note the strength of the
+WMT baseline system (W1). Its n2014 BLEU is
+36.2, detokenized, case-sensitive. Published lit-
+eratures tend to report tokenized, case-sensitive
+BLEU scores, for which W1 BLEU becomes 40.2
+on the same test set. This is a strong score with a
+standard LSTM RNN network, compared to pub-
+lished results for this task.
+
+140
+
+
+
+System n2014 d2015 patent
+Paracrawl dataset
+P1 Random order 31.6 30.7 37.2
+P3 Online denoised 35.2 35.6 46.9
+P4 Reverse order of P3 32.6 31.1 40.9
+
+Table 5: Online denoising: NMT trained on data sorted
+according to noisiness level. P3 is trained on noisier to
+cleaner data order. Reversely, P4 is trained on cleaner
+to noisier data order.
+
+.
+
+6.5 Data order
+
+Our online denoising method dynamically selects
+data batches whose noise is gradually reduced to
+train the target model. We carry out two sets of
+experiments to prove that this is necessary for de-
+noising.
+
+In the first experiment, we compare P3 (in pro-
+posed data order) to the “reverse” of P3, where
+data batches are dynamically scheduled in a re-
+verse, noise gradually increasing order such that
+the model is trained on cleaner data earlier and
+then noisier data later (i.e., by simply flipping the
+sign of Eq 4) – The entire training then becomes a
+continuous reverse fine-tuning. Table 5 shows that
+the reverse order (P4) clearly does not work as ef-
+fective for denoising, even though P4 still slightly
+improves the baseline with random data selection
+(P1 in Table 4).
+
+In another experiment, we select 3 data subsets
+based on the amount of noise in each sentence pair,
+each subset being noise-reduced to different de-
+gree. For example, we select top 80% least noisy
+sentence pairs (denoted as S80%) out the entire
+Paracrawl data. Then we select the top half of
+S80% which is essentially 40% of the Paracrawl
+data. We denote it as S40%, similarly, S20%, there-
+fore S80% ⊃ S40% ⊃ S20%. And we expect the
+averaged noise in the smaller percentage would be
+less according to Figure 1. Then we fine-tune P1
+(noisy baseline) on S80% with early stopping on
+devset, followed by the fine-tuning on S40% and
+then S20%. Table 6 shows that each stricter subset
+is able to boost the previous training across all test
+sets, by further denoising. This also confirms the
+importance of the right data order in denoising.
+
+P3 vs P4 seems to confirm the spirit of Curricu-
+lum Learning (Bengio et al., 2009) – CL promotes
+ordering data to gradually focus on those most im-
+portant examples, and here the training has a better
+
+Subset n2014 d2015 patent
+P1 31.6 30.7 37.2
+P5 S80% 33.1 32.3 44.3
+P6 S40% 33.9 34.4 45.1
+P7 S20% 34.4 34.6 45.6
+
+Table 6: Nested datasets: Data order is important for
+denoising. S80% ⊃ S40% ⊃ S20% with stricter/smaller
+set less noisy.
+
+outcome (P3) by training on progressively noised-
+reduced data.
+
+6.6 Language model selection
+The proposed method uses seq2seq NMT models
+for online data selection. We can replace them
+with neural network language models (NNLM)
+with everything else the same, to confirm that the
+LM based method that is popular for domain data
+selection is not designed for denoising.
+
+We first check if the NNLM selection scores
+correlate with human ratings. As shown by the
+dot-dashed line (red) in Figure 1, it does not seem
+to – As we tighten the selection percentage (from
+right to left), the averaged rating of sentence pairs
+falling into that percentage does not increase, but
+the method that employs the seq2seq models to
+compute noise scores (Eq 4) does.
+
+We also compare the BLEU scores of the
+NNLM selection and the NMT selection. To that
+end, we select top 20% data and use it to fine-tune
+the noisy Paracrawl baseline (P1), for the NNLM
+method and the proposed method, respectively.
+
+We had to resolve an issue in the NNLM se-
+lection experiment. Recall that the trusted data
+we use is from WMT newstest 2010-2011 and the
+development set we use for stopping the training
+is WMT newstest 2012-2013. WMT newstests
+across years do not seem to be in the same do-
+main, as a result, the perplexity on devset never
+drops in training with trusted data. This would be
+additional evidence that improvements from our
+proposed denoising approach is unlikely from do-
+main adaptation. In the end, we had to extract ran-
+domly 1000 lines out of the trusted data as the de-
+vset for early stopping and use the remaining as
+the trusted data when training the denoised model
+θ̂ that is used to compute the noise scores (or data
+relevance in the NNLM case) by Eq 4.
+
+The BLEU scores in Table 7 show the clear
+difference. The NNLM method does not dis-
+cern noise and thus the top selection would be
+
+141
+
+
+
+System n2014 d2015 patent
+P1 Paracrawl baseline 31.6 30.7 37.2
+P8 P1+NMT 20% 34.3 34.7 45.8
+P9 P1+NNLM 20% 31.8 30.5 35.4
+
+Table 7: LM method does not denoise, but NMT
+method (proposed) does; and a denoised model has im-
+proved general translation accuracy. P1+NMT 20%:
+fine-tune P1 with top 20% selection by NMT method.
+P1+NNLM 20%: fine-tune P1 with top 20% selection
+by NNLM method.
+
+as noisy as the baseline data. As a result, fine-
+tuning the noisy baseline (P1) would not improve.
+As a matter of fact, the patent BLEU drops over
+baseline, probably indicating that domain data se-
+lection causes data bias. The proposed method,
+on the other hand, performs clearly better (P8),
+for example, compared to P9, +2.5 BLEU on
+n2014, +3.8 BLEU on d2015 and +10.4 BLEU
+on patent. These prove the effectiveness of the
+proposed method in producing better systems on
+noisy data.
+
+6.7 Discussion
+The research in (van der Wees et al., 2017) that
+selects data with neural language models show
+that dynamically selected parallel data for domain
+adaptation improves domain test sets, but it can
+hurt test sets that are out of domain. It also shows
+that the dynamic online selection still underper-
+forms the fine-tuning on domain parallel data. In
+our denoising results, the online denoising (e.g.,
+P3) can significantly outperform the simple fine-
+tuning (e.g., P2).
+
+We clarify that our method could potentially
+work with other data filtering methods. For exam-
+ple, if the underlying noisy data has already been
+filtered, applying online denoising with trusted
+data could potentially bring even further improve-
+ment than no pre-filtering.
+
+7 Conclusion and Future Research
+
+Domain data selection and domain adaptation for
+machine translation is a well-studied topic, but de-
+noising training data or MT training is not yet, es-
+pecially for NMT training. In this paper, we gener-
+alize the recipes of effective domain data research
+to address a different and important data quality
+for NMT – data noise. We define how to mea-
+sure noise and how to select noise-reduced data
+batches to train NMT models online. We show that
+
+the noise we define correlates with human ratings
+and that the proposed approach yields significantly
+better NMT models.
+
+The method probably can be tried to denoising
+for other seq2seq tasks like parsing, image label-
+ing. It seems interesting to study and understand
+the properties that trusted data should have. It also
+sounds an interesting research to discover better
+data orders.
+
+Acknowledgments
+
+The authors would like to thank George Foster for
+his help refine the paper and advice on various
+technical isses in the paper, Thorsten Brants for
+his earlier work on the topic, Christian Buck for
+his help with the Paracrawl data, Yuan Cao for his
+valuable comments and suggestions on the paper,
+and the anonymous reviewers for their construc-
+tive reviews.
+
+References
+Amittai Axelrod, Xiaodong He, and Jianfeng Gao.
+
+2011. Domain adaptation via pseudo in-domain data
+selection. In Proceedings of the 2011 Conference on
+Empirical Methods in Natural Language Process-
+ing, pages 355–362.
+
+Yoshua Bengio, Jérôme Louradour, Ronan Collobert,
+and Jason Weston. 2009. Curriculum learning.
+In Proceedings of the 26 th International Confer-
+ence on Machine Learning, page 86–96, Montreal,
+Canada.
+
+Denny Britz, Quoc Le, and Reid Pryzant. 2017. Effec-
+tive domain mixing for neural machine translation.
+In Proceedings of the Second Conference on Ma-
+chine Translation, pages 118–126. Association for
+Computational Linguistics.
+
+Boxing Chen and Fei Huang. 2016. Semi-supervised
+convolutional networks for translation adaptation
+with tiny amount of in-domain data. In Proceed-
+ings of the 20th SIGNLL Conference on Computa-
+tional Natural Language Learning (CoNLL), pages
+314–323.
+
+Boxing Chen, Roland Kuhn, George Foster, Colin
+Cherry, and Fei Huang. 2016. Bilingual methods for
+adaptive training data selection for machine transla-
+tion. In AMTA.
+
+Mia Xu Chen, Orhan Firat, Ankur Bapna, Melvin
+Johnson, Wolfgang Macherey, George Foster, Llion
+Jones, Niki Parmar, Mike Schuster, Zhifeng Chen,
+Yonghui Wu, and Macduff Hughes. 2018. The best
+of both worlds: Combining recent advances in neu-
+ral machine translation. In ACL 2018.
+
+142
+
+
+
+Jonas Gehring, Michael Auli, David Grangier, De-
+nis Yarats, and Yann N. Dauphin. 2017. Con-
+volutional sequence to sequence learning. CoRR,
+abs/1705.03122.
+
+Huda Khayrallah and Philipp Koehn. 2018. On the
+impact of various types of noise on neural machine
+translation. CoRR, abs/1805.12282.
+
+Philipp Koehn. 2004. Statistical significance tests for
+machine translation evaluation. In Proceedings of
+EMNLP 2004, pages 388–395, Barcelona, Spain.
+Association for Computational Linguistics.
+
+M. P. Kumar, Benjamin Packer, and Daphne Koller.
+2010. Self-paced learning for latent variable mod-
+els. In J. D. Lafferty, C. K. I. Williams, J. Shawe-
+Taylor, R. S. Zemel, and A. Culotta, editors, Ad-
+vances in Neural Information Processing Systems
+23, pages 1189–1197. Curran Associates, Inc.
+
+Guillaume Lample, Ludovic Denoyer, and
+Marc’Aurelio Ranzato. 2017. Unsupervised
+machine translation using monolingual corpora
+only. CoRR, abs/1711.00043.
+
+Saab Mansour, Joern Wuebker, and Hermann Ney.
+2011. Combining translation and language model
+scoring for domain-specific data filtering. In In-
+ternational Workshop on Spoken Language Trans-
+lation, pages 222–229.
+
+Spyros Matsoukas, Antti-Veikko I. Rosti, and Bing
+Zhang. 2009. Discriminative corpus weight esti-
+mation for machine translation. In Proceedings of
+the 2009 Conference on Empirical Methods in Nat-
+ural Language Processing, pages 708–717, Singa-
+pore. Association for Computational Linguistics.
+
+Mohammed Mediani. 2017. Learning from Noisy Data
+in Statistical Machine Translation. Ph.D. thesis,
+Fakultät für Informatik, Karlsruhe Institute of Tech-
+nologie (KIT).
+
+Robert C. Moore and William Lewis. 2010. Intelligent
+selection of language model training data. In Pro-
+ceedings of the ACL 2010 Conference, pages 220–
+224.
+
+Nagarajan Natarajan, Inderjit S Dhillon, Pradeep K
+Ravikumar, and Ambuj Tewari. 2013. Learning
+with noisy labels. In C. J. C. Burges, L. Bottou,
+M. Welling, Z. Ghahramani, and K. Q. Weinberger,
+editors, Advances in Neural Information Processing
+Systems 26, pages 1196–1204. Curran Associates,
+Inc.
+
+Matt Post. 2018. A call for clarity in report-
+ing bleu scores. Computing Research Repository,
+arXiv:1804.08771v1. Version 2.
+
+Hassan Sajjad, Nadir Durrani, Fahim Dalvi, Yonatan
+Belinkov, and Stephan Vogel. 2017. Neural ma-
+chine translation training in a multi-domain sce-
+nario. arXiv preprint arXiv:1708.08712v2.
+
+Burr Settles. 2010. Active learning literature survey.
+Technical report, University of Wisconsin–Madison.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz
+Kaiser, , and Illia Polosukhin. 2017. Attention is
+all you need. In CoRR abs/1706.03762.
+
+Yogarshi Vyas, Xing Niu, and Marine Carpuat. 2018.
+Identifying semantic divergences in parallel text
+without annotations. In Proceedings of the 2018
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies, Volume 1, pages 1503–
+1515. Association for Computational Linguistics.
+
+Rui Wang, Masao Utiyama, Lemao Liu, Kehai Chen,
+and Eiichiro Sumita. 2017. Instance weighting for
+neural machine translation domain adaptation. In
+Proceedings of the 2017 Conference on Empirical
+Methods in Natural Language Processing, pages
+1482–1488. Association for Computational Linguis-
+tics.
+
+Marlies van der Wees, Arianna Bisazza, and Christof
+Monz. 2017. Dynamic data selection for neural ma-
+chine transaltion. In Proceedings of the 2017 Con-
+ference on Empirical Methods in Natural Language
+Processing, pages 1400–1410.
+
+Yonghui Wu, Mike Schuster, Zhifeng Chen, Quoc V
+Le, Mohammad Norouzi, Wolfgang Macherey,
+Maxim Krikun, Yuan Cao, Qin Gao, Klaus
+Macherey, Jeff Klingner, Apurva Shah, Melvin
+Johnson, Xiaobing Liu, Łukasz Kaiser, Stephan
+Gouws, Yoshikiyo Kato, Taku Kudo, Hideto
+Kazawa, Keith Stevens, George Kurian, Nishant
+Patil, Wei Wang, Cliff Young, Jason Smith, Jason
+Riesa, Alex Rudnick, Oriol Vinyals, Greg Corrado,
+Macduff Hughes, and Jeffrey Dean. 2016. Google’s
+neural machine translation system: Bridging the
+gap between human and machine translation. arXiv
+preprint arXiv:1609.08144.
+
+143
+
+

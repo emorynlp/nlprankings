@@ -1,0 +1,810 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Incremental Decoding and Training Methods for Simultaneous Translation in Neural Machine Translation
+
+
+Proceedings of NAACL-HLT 2018, pages 493–499
+New Orleans, Louisiana, June 1 - 6, 2018. c©2018 Association for Computational Linguistics
+
+Incremental Decoding and Training Methods for Simultaneous
+Translation in Neural Machine Translation
+
+Fahim Dalvi⇤
+faimaduddin@qf.org.qa
+
+Hassan Sajjad Stephan Vogel
+hsajjad@qf.org.qa svogel@qf.org.qa
+
+Qatar Computing Research Institute – HBKU
+
+Nadir Durrani⇤
+ndurrani@qf.org.qa
+
+Abstract
+
+We address the problem of simultaneous trans-
+lation by modifying the Neural MT decoder to
+operate with dynamically built encoder and at-
+tention. We propose a tunable agent which de-
+cides the best segmentation strategy for a user-
+defined BLEU loss and Average Proportion
+(AP) constraint. Our agent outperforms previ-
+ously proposed Wait-if-diff and Wait-if-worse
+agents (Cho and Esipova, 2016) on BLEU with
+a lower latency. Secondly we proposed data-
+driven changes to Neural MT training to better
+match the incremental decoding framework.
+
+1 Introduction
+
+Simultaneous translation is a desirable attribute in
+Spoken Language Translation, where the transla-
+tor is required to keep up with the speaker. In a lec-
+ture or meeting translation scenario where utter-
+ances are long, or the end of sentence is not clearly
+marked, the system must operate on a buffered
+sequence. Generating translations for such in-
+complete sequences presents a considerable chal-
+lenge for machine translation, more so in the case
+of syntactically divergent language pairs (such as
+German-English), where the context required to
+correctly translate a sentence, appears much later
+in the sequence, and prematurely committing to a
+translation leads to significant loss in quality.
+
+Various strategies to select appropriate segmen-
+tation points in a streaming input have been pro-
+posed (Fügen et al., 2007; Bangalore et al., 2012;
+Sridhar et al., 2013; Yarmohammadi et al., 2013;
+Oda et al., 2014). A downside of this approach
+is that the MT system translates sequences inde-
+pendent of each other, ignoring the context. Even
+if the segmenter decides perfect points to segment
+the input stream, an MT system requires lexical
+history to make the correct decision.
+
+⇤These authors contributed equally to this work
+
+The end-to-end nature of the Neural MT archi-
+tecture (Sutskever et al., 2014; Bahdanau et al.,
+2015) provides a natural mechanism1 to integrate
+stream decoding. Specifically, the recurrent prop-
+erty of the encoder and decoder components pro-
+vide an easy way to maintain historic context in a
+fixed size vector.
+
+We modify the neural MT architecture to oper-
+ate in an online fashion where i) the encoder and
+the attention are updated dynamically as new input
+words are added, through a READ operation, and
+ii) the decoder generates output from the available
+encoder states, through a WRITE operation. The
+decision of when to WRITE is learned through a
+tunable segmentation agent, based on user-defined
+thresholds. Our incremental decoder significantly
+outperforms the chunk-based decoder and restores
+the oracle performance with a deficit of  2 BLEU
+points across 4 language pairs with a moderate
+delay. We additionally explore whether modify-
+ing the Neural MT training to match the decoder
+can improve performance. While we observed sig-
+nificant restoration in the case of chunk decod-
+ing matched with chunk-based NMT training, the
+same was not found true with our proposed incre-
+mental training to match the incremental decoding
+framework.
+
+The remaining paper is organized as follow:
+Section 2 describes modifications to the NMT de-
+coder to enable stream decoding. Section 3 de-
+scribes various agents to learn a READ/WRITE
+strategy. Section 4 presents evaluation and re-
+sults. Section 5 describes modifications to the
+NMT training to mimic corresponding decoding
+strategy, and Section 6 concludes the paper.
+
+1as opposed to the traditional phrase-based decoder
+(Moses), which requires pre-computation of phrase-table,
+future-cost estimation and separately maintaining each state-
+full feature (language model, OSM (Durrani et al., 2015) etc.)
+
+493
+
+
+
+Neural
+MT
+
+Food
+
+نمالا يئاذغلا رمأ
+
+security matter
+
+Neural
+MT
+
+Food
+
+نمالا يئاذغلا رمأ يرورض
+
+security is an important matter
+
+Neural
+MT
+
+Security
+
+نمالا
+
+Neural
+MT
+
+Food
+
+نمالا يئاذغلا
+
+security
+
+Iteration 1 Iteration 2 Iteration 3 Iteration 4
+nw = 0 nw = 2 nw = 0 nw = 4
+
+Neural
+MT
+
+Food
+
+نمالا يئاذغلا رمأ
+
+security matter
+
+Neural
+MT
+
+Food
+
+نمالا يئاذغلا رمأ يرورض
+
+security is an important matter
+
+Neural
+MT
+
+Security
+
+نمالا
+
+Neural
+MT
+
+Food
+
+نمالا يئاذغلا
+
+security
+
+Iteration 1 Iteration 2 Iteration 3 Iteration 4
+nw = 0 nw = 2 nw = 0 nw = 4
+
+Figure 1: A decoding pass over a 4-word source sentence. nw denotes the number of words the agent chose to
+commit. Green nodes = committed words, Blue nodes = newly generated words in the current iteration. Words
+marked in red are discarded, as the agent chooses to not commit them.
+
+2 Incremental Decoding
+
+Problem: In a stream decoding scenario, the en-
+tire source sequence is not readily available. The
+translator must either wait for the sequence to
+finish in order to compute the encoder state, or
+commit partial translations at several intermediate
+steps, potentially losing contextual information.
+
+Chunk-based Decoder: A straight forward way
+to enable simultaneous translation is to chop the
+incoming input after every N-tokens. A draw-
+back of these approaches is that the translation
+and segmentation process operate independently
+of each other, and the previous contextual his-
+tory is not considered when translating the current
+chunk. This information is important to generate
+grammatically correct and coherent translations.
+
+Incremental Decoding: The RNN-based NMT
+framework provides a natural mechanism to pre-
+serve context and accommodate streaming. The
+decoder maintains the entire target history through
+the previous decoder state alone. But to enable in-
+cremental neural decoding, we have to address the
+following constraints: i) how to dynamically build
+the encoder and attention with the streaming in-
+put? ii) what is the best strategy to pre-commit
+translations at several intermediate points?
+Inspired by Cho and Esipova (2016), we mod-
+ify the NMT decoder to operate in a sequence of
+READ and WRITE operations. The former reads
+the next word from the buffered source sequence
+and translates it using the available context, and
+the latter is computed through an AGENT, which
+decides how many words should be committed
+from this generated translation. Note that, when
+a translation is generated in the READ operation,
+the already committed target words remain un-
+changed, i.e. the generation is continued from
+
+Algorithm 1 Algorithm for incremental decoder
+s, Source sequence
+s0, Available source sequence
+tc, Committed target sequence
+t, Current decoded sequence for s0
+
+nw, Number of tokens to commit
+
+s0  empty
+for token in s do . READ operation
+
+s0  s0 + token
+t NMTDECODER(s0, tc)
+if s0 6= s then
+
+nw  AGENT(s0, tc, t)
+else
+
+nw  length(t)� length(tc)
+end if . commit all new words if we have seen the
+
+entire source
+t0c  GETNEWTOKENS(tc, t, nw)
+tc  tc + t0c . WRITE operation
+
+end for
+
+function GETNEWTOKENS(tc, t, nw)
+start length(tc) + 1
+end start + nw
+return t[start : end]
+
+end function
+
+the last committed target word using the saved
+decoder state. See Algorithm 1 for details. The
+AGENT decides how many target words to WRITE
+after every READ operation, and has complete con-
+trol over the context each target word gets to see
+before being committed, as well as the overall de-
+lay incurred. Figure 1 shows the incremental de-
+coder in action, where the agent decides to not
+commit any target words in iterations 1 and 3. The
+example shows an instance where the incorrectly
+translated words are discarded when more context
+becomes available. Given this generic framework,
+we describe several AGENTS in Section 3, trained to
+optimize the BLEU loss and latency.
+
+Beam Search: Independent of the agent being
+used, the modified NMT architecture incurs some
+
+494
+
+
+
+READ READ WRITE
+beam 2
+
+READ WRITE
+beam 1
+
+N
+or
+
+m
+al
+
+ D
+ec
+
+od
+in
+
+g
+In
+
+cr
+m
+
+em
+en
+
+ta
+l D
+
+ec
+od
+
+in
+g
+
+Figure 2: Beam Search in normal decoding vs incre-
+mental decoding. Green nodes indicate the hypoth-
+esis selected by the agent to WRITE. Since we can-
+not change what we have already committed, the other
+nodes (marked in yellow) are discarded and future hy-
+potheses originate from the selected hypothesis alone.
+Normal beam search is executed for consecutive READ
+operations (blue nodes).
+
+complexities for beam decoding. For example,
+if at some iteration the decoder generates 5 new
+words, but the agent decides to commit only 2 of
+these, the best hypothesis at the 2nd word may not
+be the same as the one at the 5th word. Hence, the
+agent has to re-rank the hypotheses at the last tar-
+get word it decides to commit. Future hypotheses
+then continue from this selected hypothesis. See
+Figure 2 for a visual representation. The overall
+utility of beam decoding is reduced in the case of
+incremental decoding, because it is necessary to
+commit and retain only one beam at several points
+to start producing output with minimal delay.
+
+3 Segmentation Strategies
+
+In this section, we discuss different AGENTS that we
+evaluated in our modified incremental decoder. To
+measure latency in these agents, we use Average
+Proportion (AP) metric as defined by Cho and Es-
+ipova (2016). AP is calculated as the total number
+of source words each target word required before
+being committed, normalized by the product of the
+source and target lengths. It varies between 0 and
+1 with lesser being better. See supplementary ma-
+terial for details.
+
+Wait-until-end: The WUE agent waits for the
+entire source sentence before decoding, and serves
+as an upper bound on the performance of our
+agents, albeit with the worst AP = 1.
+
+Wait-if-worse/diff: We reimplemented the
+baseline agents described in Cho and Esipova
+(2016). The Wait-if-Worse (WIW) agent WRITES
+
+a target word if its probability does not decrease
+after a READ operation. The Wait-if-Diff (WID)
+agent instead WRITES a target word if the target
+word remains unchanged after a READ operation.
+
+Static Read and Write: The STATIC-RW:
+agent is inspired from the chunk-based decoder
+and tries to resolve its shortcomings while main-
+taining its simplicity. The primary drawback of the
+chunk-based decoder is the loss of context across
+chunks. Our agent starts by performing S READ
+operations, followed by repeated RW WRITES
+and READS until the end of the source sequence.
+The number of WRITE and READ operations is the
+same to ensure that the gap between the source
+and target sequence does not increase with time.
+The initial S READ operations essentially create a
+buffer of S tokens, allowing some future context
+to be used by the decoder. Note that the latency
+induced by this agent in this case is only in the be-
+ginning, and remains constant for the rest of the
+sentence. This method actually introduces a class
+of AGENTS based on their S ,RW values. We tune
+S and RW to select the specific AGENT with the
+user-defined BLEU-loss and AP thresholds.
+
+4 Evaluation
+
+Data: We trained systems for 4 language pairs:
+German-, Arabic-, Czech- and Spanish-English
+pairs using the data made available for IWSLT
+(Cettolo et al., 2014). See supplementary material
+for data stats. These language pairs present a di-
+verse set of challenges for this problem, with Ara-
+bic and Czech being morphologically rich, Ger-
+man being syntactically divergent, and Spanish
+introducing local reorderings with respect to En-
+glish.
+
+NMT System: We trained a 2-layered LSTM
+encoder-decoder models with attention using the
+seq2seq-attn implementation (Kim, 2016).
+Please see supplementary material for settings.
+
+Results: Figure 3 shows the results of various
+streaming agents. Our proposed STATIC-RW
+agent outperforms other methods while maintain-
+ing an AP < 0.75 with a loss of less than 0.5
+BLEU points on Arabic, Czech and Spanish. This
+was found to be consistent for all test-sets 2011-
+2014 (See under “small” models in Figure 4). In
+the case of German the loss at AP < 0.75 was
+around 1.5 BLEU points. The syntactical diver-
+gence and rich morphology of German posits a
+
+495
+
+
+
+Figure 3: Results for various streaming AGENTS (WID, WIW, WUE, C6 (Chunk decoding with a N=6) and S ,RW
+for STATIC-RW) on the tune-set. For each AP bucket, we only show the Agents with the top 3 BLEU scores in
+that bucket, with remaining listed in descending order of their BLEU scores.
+
+bigger challenge and requires larger context than
+other language pairs. For example the conjugated
+verb in a German verb complex appears in the sec-
+ond position, while the main verb almost always
+occurs at the end of the sentence/phrase (Durrani
+et al., 2011). Our methods are also comparable to
+the more sophisticated techniques involving Rein-
+forcement Learning to learn an agent introduced
+by Gu et al. (2017) and Satija and Pineau (2016),
+but without the overhead of expensive training for
+the agent.
+
+Scalability: The preliminary results were ob-
+tained using models trained on the TED corpus
+only. We conducted further experiments by train-
+ing models on larger data-sets (See the supple-
+mentary section again for data sizes) to see if our
+findings are scalable. We fine-tuned (Luong and
+Manning, 2015; Sajjad et al., 2017b) our mod-
+els with the in-domain data to avoid domain dis-
+parity. We then re-ran our agents with the best
+S ,RW values (with an AP under 0.75) for each
+language pair. Figure 4 (“large” models) shows
+that the BLEU loss from the respective oracle in-
+creased when the models were trained with big-
+ger data sizes. This could be attributed to the in-
+creased lexical ambiguity from the large amount
+of out-domain data, which can only be resolved
+with additional contextual information. However
+our results were still better than the WIW agent,
+which also has an AP value above 0.8. Allowing
+similar AP, our STATIC-RW agents were able to
+restore the BLEU loss to be  1.5 for all language
+
+Figure 4: Averaged results on test-sets (2011-2014) us-
+ing the models trained on small and large datasets using
+AP  0.75. Detailed test-wise results are available in
+the supplementary material.
+
+pairs except German-English. Detailed test results
+are available in the suplementary material.
+
+5 Incremental Training
+
+The limitation of previously described decoding
+approaches (chunk-based and incremental) is the
+mismatch between training and decoding. The
+training is carried on full sentences, however, at
+the test time, the decoder generates hypothesis
+based on incomplete source information. This dis-
+crepancy between training and decoding can be
+potentially harmful. In Section 2, we presented
+two methods to address the partial input sentence
+decoding problem, the Chunk Decoder and the
+Incremental Decoder. We now train models to
+match the corresponding decoding scenario.
+
+496
+
+
+
+5.1 Chunk Training
+
+In chunk-based training, we simply split each
+training sentence into chunks of N tokens.2 The
+corresponding target sentence for each chunk is
+generated by having a span of target words that are
+word-aligned3 with the words in the source span.
+Chunking the data into smaller segments increases
+the training time significantly. To overcome this
+problem, we train a model on the full sentences
+using all the data and then fine-tune it with the in-
+domain chunked data.
+
+5.2 Add-M Training
+
+Next we formulate a training mechanism to match
+the incremental decoding described in Section 2.
+A way to achieve this is to force the attention on
+a local span of encoder states and block it from
+giving weight to the non-local (rightward) encoder
+states. The hope is that in the case of long-range
+dependencies, the model learns to predict these
+dependencies without the entire source context.
+Such a training procedure is non-trivial, as it re-
+quires dynamic inputs to the attention mechanism
+while training, including backpropagation where
+some encoder states which have been seen by the
+attention mechanism a greater number of times
+dynamically receiving more gradient inputs. We
+leave this idea as future work, while focusing on a
+data-driven technique to mimic this kind of train-
+ing as described below.
+
+We start with the first N words in a source sen-
+tence and generate target words that are aligned to
+these words. We then generate the next training in-
+stances with N +M , N +2M , N +3M ... source
+words until the end of sentence has been reached.4
+
+The resulting training roughly mimics the decod-
+ing scenario where the source-side context is grad-
+ually built. The down-side of this method is that
+the data size increases quadratically, making the
+training infeasible. To overcome this, we fine-
+tune a model trained on full sentences with the in-
+domain corpus generated using this method.
+
+2Although randomly segmenting the source sentence
+based on number of tokens is a naı̈ve approach that does not
+take into account the linguistic properties, our goal here was
+to exactly match the training with the chunk-based decoding
+scenario.
+
+3We used fast-align (Dyer et al., 2013) for alignments.
+4We trained with N = 6 and M = 1 for our experiments.
+
+Figure 5: Averaged test set results on various training
+modifications
+
+5.3 Results
+The results in Figure 5 show that matching the
+chunk-decoding with corresponding chunk-based
+training significantly improves performance, with
+a gain of up to 12 BLEU points. However,
+we were not able to improve upon our incre-
+mental decoder, with the results deteriorating no-
+tably. One reason for this degradation is that the
+training/decoding scenarios are still not perfectly
+matched. The training pipeline in this case also
+sees the beginning of sentences much more often,
+which could lead to unnatural distributions being
+inferred within the model.
+
+6 Conclusion
+
+We addressed the problem of simultaneous trans-
+lation by modifying the architecture in Neural MT
+decoder. We presented a tunable agent which de-
+cides the best segmentation strategy based on user-
+defined BLEU loss and AP constraints. Our re-
+sults showed improvements over previously es-
+tablished WIW and WID methods. We addition-
+ally modified the Neural MT training to match
+the incremental decoding, which significantly im-
+proved the chunk-based decoding, but we did not
+observe any improvement using Add-M Training.
+The code for our incremental decoder and agents
+has been made available.5 While were able to sig-
+nificantly improve the the chunk-based decoder,
+we did not observe any improvement using the
+Add-M Training. In the future we would like to
+change the training model to dynamically build the
+encoder and the attention model in order to match
+our incremental decoder.
+
+5https://github.com/fdalvi/
+seq2seq-attn-stream
+
+497
+
+
+
+References
+Ahmed Abdelali, Kareem Darwish, Nadir Durrani, and
+
+Hamdy Mubarak. 2016. Farasa: A fast and furious
+segmenter for arabic. In Proceedings of the 2016
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Demon-
+strations. Association for Computational Linguis-
+tics, San Diego, California, pages 11–16. http://
+www.aclweb.org/anthology/N16-3003.
+
+Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Ben-
+gio. 2015. Neural machine translation by jointly
+learning to align and translate. In ICLR. http:
+//arxiv.org/pdf/1409.0473v6.pdf.
+
+Srinivas Bangalore, Vivek Kumar Rangarajan Srid-
+har, Prakash Kolan, Ladan Golipour, and Aura
+Jimenez. 2012. Real-time incremental speech-to-
+speech translation of dialogs. In Proceedings of
+the 2012 Conference of the North American Chap-
+ter of the Association for Computational Linguis-
+tics: Human Language Technologies. Association
+for Computational Linguistics, Montréal, Canada,
+pages 437–445.
+
+Mauro Cettolo, Jan Niehues, Sebastian Stüker, Luisa
+Bentivogli, and Marcello Federico. 2014. Report on
+the 11th IWSLT Evaluation Campaign. Proceedings
+of the International Workshop on Spoken Language
+Translation, Lake Tahoe, US .
+
+Kyunghyun Cho and Masha Esipova. 2016. Can neu-
+ral machine translation do simultaneous translation?
+CoRR abs/1606.02012.
+
+Nadir Durrani, Helmut Schmid, and Alexander Fraser.
+2011. A Joint Sequence Translation Model with In-
+tegrated Reordering. In Proceedings of the Associ-
+ation for Computational Linguistics: Human Lan-
+guage Technologies (ACL-HLT’11). Portland, OR,
+USA.
+
+Nadir Durrani, Helmut Schmid, Alexander Fraser,
+Philipp Koehn, and Hinrich Schütze. 2015. The
+Operation Sequence Model – Combining N-Gram-
+based and Phrase-based Statistical Machine Trans-
+lation. Computational Linguistics 41(2):157–186.
+
+Chris Dyer, Victor Chahuneau, and Noah A. Smith.
+2013. A simple, fast, and effective reparameteriza-
+tion of ibm model 2. In Proceedings of NAACL’13.
+
+Andreas Eisele and Yu Chen. 2010. MultiUN: A Mul-
+tilingual Corpus from United Nation Documents. In
+Proceedings of the Seventh conference on Interna-
+tional Language Resources and Evaluation. Valleta,
+Malta.
+
+Christian Fügen, Alex Waibel, and Muntsin Kolss.
+2007. Simultaneous translation of lectures and
+speeches. Machine Translation 21(4):209–252.
+
+Jiatao Gu, Graham Neubig, Kyunghyun Cho, and Vic-
+tor O.K. Li. 2017. Learning to translate in real-time
+with neural machine translation. In Proceedings of
+
+the 15th Conference of the European Chapter of the
+Association for Computational Linguistics: Volume
+1, Long Papers. Association for Computational Lin-
+guistics, Valencia, Spain, pages 1053–1062.
+
+Yoon Kim. 2016. Seq2seq-attn. https://
+github.com/harvardnlp/seq2seq-attn.
+
+Philipp Koehn, Hieu Hoang, Alexandra Birch, Chris
+Callison-Burch, Marcello Federico, Nicola Bertoldi,
+Brooke Cowan, Wade Shen, Christine Moran,
+Richard Zens, Chris Dyer, Ondrej Bojar, Alexandra
+Constantin, and Evan Herbst. 2007. Moses: Open
+source toolkit for statistical machine translation. In
+Proceedings of the ACL 2007. Prague, Czech Re-
+public.
+
+Minh-Thang Luong and Christopher D. Manning.
+2015. Stanford Neural Machine Translation Sys-
+tems for Spoken Language Domains. In Proceed-
+ings of the International Workshop on Spoken Lan-
+guage Translation. Da Nang, Vietnam.
+
+Yusuke Oda, Graham Neubig, Sakriani Sakti, Tomoki
+Toda, and Satoshi Nakamura. 2014. Optimiz-
+ing segmentation strategies for simultaneous speech
+translation. In Proceedings of the 52nd Annual
+Meeting of the Association for Computational Lin-
+guistics (Volume 2: Short Papers). Association for
+Computational Linguistics, Baltimore, Maryland,
+pages 551–556. http://www.aclweb.org/
+anthology/P14-2090.
+
+Hassan Sajjad, Fahim Dalvi, Nadir Durrani, Ahmed
+Abdelali, Yonatan Belinkov, and Stephan Vogel.
+2017a. Challenging Language-Dependent Segmen-
+tation for Arabic: An Application to Machine Trans-
+lation and Part-of-Speech Tagging. In Proceedings
+of the 55th Annual Meeting of the Association for
+Computational Linguistics. Association for Compu-
+tational Linguistics, Vancouver, Canada.
+
+Hassan Sajjad, Nadir Durrani, Fahim Dalvi, Yonatan
+Belinkov, and Stephan Vogel. 2017b. Neural Ma-
+chine Translation Training in a Multi-Domain Sce-
+nario. In Proceedings of the 14th International
+Workshop on Spoken Language Technology (IWSLT-
+14).
+
+Harsh Satija and Joelle Pineau. 2016. Simultane-
+ous machine translation using deep reinforcement
+learning. In Abstraction in Reinforcement Learn-
+ing Workshop. International Conference on Machine
+Learning, New York, USA.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016. Neural machine translation of rare words
+with subword units. In Proceedings of the 54th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers). Association
+for Computational Linguistics, Berlin, Germany,
+pages 1715–1725. http://www.aclweb.org/
+anthology/P16-1162.
+
+498
+
+
+
+Rangarajan Sridhar, Vivek Kumar, John Chen, Srinivas
+Bangalore, Andrej Ljolje, and Rathinavelu Chengal-
+varayan. 2013. Segmentation strategies for stream-
+ing speech translation. In Proceedings of the
+2013 Conference of the North American Chap-
+ter of the Association for Computational Linguis-
+tics: Human Language Technologies. Association
+for Computational Linguistics, Atlanta, Georgia,
+pages 230–238. http://www.aclweb.org/
+anthology/N13-1023.
+
+Ilya Sutskever, Oriol Vinyals, and Quoc VV Le. 2014.
+Sequence to Sequence Learning with Neural Net-
+works. In Advances in neural information process-
+ing systems. pages 3104–3112.
+
+Mahsa Yarmohammadi, Vivek Kumar Rangara-
+jan Sridhar, Srinivas Bangalore, and Baskaran
+Sankaran. 2013. Incremental segmentation and
+decoding strategies for simultaneous translation.
+In Proceedings of the Sixth International Joint
+Conference on Natural Language Processing.
+Asian Federation of Natural Language Processing,
+Nagoya, Japan, pages 1032–1036. http://www.
+aclweb.org/anthology/I13-1141.
+
+499
+
+

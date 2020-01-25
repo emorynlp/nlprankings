@@ -1,0 +1,1602 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Fast Lexically Constrained Decoding with Dynamic Beam Allocation for Neural Machine Translation
+
+
+Proceedings of NAACL-HLT 2018, pages 1314–1324
+New Orleans, Louisiana, June 1 - 6, 2018. c©2018 Association for Computational Linguistics
+
+Fast Lexically Constrained Decoding with Dynamic Beam Allocation for
+Neural Machine Translation
+
+Matt Post and David Vilar
+Amazon Research
+Berlin, Germany
+
+Abstract
+
+The end-to-end nature of neural machine
+translation (NMT) removes many ways of
+manually guiding the translation process that
+were available in older paradigms. Recent
+work, however, has introduced a new capa-
+bility: lexically constrained or guided de-
+coding, a modification to beam search that
+forces the inclusion of pre-specified words and
+phrases in the output. However, while theoret-
+ically sound, existing approaches have com-
+putational complexities that are either linear
+(Hokamp and Liu, 2017) or exponential (An-
+derson et al., 2017) in the number of con-
+straints. We present an algorithm for lexi-
+cally constrained decoding with a complex-
+ity of O(1) in the number of constraints. We
+demonstrate the algorithm’s remarkable abil-
+ity to properly place these constraints, and use
+it to explore the shaky relationship between
+model and BLEU scores. Our implementation
+is available as part of SOCKEYE.
+
+1 Introduction
+
+One appeal of the phrase-based statistical ap-
+proach to machine translation (Koehn et al., 2003)
+was that it provided control over system output.
+For example, it was relatively easy to incorporate
+domain-specific dictionaries, or to force a transla-
+tion choice for certain words. These kinds of in-
+terventions were useful in a range of settings, in-
+cluding interactive machine translation or domain
+adaptation. In the new paradigm of neural ma-
+chine translation (NMT), these kinds of manual
+interventions are much more difficult, and a lot of
+time has been spent investigating how to restore
+them (cf. Arthur et al. (2016)).
+
+At the same time, NMT has also provided new
+capabilities. One interesting recent innovation is
+lexically constrained decoding, a modification to
+beam search that allows the user to specify words
+
+No one has the intention of building a wall.
+
+“errichten”
+
+Niemand hat die Absicht, eine Mauer zu bauen.  
+“No one has the intention, a wall to build.”
+
+Niemand hat die Absicht, eine Mauer zu errichten. 
+“No one has the intention, a wall to construct.”
+
+“Keiner”
+
+“Keiner” 
+"errichten”
+
+Keiner hat die Absicht, eine Mauer zu bauen.  
+“No one has the intention, a wall to build.”
+
+Keiner hat die Absicht, eine Mauer zu errichten. 
+“No one has the intention, a wall to construct.”
+
+Figure 1: An example translating from English to Ger-
+man. The first translation is unconstrained, whereas
+the remaining ones have one or two constraints im-
+posed. A word-for-word translation of the German
+output has been provided for the convenience of non-
+German speaking readers.
+
+and phrases that must appear in the system output
+(Figure 1). Two algorithms have been proposed
+for this: grid beam search (Hokamp and Liu,
+2017, GBS) and constrained beam search (Ander-
+son et al., 2017, CBS). These papers showed that
+these algorithms do a good job automatically plac-
+ing constraints and improving results in tasks such
+as simulated post-editing, domain adaptation, and
+caption generation.
+
+A downside to these algorithms is their runtime
+complexity: linear (GBS) or exponential (CBS) in
+the number of constraints. Neither paper reported
+decoding speeds, but the complexities alone sug-
+gest a large penalty in runtime. Beyond this, other
+factors of these approaches (a variable sized beam,
+finite-state machinery) change the decoding pro-
+cedure such that it is difficult to integrate with
+other operations known to increase throughput,
+like batch decoding.
+
+We propose and evaluate a new algorithm, dy-
+namic beam allocation (DBA), that is constant in
+the number of provided constraints (Table 1). Our
+algorithm works by grouping together hypotheses
+that have met the same number of constraints into
+
+1314
+
+
+
+work complexity
+Anderson et al. (2017) O(Nk2C)
+Hokamp and Liu (2017) O(NkC)
+This work O(Nk)
+
+Table 1: Complexity of decoding (sentence length N ,
+beam size k, and constraint count C) with target-side
+constraints under various approaches.
+
+banks (similar in spirit to the grouping of hypothe-
+ses into stacks for phrase-based decoding (Koehn
+et al., 2003)) and dynamically dividing a fixed-size
+beam across these banks at each time step. As a re-
+sult, the algorithm scales easily to large constraint
+sets that can be created when words and phrases
+are expanded, for example, by sub-word process-
+ing such as BPE (Sennrich et al., 2016). We com-
+pare it to GBS and demonstrate empirically that it
+is significantly faster, making constrained decod-
+ing with an arbitrary number of constraints feasi-
+ble with GPU-based inference. We also use the al-
+gorithm to study beam search interactions between
+model and metric scores, beam size, and pruning.
+
+2 Beam Search and Grid Beam Search
+
+Inference in statistical machine translation seeks
+to find the output sequence, ŷ, that maximizes
+the probability of a function parameterized by a
+model, θ, and an input sequence, x:
+
+ŷ = argmaxy∈Y pθ(y | x)
+
+The space of possible translations, Y , is the set of
+all sequences of words in the target language vo-
+cabulary, VT . It is impossible to explore this en-
+tire space. Models decompose this problem into a
+sequence of time steps, t. At each time step, the
+model produces a distribution over VT . The sim-
+plest approach to translation is therefore to run the
+steps of the decoder, choosing the most-probable
+token at each step, until either the end-of-sentence
+token, 〈/s〉, is generated, or some maximum out-
+put length is reached. An alternative, which ex-
+plores a slightly larger portion of the search space,
+is beam search.
+
+In beam search (Lowerre, 1976; Sutskever et al.,
+2014), the decoder maintains a beam of size k con-
+taining a set of active hypotheses (Algorithm 1).
+At each time step t, the decoder model is used to
+produce a distribution over the target-language vo-
+cabulary, VT , for each of these hypotheses. This
+produces a large matrix of dimensions k × |VT |,
+
+Algorithm 1 Beam search. Inputs: max output
+length N , beam size k. Output: highest-scoring
+hypothesis.
+
+1: function BEAM-SEARCH(N, k)
+2: beam← DECODER-INIT(k)
+3: for time step t in 1..N do
+4: scores = DECODER-STEP(beam)
+5: beam← KBEST(scores)
+6: return beam[0]
+7: function KBEST(scores)
+8: beam = ARGMAX K(k, scores)
+9: return beam
+
+that can be computed quickly with modern GPU
+hardware. Conceptually, a (row, column) entry
+(i, j) in this matrix contains the state obtained
+from starting from the ith state in the beam and
+generating the target word corresponding to the
+jth word of VT . The beam for the next time step
+is filled by taking the states corresponding to the
+k-best items from this entire matrix and sorting
+them.
+
+A principal difference between beam search for
+phrase-based and neural MT is that in NMT, there
+is no recombination: each hypothesis represents
+a complete history, back to the first word gener-
+ated. This makes it easy to record properties of
+the history of each hypothesis that were not possi-
+ble with dynamic programming. Hokamp and Liu
+(2017) introduced an algorithm for forcing certain
+words to appear in the output called grid beam
+search (GBS). This algorithm takes a set of con-
+straints, which are words that must appear in the
+output, and ensures that hypotheses have met all
+these constraints before they can be considered to
+be completed. For C constraints, this is accom-
+plished by maintaining C + 1 separate beams or
+banks, B0, B1, . . . , BC , where Bi groups together
+hypotheses that have generated (or met) i of the
+constraints. Decoding proceeds as with standard
+beam decoding, but with the addition of bookkeep-
+ing that tracks the number of constraints met by
+each hypothesis, and ensures that new candidates
+are generated, such that each bank is filled at each
+time step. When beam search is complete, the
+hypothesis returned is the highest-scoring one in
+bank BC . Conceptually, this can be thought of as
+adding an additional dimension to the beam, since
+we multiply out some base beam size b by (one
+plus) the number of constraints.
+
+1315
+
+
+
+We note two problems with GBS:
+
+• Decoding complexity is linear in the num-
+ber of constraints: The effective beam size,
+k · (C + 1), varies with the number of con-
+straints.
+
+• It is impractical. The beam size changes
+for every sentence, whereas most decoders
+specify the beam size at model load time in
+order to optimize computation graphs, spe-
+cially when running on GPUs. It also compli-
+cates beam search optimizations that increase
+throughput, such as batching.
+
+Our extension, fast lexically-constrained decoding
+via dynamic beam allocation (DBA), addresses
+both of these issues. Instead of maintaining C +1
+beams, we maintain a single beam of size k, as
+with unconstrained decoding. We then dynami-
+cally allocate the slots of this beam across the con-
+straint banks at each time step. There is still book-
+keeping overhead, but this cost is constant in the
+number of constraints, instead of linear. The result
+is a practical algorithm for incorporating arbitrary
+target-side constraints that fits within the standard
+beam-decoding paradigm.
+
+3 Dynamic Beam Allocation (DBA)
+
+Our algorithm (Algorithm 2) is based on a small
+but important alteration to GBS. Instead of multi-
+plying the beam by the number of constraints, we
+divide. A fixed beam size is therefore provided
+to the decoder, just as in standard beam search.
+As different sentences are processed with differing
+numbers of constraints, the beam is dynamically
+allocated to these different banks. In fact, the allo-
+cation varies not just by sentence, but across time
+steps in processing each individual sentence.
+
+We need to introduce some terminology. A
+word constraint provided to the decoder is a sin-
+gle token in the target language vocabulary. A
+phrasal constraint is a sequence of two or more
+contiguous tokens. Phrasal constraints come into
+play when the user specifies a multi-word phrase
+directly (e.g., high-ranking member), or when a
+word gets broken up by subword splitting (e.g.,
+thou@@ ghtful). The total number of constraints
+is the sum of the number of tokens across all word
+and phrasal constraints. It is easier for the decoder
+to place multiple sequential tokens in a phrasal
+constraint (where the permutation is fixed) com-
+pared to placing separate, independent constraints
+
+(see discussion at the end of §5), but the algorithm
+does not distinguish them when counting.
+
+DBA fits nicely within standard beam decod-
+ing; we simply replace the kbest implementation
+from Algorithm 1 with one that involves a bit more
+bookkeeping. Instead of selecting the top-k items
+from the k × VT scores matrix, the new algorithm
+must consider two important matters.
+
+1. Generating a list of candidates (§3.1).
+Whereas the baseline beam search simply
+takes the top-k items from the scores matrix
+(a fast operation on a GPU), we now need to
+ensure that candidates progress through the
+set of provided constraints.
+
+2. Allocating the beam across the constraint
+banks (§3.2). With a fixed-sized beam and
+an arbitrary number of constraints, we need
+to find an allocation strategy for dividing the
+beam across the constraint banks.
+
+3.1 Generating the candidate set
+We refer to Figure 2 for discussion of the algo-
+rithm. The set of candidates for the beam at time
+step t + 1 is generated from the hypotheses in the
+current beam at step t, which are sorted in de-
+creasing order, with the highest-scoring hypoth-
+esis at position 1. The DECODER-STEP function
+of beam search generates a matrix, scores , where
+each row r corresponds to a probability distribu-
+tion over all target words, expanding the hypoth-
+esis in position r in the beam. We build a set of
+candidates from the following items:
+
+1. The best k tokens across all rows of scores
+(i.e., normal top-k);
+
+2. for each hypothesis in the beam, all unmet
+constraints (to ensure progress through the
+constraints); and
+
+3. for each hypothesis in the beam, the
+single-best token (to ensure consideration of
+partially-completed hypotheses).
+
+Each of these candidates is denoted by its coordi-
+nates in scores. The result is a set of candidates
+which can be grouped into banks according to how
+many constraints they have met, and then sorted
+within those banks. The new beam for timestep
+t + 1 is then built from this list according to an
+allocation policy (next section).
+
+1316
+
+
+
+t V
+
+0.93 0.96 1.09 0.91 1.06
+→
+
+0.95 1.03
+→
+
+1.02 1.04
+→
+1.00
+
+0.89 1.08
+⟲
+
+1.07 1.03 0.97
+→
+
+0.98 0.93
+→
+
+0.99 1.02 0.98
+
+1.01 0.91 0.94 1.00 0.94 0.93 0.90 0.96
+⬦
+
+1.03
+→
+
+0.88
+
+0.97
+→
+
+0.88 0.93
+⬦⟲
+1.03 0.92 0.90 0.81 0.98 0.87 0.81
+
+0.91 0.93 0.91 0.84
+⬦
+0.95 0.90 0.83 0.94 0.83 0.87
+
+ge
+ne
+
+ra
+te
+
+, a
+llo
+
+ca
+te
+
+, a
+dj
+
+us
+t
+
+t+1
+
+(1, 3)
+
+(1, 10)
+
+(2, 2)
+
+(3, 10)
+
+(5, 5)
+
+for b in [0.9, 0.88, 0.85, 0.81, 0.79]:
+
+    t = [random.random() for x in range(10)];
+
+    t = [b + x / sum(t) for x in t];
+
+    print('\t'.join(['{:.2f}'.format(x) for x in t]))
+
+
+Figure 2: A single step of the constrained decoder. Along the left is the beam (k = 5) at time step t. The shapes
+in this beam represent constraints, both met (filled) and unmet (outlined). The blue square represents a phrasal
+constraint of length 2, which must be completed in order (left half, then right half). A step of the decoder produces
+a k × VT matrix of scores. Each constraint corresponds to a single token in the vocabulary, and is marked along
+the bottom. Gray squares denote the set of candidates that are produced (§3.1) from the k best items (F), from
+extending each hypothesis with all unfilled constraints (→), and from its single-best next token (3). Items that
+violate a phrasal constraint ( 	) require the phrasal constraint from that hypotheses to be unwound (set to unmet).
+From these fifteen candidates, the beam at time step t+1 is filled, according to the bank allocation strategy, which
+here assigns one slot in the beam to each bank. The final beam includes coordinates indicating the provenance of
+chosen items (which are also indicated in bold in the grid).
+
+For hypotheses partially through a phrasal con-
+straint, special care must be taken. If a phrasal
+constraint has been begun, but not finished, and a
+token is chosen that does not match the next word
+of the constraint, we must reset or “unwind” those
+tokens in this constraint that are marked as having
+been met. This permits the decoder to abort the
+generation of a phrasal constraint, which is impor-
+tant in situations where a partial prefix of a phrasal
+constraint appears in the decoded sentence earlier
+than the entire phrase.
+
+3.2 Allocating the beam
+
+The task is to allocate a size-k beam across C + 1
+constraint banks, where C may be greater than k.
+We use the term bank to denote the portion of the
+beam reserved for items having met the same num-
+ber of constraints (including one bank for hypothe-
+ses with zero constraints met). We use a simple
+allocation strategy, setting each bin size to bk/Cc,
+irrespective of the timestep. Any remaining slots
+are assigned to the “topmost” or maximally con-
+strained bank, C.
+
+This may at first appear wasteful. For exam-
+ple, space allocated at timestep 1 to a bank rep-
+resenting candidates having met more than one
+constraint cannot be used, and similarly, for later
+
+timesteps, it seems wasteful to allocate space to
+bank 1. Additionally, if the number of candidates
+in a bank is smaller than the allocation for that
+bank, the beam is in danger of being underfilled.
+These problems are mitigated by bank adjustment
+(Figure 3). We provide here only a sketch of this
+procedure. An overfilled bank is one that has been
+allocated more slots than it has candidates to fill.
+Each such overfilled bank, in turn, gives its extra
+allotments to banks that have more candidates than
+slots, looking first to its immediate neighbors, and
+moving outward until it has distributed all of its
+extra slots. In this way, the beam is filled, up to
+the minimum of the beam size or the number of
+candidates.
+
+3.3 Finishing
+
+Hypotheses are not allowed to generate the end-
+of-sentence token, 〈/s〉, unless they have met all
+of their constraints. When beam search is finished,
+the highest-scoring completed item is returned.
+
+4 Experimental Setup
+
+Our experiments were done using SOCKEYE
+(Hieber et al., 2017). We used an English–German
+model trained on the complete WMT’17 train-
+ing corpora (Bojar et al., 2017), which we pre-
+
+1317
+
+
+
+Algorithm 2 k-best extraction with DBA. Inputs: A k × |VT | matrix of model states.
+1: function KBEST-DBA(beam, scores)
+2: constraints← [hyp.constraint for hyp in beam]
+3: candidates← [(i, j, constraints[i].add(j)] for i, j in ARGMAX K(k, scores) . Top overall k
+4: for 1 ≤ h ≤ k do . Go over current beam
+5: for all w ∈ VT that are unmet constraints for beam[h] do . Expand new constraints
+6: candidates.append( (h,w, constraints[h].add(w) ) )
+7: w = ARGMAX(scores[h, :])
+8: candidates.append( (h,w, constraints[h].add(w)) ) . Best single word
+9: selected← ALLOCATE(candidates, k)
+
+10: newBeam← [candidates[i] for i in selected]
+11: return newBeam
+
+0
+
+1
+
+2
+
+3
+
+4
+
+0
+
+0
+
+1
+
+1
+
+1
+
+candidates allocation reallocation
+
+Figure 3: Beam reallocation for k = 5 with 4 con-
+straints at timestep t. There are eight candidates, each
+having met only 0 or 1 constraint. The allocation pol-
+icy gives one slot of the beam to each bank. However,
+there are no candidates for banks 2–4 (greyed), so their
+slots are redistributed to banks 0 and 1.
+
+processed with the Moses tokenizer (preserving
+case) and with a joint byte-pair-encoded vocabu-
+lary with 32k merge operations (Sennrich et al.,
+2016). The model was a 4 layer RNN with atten-
+tion. We trained using the Adam optimizer with
+a batch size of 80 until cross-entropy on the de-
+velopment data (newstest2016) stopped increasing
+for 10 consecutive iterations.
+
+For decoding, we normalize completed hy-
+potheses (those that have generated 〈/s〉), divid-
+ing the cumulative sentence score by the num-
+ber of words. Unless otherwise noted, we apply
+threshold pruning to the beam, removing hypothe-
+ses whose log probability is not within 20 com-
+pared to the best completed hypothesis. This prun-
+ing is applied to all hypotheses, whether they are
+
+complete or not. (We explore the importance of
+this pruning in §6.3). Decoding stops when either
+all hypotheses still on the beam are completed or
+the maximum length, N , is reached. All experi-
+ments were run on a single a Volta P100 GPU. No
+ensembling or batching were used.
+
+For experiments, we used the newstest2014
+English–German test set (the developer version,
+with 2,737 sentences). All BLEU scores are com-
+puted on detokenized output using SACREBLEU
+(Post, 2018),1 and are thus directly comparable to
+scores reported in the WMT evaluations.
+
+5 Validation Experiment
+
+We center our exploration of DBA by experiment-
+ing with constraints randomly selected from the
+references. We extract five sets of constraints:
+from one to four randomly selected words from
+the reference (rand1 to rand4), and a randomly
+selected four-word phrase (phr4). We then apply
+BPE to these sets, which often yields a much larger
+number of token constraints. Statistics about these
+extracted phrases can be found in Table 2.
+
+We simulate the GBS baseline within our
+framework. After applying BPE, We group to-
+gether translations with the same number of con-
+straints, C, and then translate them as a group,
+with the beam set for that group set to b(C + 1),
+where b is the “base beam” parameter. We use
+b = 10 as reported in Hokamp et al., but also try
+smaller values of b = 5 and 1. Finally, we disable
+beam adjustment (§3.2), so that the space allocated
+to each constraint bank does not change.
+
+Table 4 compares speeds and BLEU scores (in
+the legend) as a function of the number of post-
+
+1The signature is BLEU+case.mixed+lang.en-
+de+numrefs.1+smooth.exp+test.wmt14+tok.13a+v.1.2.6
+
+1318
+
+
+
+num rand1 rand2 rand3 rand4 phr4
+1 2,182 0 0 0 0
+2 548 3,430 0 0 0
+3 516 1,488 4,074 0 0
+4 272 1,128 2,316 4,492 4,388
+5 150 765 1,860 3,275 2,890
+6 30 306 1,218 2,520 2,646
+7 42 133 805 1,736 1,967
+8 0 112 488 1,096 1,280
+9 0 36 171 702 720
+10 0 10 140 400 430
+11+ 0 22 189 417 575
+total 3,726 7,477 11,205 14,885 14,926
+mean 1.36 2.73 4.09 5.43 5.45
+
+Table 2: Histogram of the number of token constraints
+for some constraint sets after applying BPE (model
+trained with 32k merge operations). mean denotes the
+mean number of constraints per sentence in the 2,737-
+sentence test set.
+
+BPE constraints for the rand3 dataset. We plot
+all points for which there were at least 10 sen-
+tences. The times are decoding only, and exclude
+model loading and other setup. The linear trend
+in C is clear for GBS, as is the constant trend
+for DBA. In terms of absolute runtimes, DBA im-
+proves considerably over GBS, whose beam sizes
+quickly become quite large with a non-unit base
+beam size. On the Tesla V100 GPU, DBA (k =
+10) takes about 0.6 seconds/sentence, regardless
+of the number of constraints.2 This is about 3x
+slower than unconstrained decoding.
+
+It is difficult to compare these algorithms ex-
+actly because of GBS’s variable beam size. An
+important comparison is that between DBA (k =
+10) and GBS/1 (base beam of 1). A beam of
+k = 10 is a common setting for decoding in gen-
+eral, and GBS/1 has a beam size of k ≥ 10 for
+C ≥ 9. At this setting, DBA finds better transla-
+tions (BLEU 26.7 vs. 25.6) with the same runtime
+and with a fixed, instead of variable-sized, beam.
+
+We note that the bank adjustment correction
+of the DBA algorithm allows it to work when
+C >= k. The DBA (k = 5) plot demonstrates
+this, while still finding a way to increase the BLEU
+score over GBS (23.5 vs. 22.3). However, while
+possible, low k relative to C reduces the observed
+improvement considerably. Looking at Figure 5
+across different constraint sets, we can get a better
+feel for this relationship. DBA is still always able
+to meet the constraints even with a beam size of 5,
+
+2On a K80, it is about 1.4 seconds / sentence
+
+Volta decoding rand3 
+beam size = 10 (DBA), 5(C+1) (GBS)
+
+GBS/10 (BLEU 
+27.8, k=(C+1)×10)
+
+GBS/5 (BLEU 27.5, 
+k=(C+1)×5)
+
+GBS/1 (BLEU 25.6, 
+k=(C+1)×1)
+
+DBA (BLEU 27.2, 
+k=20)
+
+DBA (BLEU 26.7, 
+k=10)
+
+DBA (BLEU 23.5, 
+k=5)
+
+unconstrained 
+(k=10)
+
+counts
+
+3 1.8101 1.0757 0.4725 1.1538 0.6817 0.4805 0.2133 1358
+
+4 2.1669 1.2887 0.4923 1.1083 0.7240 0.5139 0.2133 579
+
+5 2.5580 1.4420 0.5556 1.1052 0.6874 0.4012 0.2133 372
+
+6 2.8908 1.6499 0.5844 1.0443 0.6858 0.4204 0.2133 203
+
+7 3.4037 1.9266 0.7074 1.1524 0.7445 0.4466 0.2133 115
+
+8 3.8006 2.0444 0.7642 1.1847 0.8012 0.4802 0.2133 61
+
+9 3.9575 2.1997 0.8096 1.1856 0.8057 0.4603 0.2133 19
+
+10 4.3779 2.4897 0.9564 1.1785 0.6904 0.5947 0.2133 14
+
+11 4.7845 2.6689 1.1181 1.3284 0.8735 0.7886 0.2133 8
+
+12 4.8664 2.9615 1.2622 1.5562 1.0878 0.8452 0.2133 5
+
+13 3.0738 1.9880 1.0199 1.0908 0.8781 0.7931 0.2133 2
+
+15 4.4652 2.7549 1.3539 1.4413 1.0156 0.9548 0.2133 1
+
+se
+co
+
+nd
+s /
+
+ se
+nt
+
+en
+ce
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+number of constraints, C (after BPE)
+
+3 4 5 6 7 8 9 10
+
+GBS/10 (BLEU 27.8, k=(C+1)×10)
+GBS/5 (BLEU 27.5, k=(C+1)×5)
+GBS/1 (BLEU 25.6, k=(C+1)×1)
+DBA (BLEU 27.2, k=20)
+DBA (BLEU 26.7, k=10)
+DBA (BLEU 23.5, k=5)
+unconstrained (k=10)
+
+Volta decoding 
+beam size = 10 (DBA), 5(C+1) (GBS)-1
+
+# constraints phr2 phr3 phr4 rand1 rand2 rand3
+0
+
+1 0.6303
+2 0.6407 0.6862 0.6560
+3 0.6534 0.6404 0.6865 0.6584 0.6817
+4 0.6493 0.6799 0.6439 0.7503 0.7267 0.7240
+5 0.6441 0.6165 0.6141 0.7177 0.6706 0.6874
+6 0.7285 0.7219 0.6195 0.7096 0.6858
+7 0.7426 0.6765 0.6883 0.7445
+8 0.7091 0.6819 0.8012
+9 0.8327
+
+10 0.5532
+11
+
+12
+
+13
+
+14
+
+15
+
+16
+
+17
+
+threshold 30
+
+times
+0
+
+1 0.6303
+2 0.6407 0.6862 0.6560
+3 0.6534 0.6404 0.6865 0.6584 0.6817
+4 0.6493 0.6799 0.6439 0.7503 0.7267 0.7240
+5 0.6441 0.6165 0.6141 0.7177 0.6706 0.6874
+6 0.7285 0.7219 0.6195 0.8798 0.7096 0.6858
+7 0.7426 0.6765 0.6883 0.8994 0.7814 0.7445
+8 1.1061 0.7091 0.6819 1.2610 0.8012
+9 1.4579 0.8107 0.8327 0.8215 0.8057
+
+10 0.7694 0.5532 1.0103 0.6904
+11 0.7960 0.8048 0.6271 1.4163 0.8735
+12 0.6904 1.0627 1.0878
+13 0.7613 1.2263 0.8781
+14 0.9635 0.7614 1.0156
+15 0.7341
+16
+
+17
+
+counts
+0 0
+1 0 2149
+
+2 1679 317 1765
+
+3 517 1355 171 453 1398
+
+4 301 572 1100 53 284 554
+
+5 135 400 600 33 136 356
+
+6 57 208 467 9 62 209
+
+7 36 104 254 5 20 113
+
+8 7 57 152 6 61
+
+9 2 25 78 5 25
+
+10 5 42 5 14
+
+11 3 2 19 1 4
+
+12 4 8 1
+
+13 2 2 1
+
+14 1 4 1
+
+15 2
+
+16
+
+17
+
+# constraints
+
+25.6
+
+27.5
+
+27.8
+
+23.5
+
+26.7
+
+27.2
+
+�1
+
+Figure 4: Running time (seconds / sentence, lower is
+better) as a function of the number of constraints, C
+(after applying BPE) on the rand3 dataset. The un-
+constrained baselines have BLEU scores of 22.3, 22.3,
+and 22.1 for k = 5, 10, and 20, respectively.
+
+but the quality suffers. This should not be too sur-
+prising; correctly placing independent constraints
+is at least as hard as finding their correct permuta-
+tion, which is exponential in the number of inde-
+pendent constraints. But it is remarkable that the
+only failure to beat the baseline in terms of BLEU
+is when the algorithm is tasked with placing four
+random constraints (before BPE) with a beam size
+of 5. In contrast, DBA never has any trouble plac-
+ing phrasal constraints (dashed lines).
+
+6 Analysis
+
+6.1 Placement
+It’s possible that the BLEU gains result from a
+boost in n-gram counts due to the mere presence of
+the reference constraints in the output, as opposed
+to their correct placement. This appears not to be
+the case. Experience examining the outputs shows
+its uncanny ability to sensibly place constrained
+words and phrases. Figure 6 contains some exam-
+ples from translating a German sentence into En-
+glish, manually identifying interesting phrases in
+the target, choosing paraphrases of those words,
+and then decoding with them as constraints. Note
+that the word weak, which doesn’t fit in the seman-
+tics of the reference, is placed haphazardly.
+
+We also confirm this correct placement quanti-
+tatively by comparing the location of the first word
+of each constraint in (a) the reference and (b) the
+output of the constrained decoder, represented as a
+percentage of the respective sentence lengths (Fig-
+ure 7). We would not expect these numbers to
+
+1319
+
+
+
+Volta decoding rand3  
+beam size = 10 (DBA), 5(C+1) (GBS)
+
+5 10 20 30
+
+phr4 31.34 35.68 36.29 36.45
+
+phr3 29.03 31.33 32.00 32.04
+
+rand4 20.70 26.91 28.43 28.76
+
+phr2 26.72 27.66 28.13 28.06
+
+rand3 23.51 26.73 27.23 27.64
+
+rand2 24.64 25.64 26.13 26.22
+
+rand1 24.38 24.60 24.71 24.70
+
+unconstrained 22.33 22.33 22.15 21.86
+
+B
+LE
+
+U
+
+15
+
+20
+
+25
+
+30
+
+35
+
+40
+
+beam size
+
+5 10 20 30
+
+phr4 phr3
+rand4 phr2
+rand3 rand2
+rand1 unconstrained
+
+B
+LE
+
+U
+
+15
+
+20
+
+25
+
+30
+
+35
+
+40
+
+beam size
+
+5 10 20 30
+
+phr4 phr3
+rand4 phr2
+rand3 rand2
+rand1 unconstrained
+
+�1
+
+Figure 5: BLEU score as a function of beam size un-
+der DBA. All constraint sets improve as the beam gets
+larger (recall that the actual number of constraints in-
+creases after BPE and varies by sentence). rand4 per-
+forms under the unconstrained baseline if the beam is
+too low.
+
+be perfectly matched, but the strong correlation is
+pretty apparent (Pearson’s r = 0.82). Together,
+Figures 6 and 7 provide confidence that DBA is
+intelligently placing the constraints.
+
+6.2 Reference Aversion
+The inference procedure in SOCKEYE maximizes
+the length-normalized version of the sentence’s
+log probability. While there is no explicit training
+towards the metric, BLEU, modeling in machine
+translation assumes that better model scores cor-
+relate with better BLEU scores. However, a gen-
+eral repeated observation from the NMT literature
+is the disconnect between model score and BLEU
+score. For example, work has shown that open-
+ing up the beam to let the decoder find better hy-
+potheses results in lower BLEU score (Koehn and
+Knowles, 2017), even as the model score rises.
+The phenomenon is not well understood, but it
+seems that NMT models have learned to travel a
+path straight towards their goal; as soon as they
+get off this path, they get lost, and can no longer
+function (Ott et al., 2018).
+
+Another way to look at this problem is to ask
+what the neural model thinks of the references.
+Scoring against complete references is easy with
+NMT (Sennrich, 2017), but lexically-constrained
+decoding allows us to investigate this in finer-
+grained detail by including just portions of the
+references. We observe that forcing the decoder
+to include even a single word from the reference
+imposes a cost in model score that is inversely
+
+0 3 5 10 20 30
+none 24.4 24.5 24.5 24.4 24.5 24.4
+rand1 25.2 25.1 25.2 25.6 25.5 25.3
+rand2 26.0 25.3 25.6 26.1 26.7 26.4
+rand3 26.5 24.7 24.9 25.7 26.9 27.2
+rand4 26.2 23.7 23.9 24.6 26.0 26.9
+phr4 35.1 33.5 33.5 34.0 35.0 35.9
+
+Table 3: BLEU scores decoding with a beam size of 10.
+Runtimes for unpruned systems (column 0) are nearly
+twice those of the other columns. But it is only at large
+thresholds that BLEU scores are higher than the un-
+pruned setting.
+
+correlated with BLEU score, and that this grows
+with the number of constraints that are added (Fig-
+ure 8). The NMT system seems quite averse to the
+references, even in small pieces, and even while
+it improves the BLEU score. At the same time,
+the hypotheses it finds in this reduced space are
+still good, and become better as the beam is en-
+largened (Figure 5). This provides a complemen-
+tary finding to that of Koehn and Knowles (2017):
+in that setting, higher model scores found by a
+larger beam produce lower BLEU scores; here,
+lower model scores are associated with signifi-
+cantly higher BLEU scores.
+
+6.3 Effects of Pruning
+
+In the results reported above, we used a prun-
+ing threshold of 20, meaning that any hypothe-
+sis whose log probability is not within 20 of the
+best completed hypothesis is removed from the
+beam. This pruning threshold is far greater than
+those explored in other papers; for example, Wu
+et al. (2016) use 3. However, we observed two
+things: first, without pruning, running time for
+constrained decoding is nearly doubled. This in-
+creased runtime applies to both DBA and GBS
+in Figure 4. Second, low pruning thresholds are
+harmful to BLEU scores (Table 3). It is only once
+the thresholds reach 20 that the algorithm is able
+to find better BLEU scores compared to the un-
+pruned baseline (column 0).
+
+6.4 Garbage Generation
+
+Why is the algorithm so slow without pruning?
+One might suspect that the outputs are longer,
+but mean output length with all constraint sets is
+roughly the same. The reason turns out to be that
+the the decoder never quits before the maximum
+
+1320
+
+
+
+constraint score output
+source Einer soll ein hochrangiges Mitglied aus Berlin gewesen sein .
+no constraints -0.217 One should have been a high-ranking member from Berlin .
+is said to -0.551 One is said to have been a high-ranking member from Berlin .
+of them -0.577 One of them was to be a high-ranking member from Berlin .
+participant -0.766 One should have been a high-ranking participant from Berlin .
+is thought to -0.792 One is thought to have been a high-ranking member from Berlin .
+considered -0.967 One is considered to have been a high-ranking member from Berlin .
+Hamburg -1.165 One should have been a high-ranking member from Hamburg .
+powerful -1.360 One is to have been a powerful member from Berlin .
+powerful, is said to -1.496 One is said to have been a powerful member from Berlin .
+powerful, is said to, participant -1.988 One is said to have been a powerful participant from Berlin .
+weak -1.431 One weak point was to have been a high-ranking member from Berlin .
+reference One is said to have been a high-ranking member from Berlin.
+
+Figure 6: Example demonstrating the correct placement of manually chosen constraints (beam size 10). The
+unnatural placement of the constraint weak demonstrates what the model does when forced to include a word that
+is not a semantic fit.
+
+po
+si
+
+tio
+n 
+
+in
+ o
+
+ut
+pu
+
+t (
+%
+
+)
+
+position in reference (%)
+
+Figure 7: Location of the first word of each constraint
+from phr3 in the reference versus the constrained out-
+put (Pearson’s r = 0.82). DBA correctly places its
+constraints, even though no source word or alignment
+information is provided.
+
+timestep, N . SOCKEYE’s stopping criterium is
+to wait until all hypotheses on the beam are fin-
+ished. Without pruning, the decoder generates
+a finished hypotheses, but continues on until the
+maximum timestep N , populating the rest of the
+beam with low-cost garbage. An example can be
+found in Figure 9. This may be an example of
+the well-attested phenomenon where NMT sys-
+tems become unhinged from the source sentence,
+switching into “language model” mode and gen-
+erating high-probable output with no end. But
+strangely, this doesn’t seem to affect the best hy-
+potheses, but only the rest of the beam. This seems
+to be more evidence of reference aversion, where
+
+beam=10
+
+run model BLEU
+
+none -1039.86 22.33
+
+rand1 -1337.54 24.60
+
+rand2 -1724.98 25.64 test
+
+rand3 -2236.24 26.73
+
+rand4 -3082.17 26.91
+
+phr2 -1766.27 27.66
+
+phr3 -2156.17 31.33
+
+phr4 -2681.62 35.68
+
+ref 95.86 4396.46
+
+0
+
+10
+
+20
+
+30
+
+40
+
+-4,000 -3,000 -2,000 -1,000 0
+
+none
+
+rand1
+rand4
+
+phr4
+phr3
+
+rand3 rand2
+
+phr2
+
+�1
+
+Figure 8: BLEU score as a function of model score
+(summed over the corpus). The reference model score
+is -4,396.
+
+the decoder, having been forced into a place it
+doesn’t like, does not know how to generate good
+competing hypotheses.
+
+An alternative to pruning is early stopping,
+which is to stop when the first complete hypothe-
+sis is generated. In our experiments, while this did
+fix the problem of increasing runtimes, the BLEU
+scores were lower.
+
+6.5 Conclusions
+
+By setting a large pruning threshold, we produced
+large speedups over GBS, and demonstrated a con-
+stant overhead in the number of constraints. Com-
+pared to GBS, our DBA algorithm makes lexi-
+cally constrained decoding possible, requiring less
+than half a second on average on a Volta GPU with
+a 4-layer RNN.
+
+1321
+
+
+
+1 2 3 4 5 6 7 8 9 10 11 12 13 14 . . . 41
+-0.51 〈s〉 Er und Kerr lieben einander noch immer , betonte die 36-Jährige . 〈/s〉
+-0.52 〈s〉 Er und Kerr lieben einander noch immer , betonte der 36-Jährige . 〈/s〉
+-0.56 〈s〉 Er und Kerr lieben einander noch immer , betonte die 36-jährige . 〈/s〉
+-0.57 〈s〉 Er und Kerr lieben einander noch immer , betonte den 36-jährigen . 〈/s〉
+
+-25.11 〈s〉 Er und Kerr lieben sich weiterhin einander , betonte die 36-Jährige . &#160; . . . &#160;
+-27.92 〈s〉 Er und Kerr lieben sich weiterhin einander , betonte die 36-Jährige . &#160; . . . &#160;
+
+Figure 9: The sentence He and Kerr still love each other , emphasised the 36-year-old . translated with the
+constraint noch immer , betonte (BPE removed for readability). The first column is the log probability, which
+is normalized only for finished hypotheses. The decoder completes a few hypotheses well before the maximum
+timestep, but then fills the lower beam with garbage until forced to stop.
+
+7 Related Work
+
+Hokamp and Liu (2017) was novel in that it
+allowed the specification of arbitrary target-side
+words as hard constraints, implemented entirely as
+a restructuring of beam search, and without refer-
+ence to the source. A related approach was that of
+Anderson et al. (2017), who extended beam search
+with a finite state machine whose states marked
+completed subsets of the set of constraints, at an
+exponential cost in the number of constraints.
+
+Lexically-constrained decoding also general-
+izes prefix decoding (Knowles and Koehn, 2016;
+Wuebker et al., 2016), since the 〈s〉 symbol can
+easily be included as the first word of a constraint.
+
+Our work here has not explored where to get
+lexical constraints, but considering that question
+naturally brings to mind attempts to improve NMT
+by using lexicons and phrase tables (Arthur et al.,
+2016; Tang et al., 2016).
+
+Finally, another approach which shares the
+hard-decision made by lexically constrained de-
+coding is the placeholder approach (Crego et al.,
+2016), wherein identifiable elements in the in-
+put are transformed to masks during preprocess-
+ing, and then replaced with their original source-
+language strings during postprocessing.
+
+8 Summary
+
+Neural machine translation removes many of the
+knobs from phrase-based MT that provided fine-
+grained control over system output. Lexically-
+constrained decoding restores one of these tools,
+providing a powerful and interesting way to in-
+fluence NMT output. It requires only the speci-
+fication of the target-side constraints; without any
+source word or alignment information, it correctly
+places the constraints. Although we have only
+tested it here with RNNs, the code works with-
+out modification with other architectures generate
+target-side words one-by-one, such as the Trans-
+
+former (Vaswani et al., 2017).
+This paper has introduced a fast and practical
+
+solution. Building on previous approaches, con-
+strained decoding with DBA does away with lin-
+ear and exponential complexity (in the number of
+constraints), imposing only a constant overhead.
+On a Volta GPU, lexically-constrained decoding
+with DBA is practical, requiring about 0.6 sec-
+onds per sentence on average even with 10+ con-
+straints, well within the realm of feasibility even
+for applications with strict lattency requirements,
+like post-editing tasks. We imagine that there are
+further optimizations in reach that could improve
+this even further.
+
+Acknowledgments We thank Felix Hieber for
+valuable discussions.
+
+References
+
+Peter Anderson, Basura Fernando, Mark Johnson, and
+Stephen Gould. 2017. Guided open vocabulary im-
+age captioning with constrained beam search. In
+Proceedings of the 2017 Conference on Empirical
+Methods in Natural Language Processing, pages
+936–945. Association for Computational Linguis-
+tics.
+
+Philip Arthur, Graham Neubig, and Satoshi Nakamura.
+2016. Incorporating discrete translation lexicons
+into neural machine translation. In Proceedings of
+the 2016 Conference on Empirical Methods in Nat-
+ural Language Processing, pages 1557–1567. Asso-
+ciation for Computational Linguistics.
+
+Ondřej Bojar, Rajen Chatterjee, Christian Federmann,
+Yvette Graham, Barry Haddow, Shujian Huang,
+Matthias Huck, Philipp Koehn, Qun Liu, Varvara
+Logacheva, Christof Monz, Matteo Negri, Matt
+Post, Raphael Rubino, Lucia Specia, and Marco
+Turchi. 2017. Findings of the 2017 conference on
+machine translation (wmt17). In Proceedings of the
+Second Conference on Machine Translation, pages
+169–214. Association for Computational Linguis-
+tics.
+
+1322
+
+
+
+Josep Crego, Jungi Kim, Guillaume Klein, Anabel Re-
+bollo, Kathy Yang, Jean Senellart, Egor Akhanov,
+Patrice Brunelle, Aurelien Coquard, Yongchao
+Deng, Satoshi Enoue, Chiyo Geiss, Joshua Johan-
+son, Ardas Khalsa, Raoum Khiari, Byeongil Ko,
+Catherine Kobus, Jean Lorieux, Leidiana Martins,
+Dang-Chuan Nguyen, Alexandra Priori, Thomas
+Riccardi, Natalia Segal, Christophe Servan, Cyril Ti-
+quet, Bo Wang, Jin Yang, Dakun Zhang, Jing Zhou,
+and Peter Zoldan. 2016. Systran’s pure neural ma-
+chine translation systems. CoRR.
+
+Felix Hieber, Tobias Domhan, Michael Denkowski,
+David Vilar, Artem Sokolov, Ann Clifton, and Matt
+Post. 2017. Sockeye: A toolkit for neural ma-
+chine translation. Computing Research Repository,
+abs/1712.05690.
+
+Chris Hokamp and Qun Liu. 2017. Lexically con-
+strained decoding for sequence generation using grid
+beam search. In Proceedings of the 55th Annual
+Meeting of the Association for Computational Lin-
+guistics (Volume 1: Long Papers), pages 1535–
+1546. Association for Computational Linguistics.
+
+Howard Johnson, Joel Martin, George Foster, and
+Roland Kuhn. 2007. Improving translation qual-
+ity by discarding most of the phrasetable. In Pro-
+ceedings of the 2007 Joint Conference on Empirical
+Methods in Natural Language Processing and Com-
+putational Natural Language Learning (EMNLP-
+CoNLL).
+
+Rebecca Knowles and Philipp Koehn. 2016. Neural
+interactive translation prediction. In Proceedings
+of the Association for Machine Translation in the
+Americas, pages 107–120.
+
+Philipp Koehn and Rebecca Knowles. 2017. Six chal-
+lenges for neural machine translation. In Pro-
+ceedings of the First Workshop on Neural Machine
+Translation, pages 28–39. Association for Compu-
+tational Linguistics.
+
+Philipp Koehn, Franz J. Och, and Daniel Marcu. 2003.
+Statistical phrase-based translation. In Proceedings
+of the 2003 Human Language Technology Confer-
+ence of the North American Chapter of the Associa-
+tion for Computational Linguistics.
+
+Pierre Lison and Jörg Tiedemann. 2016. Opensub-
+titles2016: Extracting large parallel corpora from
+movie and tv subtitles. In Proceedings of the Tenth
+International Conference on Language Resources
+and Evaluation (LREC 2016), Paris, France. Euro-
+pean Language Resources Association (ELRA).
+
+Bruce T. Lowerre. 1976. The HARPY speech recogni-
+tion system. Ph.D. thesis, Carnegie-Mellon Univer-
+sity.
+
+Christopher Manning, Mihai Surdeanu, John Bauer,
+Jenny Finkel, Steven Bethard, and David McClosky.
+2014. The stanford corenlp natural language pro-
+cessing toolkit. In Proceedings of 52nd Annual
+
+Meeting of the Association for Computational Lin-
+guistics: System Demonstrations, pages 55–60. As-
+sociation for Computational Linguistics.
+
+Myle Ott, Michael Auli, David Grangier, and
+Marc’Aurelio Ranzato. 2018. Analyzing uncer-
+tainty in neural machine translation. CoRR,
+abs/1803.00047.
+
+Matt Post. 2018. A call for clarity in report-
+ing bleu scores. Computing Research Repository,
+abs/1804.08771.
+
+Rico Sennrich. 2017. How grammatical is character-
+level neural machine translation? assessing mt qual-
+ity with contrastive translation pairs. In Proceedings
+of the 15th Conference of the European Chapter of
+the Association for Computational Linguistics: Vol-
+ume 2, Short Papers, pages 376–382. Association
+for Computational Linguistics.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016. Neural machine translation of rare words
+with subword units. In Proceedings of the 54th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1715–
+1725. Association for Computational Linguistics.
+
+Ilya Sutskever, Oriol Vinyals, and Quoc V Le. 2014.
+Sequence to sequence learning with neural net-
+works. In Z. Ghahramani, M. Welling, C. Cortes,
+N. D. Lawrence, and K. Q. Weinberger, editors, Ad-
+vances in Neural Information Processing Systems
+27, pages 3104–3112. Curran Associates, Inc.
+
+Yaohua Tang, Fandong Meng, Zhengdong Lu, Hang Li,
+and Philip L. H. Yu. 2016. Neural machine transla-
+tion with external phrase memory. CoRR.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. CoRR.
+
+Yonghui Wu, Mike Schuster, Zhifeng Chen, Quoc V.
+Le, Mohammad Norouzi, Wolfgang Macherey,
+Maxim Krikun, Yuan Cao, Qin Gao, Klaus
+Macherey, Jeff Klingner, Apurva Shah, Melvin
+Johnson, Xiaobing Liu, Łukasz Kaiser, Stephan
+Gouws, Yoshikiyo Kato, Taku Kudo, Hideto
+Kazawa, Keith Stevens, George Kurian, Nishant
+Patil, Wei Wang, Cliff Young, Jason Smith, Jason
+Riesa, Alex Rudnick, Oriol Vinyals, Greg Corrado,
+Macduff Hughes, and Jeffrey Dean. 2016. Google’s
+neural machine translation system: Bridging the gap
+between human and machine translation. CoRR,
+abs/1609.08144.
+
+Joern Wuebker, Spence Green, John DeNero, Sasa
+Hasan, and Minh-Thang Luong. 2016. Models and
+inference for prefix-constrained machine translation.
+In Proceedings of the 54th Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers), pages 66–75. Association for Compu-
+tational Linguistics.
+
+1323
+
+
+
+A Appendix: Failed Experiments
+
+The main contribution of this paper is a fast,
+practical algorithmic improvement to lexically-
+constrained decoding. While we did not attempt to
+corroborate the experiments in interactive transla-
+tion and domain adaptation experiments reported
+in (Hokamp and Liu, 2017), the gains discovered
+there only become more salient with this faster al-
+gorithm. We did try to apply lexical constraints in
+a few other settings, but without success. In the
+spirit of open scientific inquiry and reporting, we
+provide here a brief report on these experiments.
+
+A.1 Automatic Constraint Selection
+
+Our validation experiments (§5) demonstrate the
+large potential gains in BLEU score when includ-
+ing random phrases from the reference. Even in-
+cluding just a single random word from the ref-
+erence increased BLEU score by a point; an-
+other point was gained from including two ran-
+dom words, and a four-word phrase yielded 10+
+point gains. Only about 18% of these random un-
+igrams were present in the unconstrained output
+(less for longer n-grams). This raises the question
+of whether we can automatically identify words
+that are likely to be in the reference and include
+them as constraints, in order to improve transla-
+tion quality.
+
+In order to do that, we first extracted a phrase
+table using Moses and filtered it with the signifi-
+cance testing approach proposed by Johnson et al.
+(2007) in order to keep only high quality phrases.
+We then selected the best phrase for each input
+sentence according to different criteria (longest
+phrase, higher significance, highest probability,
+combination of those). Unfortunately, adding such
+phrases as constraints when translating WMT or
+IWSLT data did not help.
+
+A.2 Name Entity Translation
+
+One topic that has received attention in the litera-
+ture is the tendency of NMT systems to do poorly
+with rare words, and in particular, named entities
+(e.g., Arthur et al. (2016)). BPE helps address this
+by breaking down words into pieces and allowing
+all words to be represented in the decoder’s vocab-
+ulary. But even with BPE, many times the correct
+translation does not follow any pattern, even at the
+subword level. This is specially true for named
+entities; e.g. “Aachen” in German is translated as
+“Aquisgrán” in Spanish or “Aix-la-Chapelle” in
+
+French, which bear little resemblance to the origi-
+nal form except for the starting letter. Named en-
+tities (NEs) also have the advantage that in several
+languages they are not inflected; therefore a simple
+lookup in a dictionary, if available, should produce
+the correct translation.
+
+To the best of our knowledge, there is no pub-
+licly available parallel corpus of named entities. In
+order to create one, we downloaded the OpenSub-
+titles database (Lison and Tiedemann, 2016) for
+German and English and applied a simple method
+for extracting named entity correspondences. We
+first tagged the source and target sides with the
+Stanford NER system (Manning et al., 2014).
+We then selected a subset of the tags that were
+produced by both systems (“Person”, “Location”
+and “Organization”) and selected those sentences
+where they appeared only once for each language.
+From those we extracted the corresponding NEs,
+selecting the most frequent target side at the cor-
+pus level as the translation of a given source NE.
+
+Given such a dictionary, we can add the trans-
+lation of a NE found in new sentences to translate
+as decoding constraints. It didn’t help. Manual in-
+spection showed that the dictionary extracted with
+this simple method was still too noisy. We think
+that a manual, high-quality dictionary may provide
+a way to produce improvements.
+
+1324
+
+

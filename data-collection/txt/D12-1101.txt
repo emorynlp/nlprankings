@@ -1,0 +1,1375 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Monte Carlo MCMC: Efficient Inference by Approximate Sampling
+
+
+Proceedings of the 2012 Joint Conference on Empirical Methods in Natural Language Processing and Computational Natural
+Language Learning, pages 1104–1113, Jeju Island, Korea, 12–14 July 2012. c©2012 Association for Computational Linguistics
+
+Monte Carlo MCMC: Efficient Inference by Approximate Sampling
+
+Sameer Singh
+University of Massachusetts
+
+140 Governor’s Drive
+Amherst MA
+
+sameer@cs.umass.edu
+
+Michael Wick
+University of Massachsetts
+
+140 Governor’s Drive
+Amherst, MA
+
+mwick@cs.umass.edu
+
+Andrew McCallum
+University of Massachusetts
+
+140 Governor’s Drive
+Amherst MA
+
+mccallum@cs.umass.edu
+
+Abstract
+
+Conditional random fields and other graphi-
+cal models have achieved state of the art re-
+sults in a variety of tasks such as coreference,
+relation extraction, data integration, and pars-
+ing. Increasingly, practitioners are using mod-
+els with more complex structure—higher tree-
+width, larger fan-out, more features, and more
+data—rendering even approximate inference
+methods such as MCMC inefficient. In this
+paper we propose an alternative MCMC sam-
+pling scheme in which transition probabilities
+are approximated by sampling from the set
+of relevant factors. We demonstrate that our
+method converges more quickly than a tradi-
+tional MCMC sampler for both marginal and
+MAP inference. In an author coreference task
+with over 5 million mentions, we achieve a 13
+times speedup over regular MCMC inference.
+
+1 Introduction
+
+Conditional random fields and other graphical mod-
+els are at the forefront of many natural language
+processing (NLP) and information extraction (IE)
+tasks because they provide a framework for discrim-
+inative modeling while succinctly representing de-
+pendencies among many related output variables.
+Previously, most applications of graphical models
+were limited to structures where exact inference is
+possible, for example linear-chain CRFs (Lafferty
+et al., 2001). More recently, there has been a de-
+sire to include more factors, longer range depen-
+dencies, and more sophisticated features; these in-
+clude skip-chain CRFs for named entity recogni-
+tion (Sutton and McCallum, 2004), probabilistic
+
+DBs (Wick et al., 2010), higher-order models for
+dependency parsing (Carreras, 2007), entity-wise
+models for coreference (Culotta et al., 2007; Wick
+et al., 2009), and global models of relations (Hoff-
+mann et al., 2011). The increasing sophistication of
+these individual NLP components compounded with
+the community’s desire to model these tasks jointly
+across cross-document considerations has resulted
+in graphical models for which inference is compu-
+tationally intractable. Even popular approximate in-
+ference techniques such as loopy belief propagation
+and Markov chain Monte Carlo (MCMC) may be
+prohibitively slow.
+
+MCMC algorithms such as Metropolis-Hastings
+are usually efficient for graphical models because
+the only factors needed to score a proposal are those
+touching the changed variables. However, MCMC
+is slowed in situations where a) the model exhibits
+variables that have a high-degree (neighbor many
+factors), b) proposals modify a substantial subset of
+the variables to satisfy domain constraints (such as
+transitivity in coreference), or c) evaluating a single
+factor is expensive, for example when features are
+based on string-similarity. For example, the seem-
+ingly innocuous proposal changing the entity type of
+a single entity requires examining all its mentions,
+i.e. scoring a linear number of factors (in the num-
+ber of mentions of that entity). Similarly, evaluating
+coreference of a mention to an entity also requires
+scoring factors to all the mentions of the entity. Of-
+ten, however, the factors are somewhat redundant,
+for example, not all mentions of the “USA” entity
+need to be examined to confidently conclude that it
+is a COUNTRY, or that it is coreferent with “United
+
+1104
+
+
+
+States of America”.
+In this paper we propose an approximate MCMC
+
+framework that facilitates efficient inference in high-
+degree graphical models. In particular, we approx-
+imate the acceptance ratio in the Metropolis Hast-
+ings algorithm by replacing the exact model score
+with a stochastic approximation that samples from
+the set of relevant factors. We explore two sampling
+strategies, a fixed proportion approach that samples
+the factors uniformly, and a dynamic alternative that
+samples factors until the method is confident about
+its estimate of the model score.
+
+We evaluate our method empirically on both syn-
+thetic and real-world data. On synthetic classi-
+fication data, our approximate MCMC procedure
+obtains the true marginals faster than a traditional
+MCMC sampler. On real-world tasks, our method
+achieves 7 times speedup on citation matching, and
+13 times speedup on large-scale author disambigua-
+tion.
+
+2 Background
+
+2.1 Graphical Models
+Factor graphs (Kschischang et al., 2001) succinctly
+represent the joint distribution over random vari-
+ables by a product of factors that make the depen-
+dencies between the random variables explicit. A
+factor graph is a bipartite graph between the vari-
+ables and factors, where each (log) factor f ∈ F is
+a function that maps an assignment of its neighbor-
+ing variables to a real number. For example, in a
+linear-chain model of part-of-speech tagging, transi-
+tion factors score compatibilities between consecu-
+tive labels, while emission factors score compatibil-
+ities between a label and its observed token.
+
+The probability distribution expressed by the fac-
+tor graph is given as a normalized product of the fac-
+tors, which we rewrite as an exponentiated sum:
+
+p(y) =
+expψ(y)
+
+Z
+(1)
+
+ψ(y) =
+∑
+f∈F
+
+f(yf ) (2)
+
+Z =
+∑
+y∈Y
+
+expψ(y) (3)
+
+Intuitively, the model favors assignments to the ran-
+dom variables that yield higher factor scores and will
+
+assign higher probabilities to such configurations.
+The two common inference problems for graphi-
+
+cal models in NLP are maximum a posterior (MAP)
+and marginal inference. For models without latent
+variables, the MAP estimate is the setting to the
+variables that has the highest probability under the
+model:
+
+yMAP = argmax
+y
+
+p(y) (4)
+
+Marginal inference is the problem of finding
+marginal distributions over subsets of the variables,
+used primarily in maximum likelihood gradients and
+for max marginal inference.
+
+2.2 Markov chain Monte Carlo (MCMC)
+Often, computing marginal estimates of a model is
+computationally intractable due to the normalization
+constant Z, while maximum a posteriori (MAP) is
+prohibitive due to the search space of possible con-
+figurations. Markov chain Monte Carlo (MCMC) is
+important tool for performing sample- and search-
+based inference in these models. A particularly suc-
+cessful MCMC method for graphical model infer-
+ence is Metropolis-Hastings (MH). Since sampling
+from the true model p(y) is intractable, MH instead
+uses a simpler distribution q(y′|y) that conditions
+on a current state y and proposes a new state y′ by
+modifying a few variables. This new assignment is
+then accepted with probability α:
+
+α = min
+
+(
+1,
+p(y′)
+
+p(y)
+
+q(y|y′)
+q(y′|y)
+
+)
+(5)
+
+Computing this acceptance probability is often
+highly efficient because the partition function can-
+cels, as do all the factors in the model that do not
+neighbor the modified variables. MH can be used
+for both MAP and marginal inference.
+
+2.2.1 Marginal Inference
+To compute marginals with MH, the variables are
+
+initialized to an arbitrary assignment (i.e., randomly
+or with some heuristic), and sampling is run until the
+samples {yi|i = 0, · · · , n} become independent of
+the initial assignment. The ergodic theorem provides
+the MCMC analog to the law-of-large-numbers, jus-
+tifying the use of the generated samples to compute
+the desired statistics (such as feature expectations or
+variable marginals).
+
+1105
+
+
+
+2.2.2 MAP Inference
+
+Since MCMC can efficiently explore the high
+density regions for a given distribution, the distri-
+bution p can be modified such that the high-density
+region of the new distribution represents the MAP
+configuration of p. This is achieved by adding a tem-
+perature term τ to the distribution p, resulting in the
+following MH acceptance probability:
+
+α = min
+
+(
+1,
+
+(
+p(y′)
+
+p(y)
+
+) 1
+τ
+
+)
+(6)
+
+Note that as τ → 0, MH will sample closer to the
+MAP configuration. If a cooling schedule is imple-
+mented for τ then the MH sampler for MAP infer-
+ence can be seen as an instance of simulated anneal-
+ing (Bertsimas and Tsitsiklis, 1993).
+
+3 Monte Carlo MCMC
+
+In this section we introduce our approach for ap-
+proximating the acceptance ratio of Metropolis-
+Hastings that samples the factors, and describe two
+sampling strategies.
+
+3.1 Stochastic Proposal Evaluation
+
+Although one of the benefits of MCMC lies in its
+ability to leverage the locality of the proposal, for
+some information extraction tasks this can become a
+crucial bottleneck. In particular, evaluation of each
+sample requires computing the score of all the fac-
+tors that are involved in the change, i.e. all fac-
+tors that neighbor any variable in the set that has
+changed. This evaluation becomes a bottleneck for
+tasks in which a large number of variables is in-
+volved in each proposal, or in which the model con-
+tains a number of high-degree variables, resulting in
+a large number of factors, or in which computing
+the factor score involves an expensive computation,
+such as string similarity between mention text.
+
+Instead of evaluating the log-score ψ of the model
+exactly, this paper proposes a Monte-Carlo estima-
+tion of the log-score. In particular, if the set of fac-
+tors for a given proposal y→ y′ is F(y,y′), we use
+a sampled subset of the factors S ⊆ F(y,y′) as an
+approximation of the model score. In the following
+
+we use F as an abbreviation for F(y,y′). Formally,
+
+ψ(y) =
+∑
+f∈F
+
+f(yf ) = |F| · EF [f(yf )]
+
+ψS(y) = |F| · ES [f(yf )] (7)
+
+We use the sample log-score (ψS) in the acceptance
+probability α to evaluate the samples. Since we are
+using a stochastic approximation to the model score,
+in general we need to take more MCMC samples
+before we converge, however, since evaluating each
+sample will be much faster (O(|S|) as opposed to
+O(|F|)), we expect overall sampling to be faster.
+
+In the next sections we describe several alternative
+strategies for sampling the set of factors S. The pri-
+mary restriction on the set of samples S is that their
+mean should be an unbiased estimator of EF[f ]. Fur-
+ther, time taken to obtain the set of samples should
+be negligible when compared to scoring all the fac-
+tors in F. Note that there is an implicit minimum of
+1 to the number of the sampled factors.
+
+3.2 Uniform Sampling
+The most direct approach for subsampling the set
+of F is to perform uniform sampling. In particular,
+given a proportion parameter 0 < p ≤ 1, we select a
+random subset Sp ⊆ F such that |Sp| = p · |F|. Since
+this approach is agnostic as to the actual factors
+scores, ES[f ] ≡ EF[f ]. A low p leads to fast evalua-
+tion, however it may require a large number of sam-
+ples due to the substantial approximation. On the
+other hand, although a higher p will converge with
+fewer samples, evaluating each sample is slower.
+
+3.3 Confidence-Based Sampling
+Selecting the best value for p is difficult, requiring
+analysis of the graph structure, and statistics on the
+distribution of the factors scores; often a difficult
+task in real-world applications. Further, the same
+value for p can result in different levels of approxi-
+mation for different proposals, either unnecessarily
+accurate or problematically noisy. We would prefer
+a strategy that adapts to the distribution of the scores
+in F.
+
+Instead of sampling a fixed proportion of factors,
+we can sample until we are confident that the cur-
+rent set of samples Sc is an accurate estimate of the
+true mean of F. In particular, we maintain a run-
+ning count of the sample mean ESc [f ] and variance
+
+1106
+
+
+
+σSc , using them to compute a confidence interval IS
+around our estimate of the mean. Since the num-
+ber of sampled factors S could be a substantial frac-
+tion of the set of factors F,1 we also incorporate fi-
+nite population control (fpc) in our sample variance
+computation. We compute the confidence interval as
+follows:
+
+σ2S =
+1
+
+|S| − 1
+∑
+f∈S
+
+(f − ES [f ])2 (8)
+
+IS = 2z
+σS√
+|S|
+
+√
+|F| − |S|
+|F| − 1
+
+(9)
+
+where we set the z to 1.96, i.e. the 95% confidence
+interval. This approach starts with an empty set of
+samples, S = {}, and iteratively samples factors
+without replacement to add to S, until the confidence
+interval around the estimated mean falls below a user
+specified maximum interval width threshold i. As a
+result, for proposals that contain high-variance fac-
+tors, this strategy examines a large number of fac-
+tors, while proposals that involve similar factors will
+result in fewer samples. Note that this user-specified
+threshold is agnostic to the graph structure and the
+number of factors, and instead directly reflects the
+score distribution of the relevant factors.
+
+4 Experiments
+
+In this section we evaluate our approach for both
+marginal and MAP inference.
+
+4.1 Marginal Inference on Synthetic Data
+Consider the task of classifying entities into a set of
+types, for example, POLITICIAN, VEHICLE, CITY,
+GOVERMENT-ORG, etc. For knowledge base con-
+struction, this prediction often takes place on the
+entity-level, as opposed to the mention-level com-
+mon in traditional NLP. To evaluate the type at the
+entity-level, the scored factors examine features of
+all the entity mentions of the entity, along with the
+labels of all relation mentions for which it is an ar-
+gument. See Yao et al. (2010) and Hoffmann et al.
+(2011) for examples of such models. Since a sub-
+set of the mentions can be sufficiently informative
+for the model, we expect our stochastic MCMC ap-
+proach to work well.
+
+1Specifically, the fraction may be higher than > 5%
+
+Label
+
+(a) Binary Classification
+Model (n = 100)
+
+-4.8 -4 -3.2 -2.4 -1.6 -0.8 0 0.8 1.6 2.4 3.2 4 4.8 5.6 6.4 7.2
+
+-0.4
+
+-0.3
+
+-0.2
+
+-0.1
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+0.9
+
+Label 1Label 0
+
+(b) Distribution of Factor scores
+
+Figure 1: Synthetic Model for Classification
+
+1 0 2 0 3 0 100 200 1000 10000 100000 1000000
+
+Number of Factors Examined
+
+0.000
+
+0.025
+
+0.050
+
+0.075
+
+0.100
+
+0.125
+
+0.150
+
+0.175
+
+0.200
+
+0.225
+
+0.250
+
+0.275
+
+0.300
+
+0.325
+
+0.350
+
+0.375
+
+0.400
+
+0.425
+
+0.450
+
+E
+rr
+
+o
+r 
+
+in
+ M
+
+ar
+g
+
+in
+al
+
+p:1. p:0.75 p:0.5 p:0.2
+
+p:0.1 i:0.1 i:0.05 i:0.01
+
+i:0.005 i:0.001
+
+Figure 2: Marginal Inference Error for Classification
+on Synthetic Data
+
+We use synthetic data for such a model to evaluate
+the quality of marginals returned by the Gibbs sam-
+pling form of MCMC. Since the Gibbs algorithm
+samples each variable using a fixed assignment of
+its neighborhood, we represent generating a single
+sample as classification. We create star-shaped mod-
+els with a single unobserved variable (entity type)
+that neighbors many unary factors, each represent-
+ing a single entity- or a relation-mention factor (See
+Figure 1a for an example). We generate a synthetic
+dataset for this model, creating 100 variables con-
+sisting of 100 factors each. The scores of the fac-
+tors are generated from gaussians, N(0.5, 1) for the
+positive label, and N(−0.5, 1) for the negative label
+(note the overlap between the weights in Figure 1b).
+Although each structure contains only a single vari-
+able, and no cycles, it is a valid benchmark to test
+our sampling approach since the effects of the set-
+ting of burn-in period and the thinning samples are
+not a concern.
+
+We perform standard Gibbs sampling, and com-
+
+1107
+
+
+
+pare the marginals obtained during sampling with
+the true marginals, computed exactly. We evalu-
+ate the previously described uniform sampling and
+confidence-based sampling, with several parameter
+values, and plot the L1 error to the true marginals
+as more factors are examined. Note that here, and
+in the rest of the evaluation, we shall use the num-
+ber of factors scored as a proxy for running time,
+since the effects of the rest of the steps of sam-
+pling are relatively negligible. The error in compar-
+ison to regular MCMC (p = 1) is shown in Fig-
+ure 2, with standard error bars averaging over 100
+models. Initially, as the sampling approach is made
+more stochastic (lowering p or increasing i), we see
+a steady improvement in the running time needed
+to obtain the same error tolerance. However, the
+amount of relative improvements slows as stochas-
+ticity is increased further; in fact for extreme values
+(i = 0.05, p = 0.1) the chains perform worse than
+regular MCMC.
+
+4.2 Entity Resolution in Citation Data
+
+To evaluate our approach on a real world dataset,
+we apply stochastic MCMC for MAP inference on
+the task of citation matching. Given a large number
+of citations (that appear at the end of research pa-
+pers, for example), the task is to group together the
+citations that refer to the same paper. The citation
+matching problem is an instance of entity resolution,
+in which observed mentions need to be partitioned
+such that mentions in a set refer to the same under-
+lying entity. Note that neither the identities, or the
+number of underlying entities is known.
+
+In this paper, the graphical model of entity reso-
+lution consists of observed mentions (mi), and pair-
+wise binary variables between all pairs of mentions
+(yij) which represent whether the corresponding ob-
+served mentions are coreferent. There is a local
+factor for each coreference variable yij that has a
+high score if the underlying mentions mi and mj
+are similar. For the sake of efficiency, we only in-
+stantiate and incorporate the variables and factors
+when the variable is true, i.e. if yij = 1. Thus,
+ψ(y) =
+
+∑
+e
+
+∑
+mi,mj∈e f(yij). The set of possible
+
+worlds consists of all settings of the y variables that
+are consistent with transitivity, i.e. the binary vari-
+ables directly represent a valid clustering over the
+mentions. An example of the model defined over 5
+
+m2
+
+m1
+
+m3
+
+m5
+
+m4
+
+1
+
+1
+
+1 1
+
+y12
+
+y23
+
+y13
+
+y45
+
+Figure 3: Graphical Model for Entity Resolution:
+defined over 5 mentions, with the setting of the vari-
+ables resulting in 2 entities. For the sake of brevity,
+we’ve only included variables set to 1; binary vari-
+ables between mentions that are not coreferent have
+been omitted.
+
+mentions is given in Figure 3. This representation
+is equivalent to Model 2 as introduced in McCal-
+lum and Wellner (2004). As opposed to belief prop-
+agation and other approximate inference techniques,
+MCMC is especially appropriate for the task as it
+can directly enforce transitivity.
+
+When performing MCMC, each sample is a set-
+ting to all the y variables that is consistent with tran-
+sitivity. To maintain transitivity during sampling,
+Metropolis Hastings is used to change the binary
+variables in a way that is consistent with moving in-
+dividual mentions. Our proposal function selects a
+random mention, and moves it to a random entity,
+changing all the pairwise variables with mentions in
+its old entity, and the pairwise variables with men-
+tions in its new entity. Thus, evaluation of such a
+proposal function requires scoring a number of fac-
+tors linear in the size of the entities, which, for large
+datasets, can be a significant bottleneck. In prac-
+tice, however, these set of factors are often highly
+redundant, as many of the mentions that refer to the
+same entity contain redundant information and fea-
+tures, and entity membership may be efficiently de-
+termined by observing a subset of its mentions.
+
+We evaluate on the Cora dataset (McCallum et
+al., 1999), used previously to evaluate a number
+of information extraction approaches (Pasula et al.,
+2003), including MCMC based inference (Poon and
+Domingos, 2007; Singh et al., 2009). The dataset
+
+1108
+
+
+
+10000 100000 1000000 10000000 100000000
+
+Number of Factors Examined
+
+0.00
+
+0.05
+
+0.10
+
+0.15
+
+0.20
+
+0.25
+
+0.30
+
+0.35
+
+0.40
+
+0.45
+
+0.50
+
+0.55
+
+0.60
+
+0.65
+
+0.70
+
+0.75
+
+0.80
+
+0.85
+
+0.90
+
+0.95
+
+1.00
+
+1.05
+
+B
+C
+
+u
+b
+
+ed
+ F
+
+1
+
+p:1. p:0.5 p:0.2 p:0.1
+
+i:20. i:2. i:1. i:0.5 i:0.1
+
+Figure 4: Citation Resolution Accuracy Plot for uni-
+form and variance-based sampling compared to reg-
+ular MCMC (p = 1)
+
+consists of 1295 mentions, that refer to 134 true un-
+derlying entities. We use the same features for our
+model as (Poon and Domingos, 2007), using true
+author, title, and venue segmentation for features.
+Since our focus is on evaluating scalability of in-
+ference, we combine all the three folds of the data,
+and train the model using Samplerank (Wick et al.,
+2011).
+
+We run MCMC on the entity resolution model us-
+ing the proposal function described above, running
+our approach with different parameter values. Since
+we are interested in the MAP configuration, we use
+a temperature term for annealing. As inference pro-
+gresses, we compute BCubed2 F1 of the current
+sample, and plot it against the number of scored fac-
+tors in Figure 4. We observe consistent speed im-
+provements as stochasticity is improved, with uni-
+form sampling and confidence-based sampling per-
+forming competitively. To compute the speedup, we
+measure the number of factors scored to obtain a de-
+sired level of accuracy (90% F1), shown for a di-
+verse set of parameters in Table 1. With a very
+large confidence interval threshold (i = 20) and
+small proportion (p = 0.1), we obtain up to 7 times
+speedup over regular MCMC. Since the average en-
+tity size in this data set is < 10, using a small pro-
+portion (and a wide interval) is equivalent to picking
+a single mention to compare against.
+
+2B3 is a coreference evaluation metric, introduced by Bagga
+and Baldwin (1998)
+
+Method Factors Examined Speedup
+Baseline 57,292,700 1x
+Uniform Sampling
+p = 0.75 34,803,972 1.64x
+p = 0.5 28,143,323 2.04x
+p = 0.3 17,778,891 3.22x
+p = 0.2 12,892,079 4.44x
+p = 0.1 7,855,686 7.29x
+Variance-Based Sampling
+i = 0.001 52,522,728 1.09x
+i = 0.01 51,547,000 1.11x
+i = 0.1 47,165,038 1.21x
+i = 0.5 32,828,823 1.74x
+i = 1 18,938,791 3.02x
+i = 2 11,134,267 5.14x
+i = 5 9,827,498 5.83x
+i = 10 8,675,833 6.60x
+i = 20 8,295,587 6.90x
+
+Table 1: Speedups on Cora to obtain 90% B3 F1
+
+4.3 Large-Scale Author Coreference
+
+As the body of published scientific work continues
+to grow, author coreference, the problem of clus-
+tering mentions of research paper authors into the
+real-world authors to which they refer, is becoming
+an increasingly important step for performing mean-
+ingful bibliometric analysis. However, scaling typi-
+cal pairwise models of coreference (e.g., McCallum
+and Wellner (2004)) is difficult because the number
+of factors in the model grows quadratically with the
+number of mentions (research papers) and the num-
+ber of factors evaluated for every MCMC proposal
+scales linearly in the size of the clusters. For author
+coreference, the number of author mentions and the
+number of references to an author entity can often be
+in the millions, making the evaluation of the MCMC
+proposals computationally expensive.
+
+We use the publicly available DBLP dataset3 of
+BibTex entries as our unlabeled set of mentions,
+which contains nearly 5 million authors. For eval-
+uation of accuracy, we also include author mentions
+from the Rexa corpus4 that contains 2, 833 mentions
+
+3http://www.informatik.uni-trier.de/
+
+˜ley/db/
+4http://www2.selu.edu/Academics/Faculty/
+
+aculotta/data/rexa.html
+
+1109
+
+
+
+10000000 100000000 1000000000 10000000000
+
+Number of Factors Examined
+
+0.00
+
+0.05
+
+0.10
+
+0.15
+
+0.20
+
+0.25
+
+0.30
+
+0.35
+
+0.40
+
+0.45
+
+0.50
+
+0.55
+
+0.60
+
+0.65
+
+0.70
+
+0.75
+
+0.80
+
+0.85
+
+0.90
+
+0.95
+
+1.00
+
+1.05
+
+B
+C
+
+u
+b
+
+ed
+ F
+
+1
+
+p:1. p:0.5 p:0.2 p:0.1
+
+p:0.01 i:10. i:1. i:0.1
+
+(a) Accuracy versus Number of Factors scored
+
+10000000 100000000
+
+Number of Samples
+
+0.00
+
+0.05
+
+0.10
+
+0.15
+
+0.20
+
+0.25
+
+0.30
+
+0.35
+
+0.40
+
+0.45
+
+0.50
+
+0.55
+
+0.60
+
+0.65
+
+0.70
+
+0.75
+
+0.80
+
+0.85
+
+0.90
+
+0.95
+
+1.00
+
+1.05
+
+B
+C
+
+u
+b
+
+ed
+ F
+
+1
+
+p:1. p:0.5 p:0.2 p:0.1
+
+p:0.01 i:10. i:1. i:0.1
+
+(b) Accuracy versus Number of Samples
+
+Figure 5: Performance of Different Sampling Strategies and Parameters for coreference over 5 million
+mentions. Plot with p refer to uniform sampling with proportion p of factors picked, while plots with i
+sample till confidence intervals are narrower than i.
+
+labeled for coreference.
+We use the same Metropolis-Hastings scheme that
+
+we employ in the problem of citation matching. As
+before, we initialize to the singleton configuration
+and run the experiments for a fixed number of sam-
+ples, plotting accuracy versus the number of factors
+evaluated (Figure 5a) as well as accuracy versus the
+number of samples generated (Figure 5b). We also
+tabulate the relative speedups to obtain the desired
+accuracy level in Table 2. Our proposed method
+achieves substantial savings on this task: speedups
+of 13.16 using the variance sampler and speedups
+of 9.78 using the uniform sampler. As expected,
+when we compare the performance using the num-
+ber of generated samples, the approximate MCMC
+chains appear to converge more slowly; however, the
+overall convergence for our approach is substantially
+faster because evaluation of each sample is signif-
+icantly cheaper. We also present results on using
+extreme approximations (for example, p = 0.01),
+resulting in convergence to a low accuracy.
+
+5 Discussion and Related Work
+
+MCMC is a popular method for inference amongst
+researchers that work with large and dense graphi-
+cal models (Richardson and Domingos, 2006; Poon
+and Domingos, 2006; Poon et al., 2008; Singh et al.,
+2009; Wick et al., 2009). Some of the probabilistic
+
+Method Factors Examined Speedup
+Baseline 1,395,330,603 1x
+Uniform
+p = 0.5 689,254,134 2.02x
+p = 0.2 327,616,794 4.26x
+p = 0.1 206,157,705 6.77x
+p = 0.05 152,069,987 9.17x
+p = 0.02 142,689,770 9.78x
+Variance
+i = 0.00001 1,442,091,344 0.96x
+i = 0.0001 1,419,110,724 0.98x
+i = 0.001 1,374,667,077 1.01x
+i = 0.1 1,012,321,830 1.38x
+i = 1 265,327,983 5.26x
+i = 10 179,701,896 7.76x
+i = 100 106,850,725 13.16x
+
+Table 2: Speedups on DBLP to reach 80% B3 F1
+
+programming packages popular amongst NLP prac-
+titioners also rely on MCMC for inference and learn-
+ing (Richardson and Domingos, 2006; McCallum et
+al., 2009). Although most of these methods apply
+MCMC directly, the rate of convergence of MCMC
+has become a concern as larger and more densely-
+factored models are being considered, motivating
+the need for more efficient sampling that uses par-
+allelism (Singh et al., 2011; Gonzalez et al., 2011)
+
+1110
+
+
+
+and domain knowledge for blocking (Singh et al.,
+2010). Thus we feel providing a method to speed up
+MCMC inference can have a significant impact.
+
+There has also been recent work in designing
+scalable approximate inference techniques. Belief
+propagation has, in particular, has gained some re-
+cent interest. Similar to our approach, a number
+of researchers propose modifications to BP that per-
+form inference without visiting all the factors. Re-
+cent work introduces dynamic schedules to priori-
+tize amongst the factors (Coughlan and Shen, 2007;
+Sutton and McCallum, 2007) that has been used to
+only visit a small fraction of the factors (Riedel and
+Smith, 2010). Gonzalez et al. (2009) utilize these
+schedules to facilitate parallelization.
+
+A number of existing approaches in statistics
+are also related to our contribution. Leskovec and
+Faloutsos (2006) propose techniques to sample a
+graph to compute certain graph statistics with asso-
+ciated confidence. Christen and Fox (2005) also pro-
+pose an approach to efficiently evaluate a proposal,
+however, once accepted, they score all the factors.
+Murray and Ghahramani (2004) propose an approx-
+imate MCMC technique for Bayesian models that
+estimates the partition function instead of comput-
+ing it exactly.
+
+Related work has also applied such ideas for
+robust learning, for example Kok and Domingos
+(2005), based on earlier work by Hulten and Domin-
+gos (2002), uniformly sample the groundings of an
+MLN to estimate the likelihood.
+
+6 Conclusions and Future Work
+
+Motivated by the need for an efficient inference tech-
+nique that can scale to large, densely-factored mod-
+els, this paper considers a simple extension to the
+Markov chain Monto Carlo algorithm. By observ-
+ing that many graphical models contain substantial
+redundancy among the factors, we propose stochas-
+tic evaluation of proposals that subsamples the fac-
+tors to be scored. Using two proposed sampling
+strategies, we demonstrate improved convergence
+for marginal inference on synthetic data. Further,
+we evaluate our approach on two real-world entity
+resolution datasets, obtaining a 13 times speedup on
+a dataset containing 5 million mentions.
+
+Based on the ideas presented in the paper, we will
+
+consider additional sampling strategies. In partic-
+ular, we will explore dynamic sampling, in which
+we sample fewer factors during the initial, burn-
+in phase, but sample more factors as we get close
+to convergence. Motivated by our positive results,
+we will also study the application of this approach
+to other approximate inference techniques, such as
+belief propagation and variational inference. Since
+training is often a huge bottleneck for information
+extraction, we will also explore its applications to
+parameter estimation.
+
+Acknowledgements
+
+This work was supported in part by the Center for
+Intelligent Information Retrieval, in part by ARFL
+under prime contract number is FA8650-10-C-7059,
+and the University of Massachusetts gratefully ac-
+knowledges the support of Defense Advanced Re-
+search Projects Agency (DARPA) Machine Read-
+ing Program under Air Force Research Laboratory
+(AFRL) prime contract no. FA8750-09-C-0181.
+The U.S. Government is authorized to reproduce
+and distribute reprint for Governmental purposes
+notwithstanding any copyright annotation thereon.
+Any opinions, findings and conclusions or recom-
+mendations expressed in this material are those of
+the authors and do not necessarily reflect those of
+the sponsor.
+
+References
+
+[Bagga and Baldwin1998] Amit Bagga and Breck Bald-
+win. 1998. Algorithms for scoring coreference
+chains. In International Conference on Language Re-
+sources and Evaluation (LREC) Workshop on Linguis-
+tics Coreference, pages 563–566.
+
+[Bertsimas and Tsitsiklis1993] D. Bertsimas and J. Tsit-
+siklis. 1993. Simulated annealing. Statistical Science,
+pages 10–15.
+
+[Carreras2007] Xavier Carreras. 2007. Experiments
+with a higher-order projective dependency parser. In
+Proceedings of the CoNLL Shared Task Session of
+EMNLP-CoNLL 2007, pages 957–961.
+
+[Christen and Fox2005] J. Andrés Christen and Colin
+Fox. 2005. Markov chain monte carlo using an ap-
+proximation. Journal of Computational and Graphi-
+cal Statistics, 14(4):pp. 795–810.
+
+[Coughlan and Shen2007] James Coughlan and Huiying
+Shen. 2007. Dynamic quantization for belief propa-
+
+1111
+
+
+
+gation in sparse spaces. Computer Vision and Image
+Understanding, 106:47–58, April.
+
+[Culotta et al.2007] Aron Culotta, Michael Wick, and An-
+drew McCallum. 2007. First-order probabilistic mod-
+els for coreference resolution. In North American
+Chapter of the Association for Computational Linguis-
+tics - Human Language Technologies (NAACL HLT).
+
+[Gonzalez et al.2009] Joseph Gonzalez, Yucheng Low,
+and Carlos Guestrin. 2009. Residual splash for op-
+timally parallelizing belief propagation. In Artificial
+Intelligence and Statistics (AISTATS).
+
+[Gonzalez et al.2011] Joseph Gonzalez, Yucheng Low,
+Arthur Gretton, and Carlos Guestrin. 2011. Paral-
+lel gibbs sampling: From colored fields to thin junc-
+tion trees. In Artificial Intelligence and Statistics (AIS-
+TATS), Ft. Lauderdale, FL, May.
+
+[Hoffmann et al.2011] Raphael Hoffmann, Congle
+Zhang, Xiao Ling, Luke Zettlemoyer, and Daniel S.
+Weld. 2011. Knowledge-based weak supervision
+for information extraction of overlapping relations.
+In Annual Meeting of the Association for Computa-
+tional Linguistics (ACL), pages 541–550, Portland,
+Oregon, USA, June. Association for Computational
+Linguistics.
+
+[Hulten and Domingos2002] Geoff Hulten and Pedro
+Domingos. 2002. Mining complex models from ar-
+bitrarily large databases in constant time. In Interna-
+tional Conference on Knowledge Discovery and Data
+Mining (KDD), pages 525–531, New York, NY, USA.
+ACM.
+
+[Kok and Domingos2005] Stanley Kok and Pedro
+Domingos. 2005. Learning the structure of markov
+logic networks. In International Conference on
+Machine Learning (ICML), pages 441–448, New
+York, NY, USA. ACM.
+
+[Kschischang et al.2001] Frank R. Kschischang, Bren-
+dan J. Frey, and Hans Andrea Loeliger. 2001. Factor
+graphs and the sum-product algorithm. IEEE Transac-
+tions of Information Theory, 47(2):498–519, Feb.
+
+[Lafferty et al.2001] John D. Lafferty, Andrew McCal-
+lum, and Fernando Pereira. 2001. Conditional ran-
+dom fields: Probabilistic models for segmenting and
+labeling sequence data. In International Conference
+on Machine Learning (ICML).
+
+[Leskovec and Faloutsos2006] Jure Leskovec and Chris-
+tos Faloutsos. 2006. Sampling from large graphs.
+In International Conference on Knowledge Discovery
+and Data Mining (KDD), pages 631–636, New York,
+NY, USA. ACM.
+
+[McCallum and Wellner2004] Andrew McCallum and
+Ben Wellner. 2004. Conditional models of identity
+uncertainty with application to noun coreference. In
+Neural Information Processing Systems (NIPS).
+
+[McCallum et al.1999] Andrew McCallum, Kamal
+Nigam, Jason Rennie, and Kristie Seymore. 1999.
+A machine learning approach to building domain-
+specific search engines. In International Joint
+Conference on Artificial Intelligence (IJCAI).
+
+[McCallum et al.2009] Andrew McCallum, Karl Schultz,
+and Sameer Singh. 2009. FACTORIE: Probabilistic
+programming via imperatively defined factor graphs.
+In Neural Information Processing Systems (NIPS).
+
+[Murray and Ghahramani2004] Iain Murray and Zoubin
+Ghahramani. 2004. Bayesian learning in undirected
+graphical models: Approximate MCMC algorithms.
+In Uncertainty in Artificial Intelligence (UAI).
+
+[Pasula et al.2003] H. Pasula, B. Marthi, B. Milch,
+S. Russell, and I. Shpitser. 2003. Identity uncertainty
+and citation matching. In Neural Information Process-
+ing Systems (NIPS).
+
+[Poon and Domingos2006] Hoifung Poon and Pedro
+Domingos. 2006. Sound and efficient inference with
+probabilistic and deterministic dependencies. In AAAI
+Conference on Artificial Intelligence.
+
+[Poon and Domingos2007] Hoifung Poon and Pedro
+Domingos. 2007. Joint inference in informa-
+tion extraction. In AAAI Conference on Artificial
+Intelligence, pages 913–918.
+
+[Poon et al.2008] Hoifung Poon, Pedro Domingos, and
+Marc Sumner. 2008. A general method for reduc-
+ing the complexity of relational inference and its ap-
+plication to MCMC. In AAAI Conference on Artificial
+Intelligence.
+
+[Richardson and Domingos2006] Matthew Richardson
+and Pedro Domingos. 2006. Markov logic networks.
+Machine Learning, 62(1-2):107–136.
+
+[Riedel and Smith2010] Sebastian Riedel and David A.
+Smith. 2010. Relaxed marginal inference and its ap-
+plication to dependency parsing. In North American
+Chapter of the Association for Computational Linguis-
+tics - Human Language Technologies (NAACL HLT),
+pages 760–768.
+
+[Singh et al.2009] Sameer Singh, Karl Schultz, and An-
+drew McCallum. 2009. Bi-directional joint in-
+ference for entity resolution and segmentation us-
+ing imperatively-defined factor graphs. In Machine
+Learning and Knowledge Discovery in Databases
+(Lecture Notes in Computer Science) and European
+Conference on Machine Learning and Principles
+and Practice of Knowledge Discovery in Databases
+(ECML PKDD), pages 414–429.
+
+[Singh et al.2010] Sameer Singh, Michael L. Wick, and
+Andrew McCallum. 2010. Distantly labeling data for
+large scale cross-document coreference. Computing
+Research Repository (CoRR), abs/1005.4298.
+
+[Singh et al.2011] Sameer Singh, Amarnag Subramanya,
+Fernando Pereira, and Andrew McCallum. 2011.
+
+1112
+
+
+
+Large-scale cross-document coreference using dis-
+tributed inference and hierarchical models. In Asso-
+ciation for Computational Linguistics: Human Lan-
+guage Technologies (ACL HLT).
+
+[Sutton and McCallum2004] Charles Sutton and Andrew
+McCallum. 2004. Collective segmentation and label-
+ing of distant entities in information extraction. Tech-
+nical Report TR#04-49, University of Massachusetts,
+July.
+
+[Sutton and McCallum2007] Charles Sutton and Andrew
+McCallum. 2007. Improved dynamic schedules for
+belief propagation. In Uncertainty in Artificial Intelli-
+gence (UAI).
+
+[Wick et al.2009] Michael Wick, Aron Culotta, Khasha-
+yar Rohanimanesh, and Andrew McCallum. 2009.
+An entity-based model for coreference resolution.
+In SIAM International Conference on Data Mining
+(SDM).
+
+[Wick et al.2010] Michael Wick, Andrew McCallum, and
+Gerome Miklau. 2010. Scalable probabilistic
+databases with factor graphs and mcmc. International
+Conference on Very Large Databases (VLDB), 3:794–
+804, September.
+
+[Wick et al.2011] Michael Wick, Khashayar Rohani-
+manesh, Kedar Bellare, Aron Culotta, and Andrew
+McCallum. 2011. Samplerank: Training factor graphs
+with atomic gradients. In International Conference on
+Machine Learning (ICML).
+
+[Yao et al.2010] Limin Yao, Sebastian Riedel, and An-
+drew McCallum. 2010. Collective cross-document
+relation extraction without labelled data. In Empirical
+Methods in Natural Language Processing (EMNLP).
+
+1113
+
+

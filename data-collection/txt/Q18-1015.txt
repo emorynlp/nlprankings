@@ -1,0 +1,1756 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Knowledge Completion for Generics using Guided Tensor Factorization
+
+Hanie Sedghi∗
+Google Brain
+
+Mountain View, CA, U.S.A.
+hsedghi@google.com
+
+Ashish Sabharwal
+Allen Institute for Artificial Intelligence (AI2)
+
+Seattle, WA, U.S.A.
+AshishS@allenai.org
+
+Abstract
+
+Given a knowledge base or KB containing
+(noisy) facts about common nouns or gener-
+ics, such as “all trees produce oxygen” or
+“some animals live in forests”, we consider the
+problem of inferring additional such facts at
+a precision similar to that of the starting KB.
+Such KBs capture general knowledge about
+the world, and are crucial for various appli-
+cations such as question answering. Differ-
+ent from commonly studied named entity KBs
+such as Freebase, generics KBs involve quan-
+tification, have more complex underlying reg-
+ularities, tend to be more incomplete, and vio-
+late the commonly used locally closed world
+assumption (LCWA). We show that existing
+KB completion methods struggle with this
+new task, and present the first approach that
+is successful. Our results demonstrate that ex-
+ternal information, such as relation schemas
+and entity taxonomies, if used appropriately,
+can be a surprisingly powerful tool in this set-
+ting. First, our simple yet effective knowledge
+guided tensor factorization approach achieves
+state-of-the-art results on two generics KBs
+(80% precise) for science, doubling their size
+at 74%-86% precision. Second, our novel tax-
+onomy guided, submodular, active learning
+method for collecting annotations about rare
+entities (e.g., oriole, a bird) is 6x more effec-
+tive at inferring further new facts about them
+than multiple active learning baselines.
+
+1 Introduction
+
+We consider the problem of completing a partial
+knowledge base (KB) containing facts about gener-
+
+∗This work was done while the author was affiliated with
+the Allen Institute for Artificial Intelligence.
+
+ics or common nouns, represented as a third-order
+tensor of (source, relation, target) triples, such as
+(butterfly, pollinate, flower) and (thermometer, mea-
+sure, temperature). Such facts capture common
+knowledge that humans have about the world. They
+are arguably essential for intelligent agents with
+human-like conversational abilities as well as for
+specific applications such as question answering.
+We demonstrate that state-of-the-art KB completion
+methods perform poorly when faced with gener-
+ics, while our strategies for incorporating external
+knowledge as well as obtaining additional annota-
+tions for rare entities provide the first successful so-
+lution to this challenging new task.
+
+Since generics represent classes of similar indi-
+viduals, the truth value yi of a generics triple xi =
+(s, r, t) depends on the quantification semantics one
+associates with s and t. Indeed, the semantics of
+generics statements can be ambiguous, even self-
+contradictory, due to cultural norms. As Leslie
+(2008) points out, ‘ducks lay eggs’ is generally con-
+sidered true while ‘ducks are female’, which is true
+for a broader set of ducks than the former statement,
+is generally considered false.
+
+To avoid deep philosophical issues, we fix a par-
+ticular mathematical semantics that is especially rel-
+evant for noisy facts derived automatically from text:
+associate s with a categorical quantification from
+{all, some, none} and associate t (implicitly) with
+some. For instance, “all butterflies pollinate (some)
+flower” and “some animals live in (some) forest”.
+When presenting such triples to humans, they are
+phrased as: is it true that all butterflies pollinate
+some flower? As a notational shortcut, we treat the
+quantification of s as the categorical label yi for the
+triple xi. For example, (butterfly, pollinate, flower)
+
+197
+
+Transactions of the Association for Computational Linguistics, vol. 6, pp. 197–210, 2018. Action Editor: Hinrich Schütze.
+Submission batch: 6/2017; Revision batch: 9/2017; Published 4/2018.
+
+c©2018 Association for Computational Linguistics. Distributed under a CC-BY 4.0 license.
+
+
+
+is labeled all while (animal, live in, forest) is labeled
+some. Given a noisy KB of such labeled triples, the
+task is to infer more triples.
+
+Tensor factorization and graph based methods
+have both been found to be very effective for ex-
+panding knowledge bases, but have focused on
+named entity KBs such as Freebase (Bollacker et al.,
+2008) involving relations with clear semantics such
+as liveIn and isACityIn, and disambiguated entities
+such as Barack Obama or Hawaii. Completing KBs
+that involve facts about generics, however, brings up
+new challenges, as evidenced by our empirical re-
+sults when using existing methods.
+
+It has been observed that Horn clauses often reli-
+ably connect predicates in the named-entity setting.
+For instance, for any person x, city y, and country
+z, (x, liveIn, y) & (y, isACityIn, z) ⇒ (x, liveIn, z).
+With generics, however, clear patterns or reliable
+first-order logic rules are rare, in part due to each
+generic representing a collection of individuals that
+often have similarities with respect to some relations
+and differences with respect to others. For instance,
+(x, liveIn, mountain) is true for many cats and cari-
+bou, but there is little tangible similarity between the
+two animals and it is unclear what, if anything, can
+be carried over from one to the other. On the other
+hand, if we take two animals that share a ‘parent’ in
+some taxonomy (e.g., reindeer and deer), then the
+likelihood of knowledge transfer increases.
+
+We propose to make use of additional rich back-
+ground knowledge complementing the information
+present in the KB itself, such as a taxonomic hi-
+erarchy of entities (available from sources such as
+WordNet (Miller, 1995)) and the corresponding en-
+tity types and relation schema. Our key insight is
+that, if used appropriately, taxonomic and schema
+information can be surprisingly effective in making
+tensor factorization methods vastly more effective
+for generics for deriving high precision facts.
+
+Intuitively, for generics, many properties of inter-
+est are themselves generic (e.g., living in forests, as
+opposed to living in a specific forest) and tend to be
+shared by siblings in a taxonomy (e.g., finch, oriole,
+and hummingbird). In contrast, siblings of named
+entities (e.g., various people) often differ substan-
+tially in the properties we typically care about and
+model (e.g., who they are married to, where they
+live, etc.). Methods that use type information are
+
+thus more promising for generics than for classical
+NLP tasks involving named entities. We propose
+three ways of using this information and empirically
+demonstrate the effectiveness of each on two vari-
+ants of a KB of elementary level science facts (Dalvi
+et al., 2017).1
+
+First, we observe that simply imposing schema
+consistency (Section 3.1) on derived facts can sig-
+nificantly boost state-of-the-art methods such as
+Holographic Embeddings (HolE) (Nickel et al.,
+2016b) from nearly no new facts at 80% precision to
+over 10,000 new facts, starting with a generics KB
+of a similar size. Other embedding methods, such
+as TransE (Bordes et al., 2013), RESCAL (Nickel
+et al., 2011), and SICTF (Nimishakavi et al., 2016)
+(which uses schema information as well), also pro-
+duced no new facts at 80% precision. Graph-based
+completion methods did not scale to our densely
+connected tensors.2
+
+Second, one can further boost performance by
+transferring knowledge up and down the taxonomic
+hierarchy, using the quantification semantics of
+generics (Section 3.2). We show that expanding the
+starting tensor this way before applying tensor fac-
+torization is complementary and results in a statis-
+tically significantly higher precision (86.4% as op-
+posed to 82%) over new facts at the same yield.
+
+Finally, we propose a novel limited-budget tax-
+onomy guided active learning method to address
+the challenge of significant incompleteness in gener-
+ics KBs, by quantifying uncertainty via siblings
+(Section 4). Dalvi et al. (2017) have observed that,
+when using information extraction methods, it is
+much harder to derive reliable facts about generics
+than about named entities. This makes generics KBs
+vastly incomplete, with no or very little information
+about certain entities such as caribou or oriole.
+
+1We are unaware of other large generics KBs. Our method
+does not employ rules or choices specific to this dataset and is
+expected to generalize to other generics KBs, as and when they
+become available.
+
+2On the smaller Animals tensor (to be described later),
+PRA (Lao et al., 2011) generated very few high-precision facts
+after 30 hours. SFE (Gardner and Mitchell, 2015) was unable to
+finish training a classifier for any relation after a day, in part due
+to the high connectivity of generics like animal. On the other
+hand, HolE is trained in a couple of minutes even on the larger
+Science tensor, and can be made even faster using the method
+of Hayashi and Shimbo (2017).
+
+198
+
+
+
+Our active learning approach addresses the fol-
+lowing question: Given a new entity3 ẽ and a budget
+B, what is a good set Q of B queries about ẽ to
+annotate (via humans) such that expanding the orig-
+inal tensor with Q helps a KB completion method
+infer many more high precision facts about ẽ?
+
+We propose to define a correlation based measure
+of the uncertainty of each unannotated triple (i.e.,
+a potential query) involving ẽ, based on how fre-
+quently the corresponding triple is true for ẽ’s sib-
+lings in the taxonomic hierarchy (Section 4.1). We
+then develop a submodular objective function, and a
+corresponding greedy (1 − 1/e)-approximation, to
+search for a small subset of triples to annotate that
+optimally balances diversity with coverage (Sec-
+tion 4.2). We demonstrate that annotating this bal-
+anced subset makes tensor factorization derive sub-
+stantially more new and interesting facts compared
+to several active learning baselines. For example,
+with a budget to annotate 100 queries about a new
+entity oriole, random queries lead to no new true
+facts at all (via annotation followed by tensor fac-
+torization), imposing schema consistency results in
+83 new facts, and our proposed method ends up with
+483 new facts. This demonstrates that well-designed
+intelligent queries can be substantially more effec-
+tive in gathering facts about the new entity.
+
+In summary, this work tackles, for the first
+time, the challenging task of knowledge comple-
+tion for generics, by imposing consistency with ex-
+ternal knowledge. Our efficient sibling-guided ac-
+tive learning approach addresses the paucity of facts
+about certain entities, successfully inferring a sub-
+stantial number of new facts about them.
+
+1.1 Related Work
+KB completion approaches fall into two main
+classes: graph-based methods and those employ-
+ing low-dimensional embeddings via matrix or ten-
+sor factorization. The former uses graph traversal
+techniques to complete the KB, by learning which
+types of paths or transitions are indicative of which
+relation between the start and end points (Lao et
+al., 2011; Gardner and Mitchell, 2015). This class
+of solutions, unfortunately, does not scale well to
+
+3Unless otherwise stated, we will henceforth use entity to
+refer to a singular common noun that represents a class or group
+of individuals, such as animal, hummingbird, forest, etc.
+
+our setting (cf. Footnote 2). This appears due, at
+least in part, to different connectivity characteris-
+tics of generics tensors compared to named entity
+ones such as FB15k (Bordes et al., 2013). Ad-
+vances in the latter set of methods have led to several
+embedding-based methods that are highly successful
+at KB completion for named entities (Nickel et al.,
+2011; Riedel et al., 2013; Dong et al., 2014; Trouil-
+lon et al., 2016; Nickel et al., 2016a). We compare
+against many of these, including variants of HolE,
+TransE, and RESCAL.
+
+Recent work on incorporating entity type and re-
+lation schema in tensor factorization (Krompaß et
+al., 2014; Krompaß et al., 2015; Xie et al., 2016b)
+has focused on factual databases about named enti-
+ties, which, as discussed earlier, have very different
+characteristics than generics tensors. Nimishakavi
+et al. (2016) use entity type information as a ma-
+trix in the context of non-negative RESCAL for
+schema induction on medical research documents.
+As a byproduct, they complete missing entries in the
+tensor in a schema-compatible manner. We show
+that our proposal performs better on generics tensors
+than their method, SICTF. SICTF, in turn, is meant
+to be an improvement over the TRESCAL system of
+Chang et al. (2014), which also incorporates types in
+RESCAL in a similar manner. Recently, Schütze et
+al. (2017) proposed a neural model for fine-grained
+entity typing and for robustly using type information
+to improve relation extraction, but this is targeted for
+Freebase style named entities.
+
+For schema-aware discriminative training of em-
+beddings, Xie et al. (2016b) use a flexible ratio of
+negative samples from both schema consistent and
+schema inconsistent triples. Their combined ideas,
+however, do not improve upon vanilla HolE (one of
+our baselines) on the standard FB15k (Bordes et al.,
+2013) dataset. They also consider imposing hierar-
+chical types for Freebase, as entities may have dif-
+ferent meanings when they have different types—
+an issue that typically does not apply to generics
+KBs. Komninos and Manandhar (2017) use type
+information along with additional textual evidence
+for knowledge base completion on the FB15k237
+dataset. They learn embeddings for types, along
+with entities and relations, and show that this way
+of incorporating type information has a (small) con-
+tribution towards improving performance. Incorpo-
+
+199
+
+
+
+rating given first order logic rules has been explored
+for the simpler case of matrix factorization (Rock-
+taschel et al., 2015; Demeester et al., 2016). Exist-
+ing first order logic rule extraction methods, how-
+ever, struggle to find meaningful rules for generics,
+making this approach not yet viable in our setting.
+
+Xie et al. (2016a) consider inferring facts about
+a new entity ẽ given a ‘description’ of that entity.
+They use Convolutional Neural Networks (CNNs) to
+encode the description, deriving an embedding for ẽ.
+Such a description in our context would correspond
+to knowing some factual triples about ẽ, which is a
+restricted version of our active learning setting.
+
+Krishnamurthy and Singh (2013) consider active
+learning for a particular kind of tensor decomposi-
+tion, namely CP or Candecomp/Parafac decomposi-
+tion into a low dimensional space. They start with an
+empty tensor and look for the most informative slices
+and columns to fill completely to achieve optimal
+sample complexity. Their framework builds upon
+the incoherence assumption on the column space,
+which does not apply to generics KB.
+
+Hegde and Talukdar (2015) use an entity-centric
+information extraction (IE) approach for obtaining
+new facts about entities of interest. Narasimhan et
+al. (2016) use a reinforcement learning approach to
+issue search queries to acquire additional evidence
+for a candidate fact. Both of these works, and others
+along similar lines, are advanced IE techniques that
+operate via a search for new documents and extrac-
+tion of facts from them. This is different from the
+KB completion task, where the only source of infor-
+mation is the starting KB and possibly some details
+about the involved entities and relations.
+
+2 Tensors of Generics
+
+We consider knowledge expressed in terms of
+(source, relation, target) triples, abbreviated as
+(s, r, t). Such a triple may refer to (subject, pred-
+icate, object) style facts commonly used in infor-
+mation extraction. Each source and target is an en-
+tity that is a generic noun, e.g., animals, habitats, or
+food items. Examples of relations include foundIn,
+eat, etc. As mentioned earlier, with each generics
+triple (s, r, t), we associate a categorical truth value
+q ∈ {all, some, none}, defining the quantification
+semantics “q s r (some) t”. For instance, “some an-
+
+imals live in (some) forest” and “all dogs eat (some)
+bone”. Given a set K of such triples with annotated
+truth values, the task is to predict additional triples
+K ′ that are also likely to be true.
+
+In addition to a list of triples, we assume access to
+background information in the form of entity types
+and the corresponding relation schema, as well as a
+taxonomic hierarchy.4 Let ET denote the set of pos-
+sible entity types. For each relation r, the relation
+schema imposes a type constraint on the entities that
+may appear as its source or target. Specifically, us-
+ing [`] to denote the set {1, 2, . . . , `}, the schema for
+r is a collection Sr = {(D(i)r ,R(i)r ) ⊆ ET × ET |
+i ∈ [`]} of domain-range pairs with the following
+property: the truth value of (s, r, t) is none when-
+ever for every i ∈ [`] it is the case that s /∈ D(i)r or
+t /∈ R(i)r . For example, the relation foundIn may be
+associated with the schema SfoundIn = {(animal, lo-
+cation), (insect, animal), (plant, habitat), . . . }. Sim-
+ilarly, the taxonomic hierarchy defines a partial or-
+der H over all entities that captures the “isa” rela-
+tion, with direct links such as isa(dog, mammal) or
+isa(gerbil, rodent). We use this information to ex-
+tract “siblings” of a given entity, i.e., entities that
+share a common parent (this may be easily general-
+ized to any common ancestor).
+
+3 Guided Knowledge Completion
+
+We begin with an overview of tensor factorization
+for KB completion for generics. Let (s, r, t) be a
+generics triple associated with a categorical quantifi-
+cation label q ∈ {all, some, none}. For example,
+((cat, havePart, whiskers), all), ((cat, liveIn, homes),
+some), and ((cat, eat, bear), none). Predicting such
+labels is thus a multi-class classification problem.
+Given a set K of labeled triples, the goal of tensor
+factorization is to learn a low-dimensional embed-
+ding h for each entity and relation such that some
+function f of h best captures the given labels. Given
+a new triple, we can then use f and the learned h
+to predict the probability of each label for it. K of-
+ten contains only “positive” triples, i.e., those with
+label all or some. A common step in discriminative
+training for h is thus negative sampling, i.e., gen-
+erating additional triples that (are expected to) have
+
+4We do not assume that the schema or taxonomy is perfect,
+and instead rely on these only for heuristic guidance.
+
+200
+
+
+
+label none.
+With [m] denoting the set {1, 2, . . . ,m} as be-
+
+fore, let K = {(xi, yi), i ∈ [m]} be a set of
+triples xi = (si, ri, ti) and corresponding labels
+yi ∈ {1, 2, 3} equivalent to categorical quantifica-
+tion label qi ∈ {all, some, none}. We learn entity
+and relation embeddings Θ that minimize the multi-
+nomial logistic loss defined as:
+
+min
+Θ
+
+m∑
+
+i=1
+
+3∑
+
+k=1
+
+−1{yi = k} log Pr(yi = k | xi,Θ)
+
+= min
+Θ
+
+m∑
+
+i=1
+
+3∑
+
+k=1
+
+−1{yi = k} log σ(yi f(hr, hs, ht))
+
+(1)
+
+where hr, hs, ht ∈ Rd denote the learned embed-
+dings (latent vectors) for s, r, t, respectively, and
+σ(·) is the sigmoid function defined as σ(z) =
+
+1
+1+exp(−z) .
+
+If the all categorical label for generics is un-
+available,5 we can simplify the label space to
+{some, none}, modeled as yi ∈ {±1}, and reduce
+the model to binary classification:
+
+min
+Θ
+
+m∑
+
+i=1
+
+log [1 + exp [−yi f(hr, hs, ht)]] . (2)
+
+We remark that while this generics task with only
+two labels appears superficially similar to the stan-
+dard KB completion task for named entities, the un-
+derlying challenges and solutions are different. For
+instance, the approach of using taxonomic informa-
+tion (as opposed to just entity types) as a guide is
+uniquely suited to generics KBs; the reason being
+that a generic entity refers to a set of individuals,
+with a natural subset/superset relation forming a tax-
+onomy, whereas in standard KBs an entity refers
+to one specific individual. This prevents taxonomy
+based rules from providing useful information for
+standard KBs, while our results demonstrate their
+high value when reasoning with generics. Differ-
+ences like this lead to differences in what is success-
+ful in each setting and what is not.
+
+5This happens to be the case for current generics KBs, but
+is expected to change with increasing interest in the research
+community. A step in this direction is a recent version of the
+Aristo Tuple KB, http://allenai.org/data/aristo-tuple-kb, which
+includes most as a quantification label, in addition to some.
+
+While all our proposed schemes are embedding
+oblivious, for concreteness, we describe and eval-
+uate them for the Holographic Embedding or
+HolE (Nickel et al., 2016b) which models the label
+probability as:
+
+f(hr, hs, ht) = h
+>
+r (hs ◦ ht) (3)
+
+where ◦ : Rd × Rd → Rd denotes circular correla-
+tion defined as:
+
+[a ◦ b]k =
+d−1∑
+
+i=0
+
+aib(i+k) mod d . (4)
+
+Intuitively, the k-th dimension of circular correlation
+captures how related a is to b when the dimensions
+of the latter are shifted (circularly, via the mod op-
+eration) by k. In particular [a ◦ b]0 is simply the
+dot product of a and b. As can be deduced from
+Eqns. (3)-(4), this model resembles circular convo-
+lution, but can capture, to some extent, relations that
+are asymmetric among the source and target entities.
+This is because [a ◦ b] is not the same as [b ◦a] but is
+rather “flipped” ([a◦b]k = [b◦a]d−k). If we consider
+the d × d matrix Mab of element-wise relationships
+between a and b, the HolE embedding of a relation r
+between a and b defines a weighted sum of circular
+anti-diagonals of Mab.
+
+Circular correlation can be computed using the
+fast Fourier transform (FFT), making HolE quite
+efficient in practice. Hayashi and Shimbo (2017)
+recently showed that HolE and complex embed-
+dings (Trouillon et al., 2016), which is another state-
+of-the-art method for KB completion, are equivalent
+and differ only in terms of constraints on initial val-
+ues. Further, they proposed a linear time computa-
+tion for HolE by staying fully within the frequency
+domain of FFT.
+
+3.1 Incorporating Types and Relation Schema
+(ITRS)
+
+As described earlier, relation schema Sr imposes
+a restriction on sources and targets that may occur
+with a relation r. We can incorporate this knowl-
+edge both at training and at test times. Doing this
+at test time simply translates to relabeling schema-
+inconsistent predicted triples as none. Incorporat-
+ing this knowledge at training time can be done as
+a constraint on the random negative samples that
+
+201
+
+
+
+the method generates to complement the given, typ-
+ically positive, triples for training.
+
+In general, the ratio of random negative samples
+from the entire tensor T and random negative sam-
+ples from the schema consistent portion T ′ of T is
+a parameter that should be tuned such that the re-
+sulting negative samples mimic the true distribution
+of labels. It is worth noting that whether the locally
+closed world assumption (LCWA) holds or not plays
+an important role in determining this ratio. How-
+ever, the idea of mixing the two kinds of negative
+samples has been used in the literature without con-
+sidering the nature of the dataset, resulting in some
+seemingly contradicting empirical results on the op-
+timal ratio (Li et al., 2016; Xie et al., 2016b; Shi
+and Weninger, 2017; Xie et al., 2017). As discussed
+later, we found sampling from T to work best on our
+datasets.
+
+3.2 Incorporating Entity Taxonomy (IET)
+It is challenging to come up with complex Horn or
+first order logic rules for generics, as each entity rep-
+resents a class of individuals that may not all be-
+have identically. However, we can derive simple yet
+highly effective rules based on categorical quantifi-
+cation labels, leveraging the fact that entities come
+from different levels in a taxonomy hierarchy.
+
+Let p be the parent entity for entity set {ci}. Note
+that ci itself is a generic, that is, a class of individu-
+als rather than a single individual. This allows one to
+make meaningful existential statements such as: if a
+property holds for all or most members of even one
+class ci, then it holds for some (reasonable number
+of) members of its parent class p. We use the fol-
+lowing rules:6
+
+((p, rj , tj), all)⇒ ∀i ((ci, rj , tj), all)
+∀i ((ci, rj , tj), all)⇒ ((p, ej , tj), all)
+∃i ((ci, rj , tj), all)⇒ ((p, ej , tj), some)
+
+∃i ((ci, rj , tj), some)⇒ ((p, ej , tj), some)
+
+We apply these rules to address sparsity of gener-
+ics tensors, making tensor factorization more robust.
+Specifically, given initial triples K, we use appli-
+cable rules to derive additional triples K ′, perform
+
+6The last rule may not be appropriate for KBs where some
+may refer to the extreme case of a single individual. This is not
+the case for the KBs we use for our evaluation.
+
+tensor factorization on K ∪K ′, and then revisit the
+triples in K ′ using their predicted label probabili-
+ties. Note that this approach allows us to be robust
+to taxonomic errors: instead of assuming each triple
+in K ′ is true, we use this only as a prior and let ten-
+sor factorization determine the final prediction based
+on global patterns it finds.
+
+4 Active Learning for New or Rare Entities
+
+To address the incomplete nature of generics KBs,
+we consider rare entities for which we have very few
+facts, or new entities which are present in the taxon-
+omy but for which we have no facts in the KB. The
+goal is to use tensor factorization to generate high
+quality facts about such entities.
+
+For instance, consider the task of inferring facts
+about oriole, where all we know is that it is a bird.
+We assume a restricted budget on the number of
+facts we can query (for human annotation) about ori-
+ole, using which we would like to predict many more
+high-quality facts about it.
+
+Given a fixed query budget B, what is the opti-
+mal set of queries we should generate for human an-
+notation about a new or rare entity ẽ for this task?
+We view this as an active learning problem and pro-
+pose a two-step algorithm. First, we use taxonomy
+guided uncertainty sampling to propose a list L to
+potentially query. Next, we describe a submodular
+objective function and a corresponding linear time
+algorithm to choose an optimal subset L̂ ⊆ L satis-
+fying |L̂| = B. We then use L̂ for human annota-
+tion, append the result to the original KB, and per-
+form tensor factorization to predict additional new
+facts about ẽ. For notational simplicity and without
+loss of generality, throughout this section, we con-
+sider the case where ẽ appears as the source entity in
+the triple; the ideas apply equally when ẽ appears as
+the target entity in the triple.
+
+4.1 Knowledge Guided Uncertainty
+Quantification
+
+We now discuss the active learning and specifically
+uncertainty sampling method we use to propose a
+list of triples to query. Uncertainty sampling consid-
+ers the uncertainty for each possible triple (ẽ, ri, ei),
+defined as how far away from 0.5 the conditional
+probability is of this fact, given the facts we already
+
+202
+
+
+
+know from the KB (Settles, 2012). The question is
+how to model this conditional probability. A sim-
+ple baseline is to consider Random queries, i.e., r, e
+are selected randomly from the list of relations and
+entities in the tensor, respectively.
+
+To infer information about ẽ, we propose the fol-
+lowing approximation for the conditional probabil-
+ity of a new fact about ẽ given the KB. Let Ẽẽ =
+{e | corr(ẽ, e) > 0} be the set of entities that are
+correlated with ẽ, Ω = {((ei, ri, e′i), yi) | ei ∈ Ẽẽ}
+be the set of known facts about such entities, and yi
+be the label for the triple (ei, ri, e′i). We have:
+
+Pr(f(hri , hẽ, he′i)) '
+1
+
+|Ω|
+∑
+
+ei∈Ẽẽ
+
+corr(ẽ, ei) yi. (5)
+
+However, in practice, we cannot measure corr(ẽ, ei)
+for every entry in the KB as we do not have complete
+information about ẽ. One simple idea is to consider
+that every entity is correlated with ẽ: corr(ẽ, ei) =
+1 ∀ei ∈ E. We will refer to this as Schema Consis-
+tent query proposal as this relates to summing over
+all possible (hence schema consistent) facts.
+
+Since we have access to taxonomy information,
+we can do a more precise, Sibling Guided, approx-
+imation.7 We propose the following approximation
+for corr(ẽ, ei) for ei ∈ E:
+
+corr(ẽ, ei) =
+
+{
+1 if ei ∈ sibling(ẽ)
+0 otherwise
+
+. (6)
+
+Eqns. (5) and (6) can be used to infer uncertain
+triples: if every sibling of ẽ has relationship r with
+an entity e′, we can infer for “free” that this is the
+case for ẽ as well. On the other hand, when sib-
+lings disagree in this respect, there is more uncer-
+tainty about (ẽ, r, e′) (according to (5) and (6)), mak-
+ing this triple a good candidate to query. In our ex-
+ample of oriole, the siblings are the birds that exist
+in the tensor, e.g., hummingbird, finch, woodpecker,
+etc. All of them (eat, insect) and hence we infer this
+for oriole. But there is no agreement on (appearIn,
+farm) and hence this is added to the query list.
+
+7One may also define corr based on entity similarity in a
+distributional space. One challenge here is that such similarity
+generally doesn’t preserve types. For example, dog may co-
+occur more often with and thus be “closer” to bone or barking
+in a distributional space, than to siblings such as cat or other pet
+animals, which are more helpful in our setting.
+
+Algorithm 1: Active Learning for Query Pro-
+posal
+
+input new entity ẽ, KB, taxonomy, lower bound
+κM on agreement, lower bound τL on
+uncertainty, upper bound τU on uncertainty
+
+1: extract list Sẽ of sibling(ẽ) using taxonomy
+2: for each ei ∈ Sẽ, add all facts about ei to Ω
+3: for (ẽ, ri, e′i) ∈ Ω do
+4: use (5)-(6) to estimate Pr(f(hri , hẽ, he′i))
+5: if p ≥ κM then add (ẽ, ri, e′i) to M
+6: if τL ≤ p ≤ τU then add (ẽ, ri, e′i) to L
+
+output L, M
+
+Algorithm 1 formalizes this process. Setting some
+upper (τU ) and lower (τL) bounds on the conditional
+probability (Eqn. (5)) which quantifies the uncer-
+tainty, we reach a set L = {(ẽ, ri, ei), i ∈ I} of
+triples to query. Using another high threshold κM >
+τU , we also infer the set M = {(ẽ, rj , ej), j ∈ J}
+of triples that a large majority of siblings agree upon,
+and hence ẽ is expected to agree with as well. Triples
+whose conditional probability estimate is between
+κM and τU are considered neither certain enough to
+include in M nor uncertain enough to justify adding
+to L for human annotation in hopes of learning from
+it. Similarly, triples with a conditional probability
+estimate lower than τL are discarded. The output of
+Algorithm 1 is the list L to query and the list M to
+add directly to the knowledge base.
+
+4.2 Efficient Subset Selection
+
+Given the list L as above (Algorithm 1), which we
+can write in short as L = {(ri, ei), i ∈ I}, the prob-
+lem is to find the “best” subset L̂. A baseline for
+such a selection is to choose the top k queries. We
+will refer to this as TK subset selection.
+
+Viewing subset selection as a combinatorial prob-
+lem, we devise an objective F that models several
+natural properties of this subset. We then prove that
+F is submodular, that is, the marginal gain inF(L)
+obtained by adding one more item to L decreases as
+L grows.8 Importantly, this implies that there is a
+simple known greedy algorithm that can efficiently
+compute a worst-case (1 − 1/e)-approximation of
+
+8Formally, for L′′ ⊆ L′ ⊆ L and for l = (rl, el) ∈ L \ L′,
+we have F(L′′ ∪ l)−F(L′′) ≥ F(L′ ∪ l)−F(L′).
+
+203
+
+
+
+the global optimum of F (Nemhauser et al., 1978).
+We refer to this as SM subset selection.
+
+Since queried samples will eventually be fed into
+tensor factorization, we would like L̂ to cover en-
+tities (for the other argument of the triple) and re-
+lations as much as possible. In addition, we would
+like L̂ to be diverse, i.e., prioritize relations and en-
+tities that are more varied.9 At the same time, we
+would also want to minimize redundancy, i.e., avoid
+choosing relations (entities) that are too similar. Let
+F(L̂, R
+
+L̂
+, E
+
+L̂
+) denote our objective, where R
+
+L̂
+, E
+
+L̂
+
+is the set of relations and entities in L̂, respectively.
+We decompose it as:
+
+F(L̂, R
+L̂
+, E
+
+L̂
+) = wCC(L̂, RL̂, EL̂) (7)
+
++ wDD(L̂, RL̂, EL̂)− wRR(L̂, RL̂, EL̂)
+
+where the terms in RHS correspond to cover-
+age, diversity, and redundancy, respectively, and
+wC , wD, wR are the corresponding non-negative
+weights. Next, we propose functional forms for
+these terms. Note that any function that captures the
+described properties can be used instead, as long as
+the objective remains submodular.
+
+Let R and E denote the set of relations and en-
+tities in the KB, respectively. The coverage simply
+captures the fraction of entity and relations that we
+have included in L̂:
+
+C(L̂, R
+L̂
+, E
+
+L̂
+) =
+|R
+
+L̂
+|
+
+|R| +
+|E
+
+L̂
+|
+
+|E| .
+
+The diversity for L̂ is the sum of the diversity mea-
+sure of the entities and relations included in the set:
+
+D(L̂, R
+L̂
+, E
+
+L̂
+) =
+
+∑
+
+(r,e)∈L̂
+
+[Vr + Ve] ,
+
+Vr =
+|ESr |+ |ETr |
+
+|E| , Ve =
+|Re|+ |ESe |
+|R|+ |E| .
+
+Here Vr and Ve represent the diversity measure of re-
+lation r and entity e, respectively. We use ESr , ETr
+to denote the set of sources and targets that appear
+
+9This agrees with the sampling method of Chen et al. (2014)
+for factorizing coherent matrices with missing values, which
+chooses samples with probability proportional to their local co-
+herence.
+
+Algorithm 2: Query Subset Selection
+input KB, budget B, query list L from Alg. 1.
+
+1: ∀(r, e) ∈ L, compute the diversity measure
+Vr, Ve
+
+2: L̂← ∅
+3: for j = 1 to B do
+4: ∀l ∈ L \ L̂ : G(l) = F(L̂ ∪ l)−F(L̂),
+
+for F in (7)
+5: Select l∗ = arg max
+
+L\L̂ G(l)
+6: Add l∗ to L̂
+
+output L̂
+
+for relation r in the KB, Re as the set of relations in
+the KB that have e as their target, and ESe as the set
+of entities that appear as the first entity when e is the
+second entity of the triple in the KB. The diversity
+measure for each relation r is defined as the ratio of
+the number of entities that appear in the KB as its
+source or target, over the total number of entities.
+Similarly, for an entity e, its diversity is defined as
+the ratio of the number of relations involving e plus
+the number of source entities that co-occur with e
+in a relation, over the total number of relations and
+entities. Note that the diversity measure is an in-
+trinsic characteristic of each entity and relationship,
+dictated by the KB and independent of the set L, and
+can thus be computed in advance.
+
+As described above, redundancy is a measure of
+similarity between relations(entities) in L̂. Ten-
+sor factorization yields an embedding for each re-
+lation(entity) given the facts they participated in.
+Therefore, the learned embeddings are one of the
+best options for capturing similarities. Let he (and
+hr) denote the learned embedding for entity e (and
+relation r, resp.). We define
+
+R(L̂, R
+L̂
+, E
+
+L̂
+) =
+
+∑
+
+r1,r2∈L̂
+
+‖hr1 − hr2‖
+
++
+∑
+
+e1,e2∈L̂
+
+‖he1 − he2‖.
+
+This completes the definition of all pieces of our
+objective function, F , from Eqn. (7). In Algo-
+rithm 2, we present our efficient greedy method to
+select a subset of L that approximately optimizes F .
+
+Despite being a greedy approach that simply adds
+the currently most valuable single query to L̂ and
+
+204
+
+
+
+repeats, the submodular nature of F , which we will
+prove shortly, guarantees that Algorithm 2 provides
+an approximation that, even in the worse case, is no
+worse than a factor of 1 − 1/e from the (unknown)
+true optimum of F . This is formalized in the fol-
+lowing theorem. Since addition preserves submodu-
+larity and the weights wC , wD, wR are non-negative,
+we will show that each of the three terms in F is
+submodular.
+
+Theorem 1. Given a tensor KB, a budget B, and
+a candidate query list L, the quality F(L̂, R
+
+L̂
+, E
+
+L̂
+)
+
+of the output L̂ of Algorithm 2 is a (1 − 1/e)-
+approximation of the global optimum of F .
+Proof. In order to prove the result, it suffices to
+show that F(L̂, R
+
+L̂
+, E
+
+L̂
+) in Equation (7) is submod-
+
+ular (Nemhauser et al., 1978). To this end, we show
+that for L′′ ⊆ L′ ⊆ L and for l = (rl, el) ∈ L \ L′,
+
+F(L′′ ∪ l)−F(L′′) ≥ F(L′ ∪ l)−F(L′).
+
+Since addition preserves submodularity and the
+weights wC , wD, wR are non-negative, it suffices to
+show that each term in F is submodular.
+
+First, consider the coverage term, C(L̂, R
+L̂
+, E
+
+L̂
+).
+
+In order to prove that it is submodular, we verify:
+
+(|RL′′∪l| − |RL′′ |)
+|R| ≥
+
+(|RL′∪l| − |RL′ |)
+|R| ,
+
+(|EL′′∪l| − |EL′′ |)
+|E| ≥
+
+(|EL′∪l| − |EL′ |)
+|E| .
+
+Note that for the numerators of each of the above
+lines, the difference can be either +1 or 0. Since
+L′′ ⊂ L′, LHS is, by definition, never less than RHS
+and the inequalities holds.
+
+Next, consider the diversity term, D(L̂, R
+L̂
+, E
+
+L̂
+).
+
+The above argument directly applies here as well.
+Finally, consider the redundancy term. In order to
+
+show that −R(L̂, R
+L̂
+, E
+
+L̂
+) is submodular, note that
+
+when taking the difference between R(L′′ ∪ l) and
+R(L′′) the terms that correspond to both entities (or
+both relations) being in L′′ cancel out. The same
+holds forR(L′ ∪ l)−R(L′). We thus have:
+R(L′′ ∪ l)−R(L′′) =
+
+∑
+
+rl∈l,r2∈L′′
+‖hr1 − hr2‖+
+
+∑
+
+el∈l,e2∈L′′
+‖he1 − he2‖
+
+R(L′ ∪ l)−R(L′) =
+∑
+
+rl∈l,r2∈L′
+‖hr1 − hr2‖+
+
+∑
+
+el∈l,e2∈L′
+‖he1 − he2‖.
+
+Since L′′ ⊆ L′ and norms are non-negative,
+
+R(L′′ ∪ l)−R(L′′) ≤ R(L′ ∪ l)−R(L′).
+
+The reverse inequality holds for the negation of both
+sides, proving that −R(L̂, R
+
+L̂
+, E
+
+L̂
+) is submodular.
+
+Combining the three items concludes the proof. �
+We will complement this theoretical guarantee in
+
+the experiments section (cf. Table 3) by empirically
+comparing the performance of our query proposal
+and subset selection methods with baselines.
+
+5 Experiments
+
+We begin with a description of the datasets and the
+general setup, then evaluate the effectiveness of our
+guided KB completion approach, and end with an
+evaluation of our active learning method.10
+
+5.1 Dataset and Setup
+
+To assess the quality of our guided KB completion
+method, we consider the only large existing knowl-
+edge bases about generics that we are aware of:
+
+1. A Science tensor containing facts about vari-
+ous scientific activities, entities (e.g., animals,
+instruments, body parts), units, locations, occu-
+pations, etc. (Dalvi et al., 2017).11 This starting
+tensor has a precision of about 80% and acts as
+a valuable resource for challenging tasks such
+as question answering. Our goal is to start with
+this tensor and infer more scientific facts at a
+similar or higher level of precision.
+
+2. An Animals sub-tensor of the Science tensor,
+which focuses on facts about animals and also
+has a similar starting precision. Again, the goal
+is to infer more facts about animals.
+
+The mainstream approach for KB completion is
+to focus on entities that are mentioned sufficiently
+often. For instance, the commonly used FB15K
+dataset guarantees that every entity appears at least
+100 times. As a milder version of this, we focus on
+the subset of the starting tensors where every entity
+appears at least 20 times. The resulting statistics of
+the tensors we use here are shown in Table 1.
+
+10Data and code available from the authors.
+11Aristo Tuple KB v0, http://allenai.org/data/aristo-tuple-kb.
+
+205
+
+
+
+Dataset # Entities # Relations # Triples
+
+Animals 224 129 10,604
+Science 1,255 1,513 66,643
+
+Table 1: Datasets, with a 3/1/1 train/validation/test split.
+
+This data, which is the only one we are aware of
+with generics, does not include ((s, r, t), all) style
+triples. We therefore use the objective function in
+Eqn. (2) rather than the multi-class one in Eqn. (1).
+Despite this limitation of the dataset and its superfi-
+cial similarity to the binary classification task under-
+lying standard (non-generics) KB completion, our
+results reveal that extending a generics KB is sur-
+prisingly difficult for existing methods.
+
+Dalvi et al. (2017) use a pipeline consisting of
+Open IE (Banko et al., 2007) extractions, aggrega-
+tion, and clean up via crowd-sourcing to generate
+the Science tensor. These facts come with a rele-
+vant WordNet (Miller, 1995) based taxonomy, entity
+types (derived from WordNet ‘synsets’), and rela-
+tion schema. Our method capitalizes on this addi-
+tional information12 to perform high quality knowl-
+edge completion.
+
+Our evaluation metric is the accuracy of the top
+k triples generated by various KB completion meth-
+ods. We also visualize entire precision-recall curves,
+where possible. While this metric requires human
+annotation and is thus more cumbersome than fully-
+automatic metrics, it is arguably more suitable for
+evaluating generative tasks with a massive output
+space, such as KB completion. In this setting, eval-
+uation against a relatively small held out test set
+can be misleading—a method may be highly ac-
+curate at generating thousands of valid and useful
+triples even if it does not necessarily classify spe-
+cific held out instances accurately. While measures
+such MAP and MRR have been used in the past
+to alleviate this, they provide only a partial solu-
+tion to the inherent difficulty of evaluating genera-
+tive systems. Annotation-efficient evaluation meth-
+ods have recently been proposed to address this chal-
+lenge (Sabharwal and Sedghi, 2017).
+
+12In order to limit potential error propagation, we collapse
+the taxonomy to the top two levels in our experiments.
+
+0 2000 4000 6000 8000 10000
+
+Yield
+
+0.4
+
+0.5
+
+0.6
+
+0.7
+
+0.8
+
+0.9
+
+1.0
+
+P
+re
+
+ci
+si
+
+o
+n
+
+HolE + ITRS + IET
+
+HolE + ITRS
+
+SICTF
+
+HolE
+
+Figure 1: Precision-yield curves for various embedding-
+based methods on the Animals tensor. State-of-the-art
+named-entity inspired approaches (black, pink) have low
+precision even at a low yield. TransE is omitted due to
+its very low precision here, around 10%. Our method
+(HolE+ITRS+IET, green) doubles the size of the starting
+tensor at a precision of 86.4%.
+
+5.2 Guided KB Completion
+
+We first compare our method (Section 3) with exist-
+ing KB completion techniques on the Animals ten-
+sor, and then demonstrate that its effectiveness car-
+ries over scalably to the larger Science tensor as
+well. In what follows, T denotes the tensor under
+consideration.
+
+We examine two alternatives for generating nega-
+tive samples: given a triple (s, r, t) ∈ T , replace s
+with (1) any entity s′ or (2) an entity s′ of the same
+type as s. The resulting perturbed triple (s′, r, t) is
+then treated as a negative sample if it is not present
+in T . We also considered a weighted combination
+of (1) and (2), and found random sampling to be the
+most reliable on our datasets. This complies with the
+commonly used LCWA assumption not being appli-
+cable to these tensors.
+
+As baselines, we consider extensions of three
+state-of-the-art embedding-based KB completion
+methods: HolE, TransE, and RESCAL. As men-
+tioned earlier, two leading graph-based methods,
+SFE and PRA, did not scale well. Both vanilla
+TransE and RESCAL resulted in poor performance;
+we thus report numbers only for their extensions.
+Specifically, we consider 3 baselines: (1) HolE,
+(2) TransE+Schema, and (3) SICTF which extends
+
+206
+
+
+
+HolE SICTF HolE+ITRS+IET
+farm,join,farm penguin,has part,tooth salmon,thrive in,water
+family,join,family mosquito,spread,parasite animal,give birth to,animal
+tree,resemble,tree spider,has part,skin duck,feed in,water
+water,is known as,water elephant,eat,fish fish,migrate to,water
+virus,attract,virus shark,has part,skin fish,thrive in,water
+animal,resemble,animal crab,eat,insect turtle,swim in,water
+tree,is known as,tree snake,eat,fish salmon,swim in,water
+habitat,is known as,habitat otter,has part,tooth turtle,live in,water
+envment.,is known as,envment. meat,attract,hummingbird animal,chew,food
+man,join,man spider,has part,claw insect,destroy,tree
+bird,give birth to,bird turtle,has part,tooth farm,possess,horse
+region,is known as,region human,eat,plant fish,swim in,ocean
+virus,derive from,virus monkey,has part,wing turtle,feed in,water
+food,resemble,food dolphin,has part,tooth turtle,float in,water
+bird,is known as,bird carnivore,live in,water dinosaur,walk on,leg
+field,resemble,field lizard,eat,fish turtle,migrate to,water
+fish,is known as,fish pelican,has part,tooth turtle,return to,water
+bird,resemble,bird caterpillar,turn into,bird man,ride,cattle
+grass,graze in,man bee,pollinate,garden turtle,swim in,ocean
+animal,is known as,animal virus,infect,bird fish,float in,ocean
+
+Table 2: Top 20 predictions by various methods, with invalid triples underlined and uninteresting ones , such as (X, is
+known as, X) or (Y, resembles, Y), shown in italics. While some of this assessment can be subjective, it is evident that
+our method, HolE+ITRS+IET, generates many more triples that are valid and interesting than competing approaches.
+
+RESCAL and incorporates schema.
+Figure 1 shows the resulting precision-yield
+
+curves for the predictions made by each method on
+the Animals dataset containing 10.6K facts. Specif-
+ically, for each method, we rank the predictions
+based on the method’s assigned score and compute
+the precision of the top k predictions for varying
+k. As expected, we observe a generally decreasing
+trend as k increases. TransE+ITRS gave a precision
+of only around 10% and is omitted from the plot. We
+make two observations:
+
+First, deriving new facts for these generics tensors
+at a high precision is challenging! Specifically, none
+of the baseline methods (black and pink curves),
+which represent state of the art for named-entity ten-
+sors, achieve a yield of more than 10% of T (i.e., 1K
+predictions) even at a precision of just 60%.
+
+Second, external information, if used appropri-
+ately, can be surprisingly powerful in this setting.
+Specifically, simply incorporating relation schema
+(ITRS, blue curve) allows HolE-based completion
+to double the size of the starting tensor T by pro-
+ducing over 10K new triples at a precision of 82%.
+Further, incorporating entity taxonomy (IET, green
+
+curve) to address tensor sparsity results in the same
+yield at a statistically significantly higher precision
+of 86.4%.
+
+It turns out that not only does our method result in
+substantially improved PR curves, it also generates
+qualitatively more interesting and useful generic
+facts about the world than previous methods. We
+illustrate this in Table 2, which lists the top 20 pre-
+dictions made by various approaches. The triples
+shown in red are false predictions (e.g., (penguin,
+has part, tooth), (grass, graze in, man), (caterpil-
+lar, turn into, bird)) or uninteresting ones (e.g., (wa-
+ter, is known as, water)). As we see, a vast major-
+ity of the top 20 predictions made by both vanilla
+HolE and SICTF fall into these categories. On the
+other hand, our method, HolE+ITRS+IET, predicts
+19 true tripes out of the top 20, including interesting
+scientific facts that were evidently missing from the
+starting tensor, such as (salmon, thrive in, water),
+(fish, swim in, ocean) and (insect, destroy, tree).
+
+Finally, we evaluate our proposal on the entire
+Science dataset with 66.6K facts. Since graph-based
+methods did not scale well to the much smaller An-
+imals dataset and other methods performed substan-
+
+207
+
+
+
+# New True Triples Inferred
+Query Subset From Sibling Tensor
+
+Proposal Selection Anntation Argument Factorization Total
+
+Random - 0 - 0 0
+Schema Consistent TK 73 - 10 83
+Schema Consistent SM 57 - 27 84
+
+Sibling Guided TK 96 17 211 324
+Sibling Guided SM 100 17 366 483
+
+Table 3: Active Learning for new entities: Number of new facts inferred (from annotation, sibling agreement, tensor
+factorization, and in total) for a representative new entity ẽ, when querying 100 facts about ẽ for human annotation.
+
+tially worse there, we focus here on the scalability
+and prediction quality of our method. We found that
+HolE+ITRS+IET scales well to this high dimen-
+sion, doubling the number of facts by adding 66K
+new facts at 74% precision. Although the Science
+tensor is 1,000 times larger than the Animals tensor,
+the method took only 10x longer to run (3 minutes
+on Animals tensor vs. 56 minutes on Science ten-
+sor, using a 2.8GHz, 16GB Macbook Pro). With
+additional improvements such as parallelization, it
+is easily possible to further scale the method up to
+substantially larger tensors.
+
+5.3 Active Learning for New Entities
+
+To assess the quality of our active learning mecha-
+nism (Section 4), we consider predicting facts about
+a new entity ẽ that is not in the Animals tensor. For
+illustration, we choose ẽ from the Science tensor
+vocabulary while ensuring that it is present in the
+WordNet taxonomy.
+
+The setup is as follows. We first use a query gen-
+eration mechanism (Random, Schema Consistent, or
+Sibling Guided; cf. Section 4.1) to propose an or-
+dered list L of facts about ẽ to annotate. Next, we
+perform subset selection (Top k or TK, Submodular
+or SM; cf. Section 4.2) on L to identify a subset L̂
+of up to 100 most promising queries. These are then
+annotated and the true ones fed into tensor factor-
+ization as additional input to infer further new facts
+about ẽ.
+
+In Table 3, we assess the quality of L̂ in two ways,
+when |L̂| = 100: how many true facts does L̂ have
+and how many overall new facts does this annotation
+produce about ẽ. Figure 2 provides a complemen-
+tary view, focusing on the overall number of new
+facts inferred as |L̂| increases. While these illus-
+
+50 60 70 80 90 100
+Number of Facts Annotated
+
+0
+
+100
+
+200
+
+300
+
+400
+
+500
+
+N
+ew
+
+Fa
+ct
+
+s
+In
+
+fe
+rr
+
+ed
+
+SiblingGuided + SM
+SiblingGuided + TK
+SchemaConsistent + TK
+SchemaConsistent + SM
+Random Queries
+
+Figure 2: Active Learning for new entities: Total num-
+ber of new inferred facts (y-axis) for various human an-
+notation query sizes (x-axis). The use of subset selection
+(green triangles, top) and sibling information (blue cir-
+cles, 2nd from top) vastly outperforms various baselines.
+
+trative numbers are for a representative new entity,
+reindeer, the overall trend and order of numbers re-
+mained the same for other new entities we experi-
+mented with.
+
+We mention some highlights from Table 3. First,
+not surprisingly, randomly choosing triples about ẽ
+to annotate is ineffective. Second, choosing schema
+consistent triples results in 73 true triples (out of
+100) but these facts help tensor factorization very lit-
+tle, resulting in only 10 additional new triples about
+ẽ. Our proposed sibling guided querying mecha-
+nism results not only in nearly all 100 facts being
+true along with 17 true facts inferred from sibling
+agreement (set M in Alg. 1), but also, combined with
+submodular subset selection for balancing diversity
+with coverage (Alg. 2), ultimately results in 483 new
+
+208
+
+
+
+facts about ẽ. These facts cover interesting new in-
+formation such as (reindeer, eat, fruit), (wolf, chase,
+reindeer), and (reindeer, provide, fur).
+
+Finally, the plot in Figure 2 demonstrates that the
+qualitative trends remain the same, irrespective of
+the number |L̂| of queries annotated. Overall, our
+sibling guided queries with submodular subset se-
+lection (green triangles, top-most curve) ultimately
+results in 5.8 times more new facts about ẽ than
+a non-trivial, uncertainly based, schema consistent
+baseline (black stars, 3rd curve from the top). This
+attests to the efficacy of the method on this challeng-
+ing problem and dataset.
+
+6 Conclusion
+
+This work explores KB completion for a new class
+of problems, namely completing generics KBs,
+which is an essential step for including general
+world knowledge in intelligent machines. The dif-
+ferences between generics and much studied named
+entity KBs make existing techniques either not scale
+well or produce facts at an undesirably low preci-
+sion out of the box. We demonstrate that incorporat-
+ing entity taxonomy and relation schema appropri-
+ately can be highly effective for generics KBs. Fur-
+ther, to address scarcity of facts about certain enti-
+ties in such KBs, we present a novel active learn-
+ing approach using sibling guided uncertainty esti-
+mation along with submodular subset selection. The
+proposed techniques substantially outperform vari-
+ous baselines, setting a new state of the art for this
+challenging class of completion problems.
+
+Our method is applicable to KBs that have an as-
+sociated entity taxonomy and relation schema. It
+is expected to be successful when information from
+siblings can be used to guide what is likely to be true
+and what is a good candidate to query for a given
+entity. We focus on KBs of generics where such in-
+formation is available and—as we show—is highly
+valuable for effective KB completion.
+
+Why does our use of types work substantially bet-
+ter in our setting than the use of types in various
+baselines? One hypothesis is the following. The use
+of complicated models requires substantial data and
+information. In our KB, the information appears so
+sparse and incomplete that using types in compli-
+cated ways is not productive. Our proposal instead
+
+attempts to use type information only to gently en-
+hance the signal and reduce noise, before perform-
+ing tensor decomposition. We hope this work will
+trigger further exploration of knowledge bases with
+generics, a key aspect of machine intelligence.
+
+Acknowledgments
+
+The authors would like to thank Peter Clark for fruitful
+discussions, valuable feedback, and crowdsourcing anno-
+tations; Matt Gardner for constructive comments and as-
+sessing graph-based completion methods on our datasets;
+and Udai Saini and Partha Talukdar for evaluating their
+CNTF approach on our datasets.
+
+References
+
+Michele Banko, Michael J. Cafarella, Stephen Soderland,
+Matthew Broadhead, and Oren Etzioni. 2007. Open
+information extraction from the web. In IJCAI, pages
+2670–2676.
+
+Kurt Bollacker, Colin Evans, Praveen Paritosh, Tim
+Sturge, and Jamie Taylor. 2008. Freebase: a collabo-
+ratively created graph database for structuring human
+knowledge. In ICMD, pages 1247–1250. ACM.
+
+Antoine Bordes, Nicolas Usunier, Alberto Garcia-Duran,
+Jason Weston, and Oksana Yakhnenko. 2013. Trans-
+lating embeddings for modeling multi-relational data.
+In NIPS, pages 2787–2795.
+
+Kai-Wei Chang, Wen-tau Yih, Bishan Yang, and Christo-
+pher Meek. 2014. Typed tensor decomposition of
+knowledge bases for relation extraction. In EMNLP,
+pages 1568–1579.
+
+Yudong Chen, Srinadh Bhojanapalli, Sujay Sanghavi,
+and Rachel Ward. 2014. Coherent matrix completion.
+In ICML.
+
+Bhavana Dalvi, Niket Tandon, and Peter Clark. 2017.
+Domain-targeted, high precision knowledge extrac-
+tion. TACL, 5:233–246.
+
+Thomas Demeester, Tim Rocktäschel, and Sebastian
+Riedel. 2016. Lifted rule injection for relation em-
+beddings. In EMNLP, pages 1389–1399.
+
+Xin Dong, Evgeniy Gabrilovich, Geremy Heitz, Wilko
+Horn, Ni Lao, Kevin Murphy, Thomas Strohmann,
+Shaohua Sun, and Wei Zhang. 2014. Knowledge
+Vault: A web-scale approach to probabilistic knowl-
+edge fusion. In KDD, pages 601–610. ACM.
+
+Matthew Gardner and Tom M. Mitchell. 2015. Effi-
+cient and expressive knowledge base completion using
+subgraph feature extraction. In EMNLP, pages 1488–
+1498.
+
+209
+
+
+
+Katsuhiko Hayashi and Masashi Shimbo. 2017. On the
+equivalence of holographic and complex embeddings
+for link prediction. In ACL, pages 554–559.
+
+Manjunath Hegde and Partha P. Talukdar. 2015. An
+entity-centric approach for overcoming knowledge
+graph sparsity. In EMNLP, pages 530–535.
+
+Alexandros Komninos and Suresh Manandhar. 2017.
+Feature-rich networks for knowledge base completion.
+In ACL, pages 324–329.
+
+Akshay Krishnamurthy and Aarti Singh. 2013. Low-
+rank matrix and tensor completion via adaptive sam-
+pling. In NIPS, pages 836–844.
+
+Denis Krompaß, Maximilian Nickel, and Volker Tresp.
+2014. Large-scale factorization of type-constrained
+multi-relational data. In 2014 International Con-
+ference on Data Science and Advanced Analytics
+(DSAA), pages 18–24. IEEE.
+
+Denis Krompaß, Stephan Baier, and Volker Tresp. 2015.
+Type-constrained representation learning in knowl-
+edge graphs. In International Semantic Web Confer-
+ence, pages 640–655. Springer.
+
+Ni Lao, Tom Mitchell, and William W Cohen. 2011.
+Random walk inference and learning in a large scale
+knowledge base. In EMNLP, pages 529–539.
+
+Sarah-Jane Leslie. 2008. Generics: Cognition and acqui-
+sition. Pholosophical Review, 117(1):1–47.
+
+Xiang Li, Aynaz Taheri, Lifu Tu, and Kevin Gimpel.
+2016. Commonsense knowledge base completion. In
+ACL, pages 1445–1455.
+
+George A. Miller. 1995. WordNet: A lexical database for
+English. Communications of the ACM, 38(11):39–41.
+
+Karthik Narasimhan, Adam Yala, and Regina Barzilay.
+2016. Improving information extraction by acquir-
+ing external evidence with reinforcement learning. In
+EMNLP, pages 2355–2365.
+
+George L. Nemhauser, Laurence A. Wolsey, and Mar-
+shall L. Fisher. 1978. An analysis of approximations
+for maximizing submodular set functions - I. Mathe-
+matical Programming, 14(1):265–294.
+
+Maximilian Nickel, Volker Tresp, and Hans-Peter
+Kriegel. 2011. A three-way model for collective
+learning on multi-relational data. In ICML, pages
+809–816.
+
+Maximilian Nickel, Kevin Murphy, Volker Tresp, and Ev-
+geniy Gabrilovich. 2016a. A review of relational ma-
+chine learning for knowledge graphs. Proceedings of
+the IEEE, 104(1):11–33.
+
+Maximilian Nickel, Lorenzo Rosasco, and Tomaso A.
+Poggio. 2016b. Holographic embeddings of knowl-
+edge graphs. In AAAI, pages 1955–1961.
+
+Madhav Nimishakavi, Uday Singh Saini, and Partha
+Talukdar. 2016. Relation schema induction using ten-
+sor factorization with side information. In EMNLP,
+pages 414–423.
+
+Sebastian Riedel, Limin Yao, Andrew McCallum, and
+Benjamin M. Marlin. 2013. Relation extraction with
+matrix factorization and universal schemas. In HLT-
+NAACL, pages 74–84.
+
+Tim Rocktaschel, Sameer Singh, and Sebastian Riedel.
+2015. Injecting logical background knowledge into
+embeddings for relation extraction. In NAACL, pages
+1119–1129.
+
+Ashish Sabharwal and Hanie Sedghi. 2017. How
+good are my predictions? Efficiently approximating
+precision-recall curves for massive datasets. In UAI.
+
+Hinrich Schütze, Yadollah Yaghoobzadeh, and Heike
+Adel. 2017. Noise mitigation for neural entity typing
+and relation extraction. In EACL, pages 1183–1194.
+
+Burr Settles. 2012. Active Learning. Morgan & Clay-
+pool.
+
+Baoxu Shi and Tim Weninger. 2017. ProjE: Embedding
+projection for knowledge graph completion. In AAAI,
+pages 1236–1242.
+
+Théo Trouillon, Johannes Welbl, Sebastian Riedel, Éric
+Gaussier, and Guillaume Bouchard. 2016. Com-
+plex embeddings for simple link prediction. In ICML,
+pages 2071–2080.
+
+Ruobing Xie, Zhiyuan Liu, Jia Jia, Huanbo Luan, and
+Maosong Sun. 2016a. Representation learning of
+knowledge graphs with entity descriptions. In AAAI,
+pages 2659–2665.
+
+Ruobing Xie, Zhiyuan Liu, and Maosong Sun. 2016b.
+Representation learning of knowledge graphs with hi-
+erarchical types. In IJCAI, pages 2965–2971.
+
+Qizhe Xie, Xuezhe Ma, Zihang Dai, and Eduard H. Hovy.
+2017. An interpretable knowledge transfer model for
+knowledge base completion. In ACL, pages 950–962.
+
+210
+
+

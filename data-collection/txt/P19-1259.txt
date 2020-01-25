@@ -1,0 +1,1429 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Cognitive Graph for Multi-Hop Reading Comprehension at Scale
+
+
+Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 2694–2703
+Florence, Italy, July 28 - August 2, 2019. c©2019 Association for Computational Linguistics
+
+2694
+
+Cognitive Graph for Multi-Hop Reading Comprehension at Scale
+
+Ming Ding†, Chang Zhou‡, Qibin Chen†, Hongxia Yang‡, Jie Tang†
+†Department of Computer Science and Technology, Tsinghua University
+
+‡DAMO Academy, Alibaba Group
+{dm18,chen-qb15}@mails.tsinghua.edu.cn
+{ericzhou.zc,yang.yhx}@alibaba-inc.com
+
+jietang@tsinghua.edu.cn
+
+Abstract
+
+We propose a new CogQA framework for
+multi-hop question answering in web-scale
+documents. Founded on the dual process the-
+ory in cognitive science, the framework grad-
+ually builds a cognitive graph in an iterative
+process by coordinating an implicit extrac-
+tion module (System 1) and an explicit rea-
+soning module (System 2). While giving ac-
+curate answers, our framework further pro-
+vides explainable reasoning paths. Specifi-
+cally, our implementation1 based on BERT
+and graph neural network (GNN) efficiently
+handles millions of documents for multi-hop
+reasoning questions in the HotpotQA fullwiki
+dataset, achieving a winning joint F1 score of
+34.9 on the leaderboard, compared to 23.6 of
+the best competitor.2
+
+1 Introduction
+
+Deep learning models have made significant
+strides in machine reading comprehension and
+even outperformed human on single paragraph
+question answering (QA) benchmarks including
+SQuAD (Wang et al., 2018b; Devlin et al., 2018;
+Rajpurkar et al., 2016). However, to cross the
+chasm of reading comprehension ability between
+machine and human, three main challenges lie
+ahead: 1) Reasoning ability. As revealed by ad-
+versarial tests (Jia and Liang, 2017), models for
+single paragraph QA tend to seek answers in sen-
+tences matched by the question, which does not
+involve complex reasoning. Therefore, multi-hop
+QA becomes the next frontier to conquer (Yang
+et al., 2018). 2) Explainability. Explicit rea-
+soning paths, which enable verification of logi-
+cal rigor, are vital for the reliability of QA sys-
+tems. HotpotQA (Yang et al., 2018) requires
+models to provide supporting sentences, which
+
+1Codes: https://github.com/THUDM/CogQA
+2https://hotpotqa.github.io, March 4, 2019
+
+Figure 1: An example of cognitive graph for multi-hop
+QA. Each hop node corresponds to an entity (e.g., “Los
+Angeles”) followed by its introductory paragraph. The
+circles mean ans nodes, answer candidates to the ques-
+tion. Cognitive graph mimics human reasoning pro-
+cess. Edges are built when calling an entity to “mind”.
+The solid black edges are the correct reasoning path.
+
+means unordered and sentence-level explainabil-
+ity, yet humans can interpret answers with step by
+step solutions, indicating an ordered and entity-
+level explainability. 3) Scalability. For any prac-
+tically useful QA system, scalability is indis-
+pensable. Existing QA systems based on ma-
+chine comprehension generally follow retrieval-
+extraction framework in DrQA (Chen et al., 2017),
+reducing the scope of sources to a few paragraphs
+by pre-retrieval. This framework is a simple com-
+promise between single paragraph QA and scal-
+able information retrieval, compared to human’s
+ability to breeze through reasoning with knowl-
+edge in massive-capacity memory (Wang et al.,
+2003).
+
+Therefore, insights on the solutions to these
+challenges can be drawn from the cognitive pro-
+cess of humans. Dual process theory (Evans,
+1984, 2003, 2008; Sloman, 1996) suggests that our
+brains first retrieve relevant information follow-
+ing attention via an implicit, unconscious and intu-
+
+https://github.com/THUDM/CogQA
+https://hotpotqa.github.io
+
+
+2695
+
+itive process called System 1, based on which an-
+other explicit, conscious and controllable reason-
+ing process, System 2, is then conducted. System
+1 could provide resources according to requests,
+while System 2 enables diving deeper into rela-
+tional information by performing sequential think-
+ing in the working memory, which is slower but
+with human-unique rationality (Baddeley, 1992).
+For complex reasoning, the two systems are coor-
+dinated to perform fast and slow thinking (Kahne-
+man and Egan, 2011) iteratively.
+
+In this paper, we propose a framework, namely
+Cognitive Graph QA (CogQA), contributing to
+tackling all challenges above. Inspired by the dual
+process theory, the framework comprises function-
+ally different System 1 and 2 modules. System 1
+extracts question-relevant entities and answer can-
+didates from paragraphs and encodes their seman-
+tic information. Extracted entities are organized
+as a cognitive graph (Figure 1), which resembles
+the working memory. System 2 then conducts the
+reasoning procedure over the graph, and collects
+clues to guide System 1 to better extract next-hop
+entities. The above process is iterated until all
+possible answers are found, and then the final an-
+swer is chosen based on reasoning results from
+System 2. An efficient implementation based on
+BERT (Devlin et al., 2018) and graph neural net-
+work (GNN) (Battaglia et al., 2018) is introduced.
+
+Our contributions are as follows:
+• We propose the novel CogQA framework
+
+for multi-hop reading comprehension QA at
+scale according to human cognition.
+• We show that the cognitive graph structure
+
+in our framework offers ordered and entity-
+level explainability and suits for relational
+reasoning.
+• Our implementation based on BERT and
+
+GNN surpasses previous works and other
+competitors substantially on all the metrics.
+
+2 Cognitive Graph QA Framework
+
+Reasoning ability of humankind depends critically
+on relational structures of information. Intuitively,
+we adopt a directed graph structure for step-by-
+step deduction and exploration in cognitive pro-
+cess of multi-hop QA. In our reading comprehen-
+sion setting, each node in this cognitive graph G
+corresponds with an entity or possible answer x,
+also interchangeably denoted as node x. The ex-
+traction module System 1, reads the introductory
+
+Algorithm 1: Cognitive Graph QA
+Input:
+System 1 model S1, System 2 model S2,
+Question Q, Predictor F ,Wiki DatabaseW
+
+1 Initialize cognitive graph G with entities mentioned in
+Q and mark them frontier nodes
+
+2 repeat
+3 pop a node x from frontier nodes
+4 collect clues[x,G] from predecessor nodes of x
+
+// eg. clues can be sentences where x is mentioned
+5 fetch para[x] inW if any
+6 generate sem[x,Q, clues] with S1 // initial X[x]
+7 if x is a hop node then
+8 find hop and answer spans in para[x] with S1
+9 for y in hop spans do
+
+10 if y /∈ G and y ∈ W then
+11 create a new hop node for y
+12 if y ∈ G and edge(x, y) /∈ G then
+13 add edge (x, y) to G
+14 mark node y as a frontier node
+15 end
+16 for y in answer spans do
+17 add new answer node y and edge (x, y) to G
+18 end
+19 end
+20 update hidden representation X with S2
+21 until there is no frontier node in G or G is large enough;
+22 Return argmax
+
+answer node x
+F(X[x])
+
+paragraph para[x] of entity x and extracts answer
+candidates and useful next-hop entities from the
+paragraph. G is then expanded with these new
+nodes, providing explicit structure for the reason-
+ing module, System 2. In this paper, we assume
+that System 2 conducts deep learning based in-
+stead of rule-based reasoning by computing hid-
+den representations X of nodes. Thus System 1 is
+also required to summarize para[x] into a seman-
+tic vector as initial hidden representation when ex-
+tracting spans. Then System 2 updates X based
+on graph structure as reasoning results for down-
+stream prediction.
+
+Explainability is enjoyed owing to explicit rea-
+soning paths in the cognitive graph. Besides sim-
+ple paths, the cognitive graph can also clearly dis-
+play joint or loopy reasoning processes, where
+new predecessors might bring new clues about the
+answer. Clues in our framework is a form-flexible
+concept, referring to information from predeces-
+sors for guiding System 1 to better extract spans.
+Apart from newly added nodes, those nodes with
+new incoming edges also need revisits due to new
+clues. We refer to both of them as frontier nodes.
+
+Scalability means that the time consumption
+of QA will not grow significantly along with the
+number of paragraphs. Our framework can scale
+in nature since the only operation referred to all
+
+
+
+2696
+
+Ques
+<latexit sha1_base64="1EWxMOFjDRT37bRb7ZlgcYDiw9o=">AAAB63icbVBNS8NAEJ3Ur1q/qh69LBbBU0lU0GPRi8cW7Ae0oWy2k3bpZhN2N0IJ/QtePCji1T/kzX/jps1Bqw8GHu/NMDMvSATXxnW/nNLa+sbmVnm7srO7t39QPTzq6DhVDNssFrHqBVSj4BLbhhuBvUQhjQKB3WB6l/vdR1Sax/LBzBL0IzqWPOSMmlxqpaiH1Zpbdxcgf4lXkBoUaA6rn4NRzNIIpWGCat333MT4GVWGM4HzyiDVmFA2pWPsWypphNrPFrfOyZlVRiSMlS1pyEL9OZHRSOtZFNjOiJqJXvVy8T+vn5rwxs+4TFKDki0XhakgJib542TEFTIjZpZQpri9lbAJVZQZG0/FhuCtvvyXdC7q3mXdbV3VGrdFHGU4gVM4Bw+uoQH30IQ2MJjAE7zAqxM5z86b875sLTnFzDH8gvPxDRWcjkI=</latexit>
+
+System 1 (BERT)
+E[CLS]
+
+<latexit sha1_base64="ETVqKsXMMWfH5TnGJ4hkR7zGnZE=">AAAB8HicbVBNSwMxEJ2tX7V+VT16CRbBU9kVQY/FInjwUNF+yHYp2TTbhibZJckKZemv8OJBEa/+HG/+G9N2D9r6YODx3gwz88KEM21c99sprKyurW8UN0tb2zu7e+X9g5aOU0Vok8Q8Vp0Qa8qZpE3DDKedRFEsQk7b4ag+9dtPVGkWywczTmgg8ECyiBFsrPR43cv8+u19MOmVK27VnQEtEy8nFcjR6JW/uv2YpIJKQzjW2vfcxAQZVoYRTielbqppgskID6hvqcSC6iCbHTxBJ1bpoyhWtqRBM/X3RIaF1mMR2k6BzVAvelPxP89PTXQZZEwmqaGSzBdFKUcmRtPvUZ8pSgwfW4KJYvZWRIZYYWJsRiUbgrf48jJpnVU9t+rdnVdqV3kcRTiCYzgFDy6gBjfQgCYQEPAMr/DmKOfFeXc+5q0FJ585hD9wPn8AQkCQCg==</latexit><latexit sha1_base64="ETVqKsXMMWfH5TnGJ4hkR7zGnZE=">AAAB8HicbVBNSwMxEJ2tX7V+VT16CRbBU9kVQY/FInjwUNF+yHYp2TTbhibZJckKZemv8OJBEa/+HG/+G9N2D9r6YODx3gwz88KEM21c99sprKyurW8UN0tb2zu7e+X9g5aOU0Vok8Q8Vp0Qa8qZpE3DDKedRFEsQk7b4ag+9dtPVGkWywczTmgg8ECyiBFsrPR43cv8+u19MOmVK27VnQEtEy8nFcjR6JW/uv2YpIJKQzjW2vfcxAQZVoYRTielbqppgskID6hvqcSC6iCbHTxBJ1bpoyhWtqRBM/X3RIaF1mMR2k6BzVAvelPxP89PTXQZZEwmqaGSzBdFKUcmRtPvUZ8pSgwfW4KJYvZWRIZYYWJsRiUbgrf48jJpnVU9t+rdnVdqV3kcRTiCYzgFDy6gBjfQgCYQEPAMr/DmKOfFeXc+5q0FJ585hD9wPn8AQkCQCg==</latexit><latexit sha1_base64="ETVqKsXMMWfH5TnGJ4hkR7zGnZE=">AAAB8HicbVBNSwMxEJ2tX7V+VT16CRbBU9kVQY/FInjwUNF+yHYp2TTbhibZJckKZemv8OJBEa/+HG/+G9N2D9r6YODx3gwz88KEM21c99sprKyurW8UN0tb2zu7e+X9g5aOU0Vok8Q8Vp0Qa8qZpE3DDKedRFEsQk7b4ag+9dtPVGkWywczTmgg8ECyiBFsrPR43cv8+u19MOmVK27VnQEtEy8nFcjR6JW/uv2YpIJKQzjW2vfcxAQZVoYRTielbqppgskID6hvqcSC6iCbHTxBJ1bpoyhWtqRBM/X3RIaF1mMR2k6BzVAvelPxP89PTXQZZEwmqaGSzBdFKUcmRtPvUZ8pSgwfW4KJYvZWRIZYYWJsRiUbgrf48jJpnVU9t+rdnVdqV3kcRTiCYzgFDy6gBjfQgCYQEPAMr/DmKOfFeXc+5q0FJ585hD9wPn8AQkCQCg==</latexit><latexit sha1_base64="ETVqKsXMMWfH5TnGJ4hkR7zGnZE=">AAAB8HicbVBNSwMxEJ2tX7V+VT16CRbBU9kVQY/FInjwUNF+yHYp2TTbhibZJckKZemv8OJBEa/+HG/+G9N2D9r6YODx3gwz88KEM21c99sprKyurW8UN0tb2zu7e+X9g5aOU0Vok8Q8Vp0Qa8qZpE3DDKedRFEsQk7b4ag+9dtPVGkWywczTmgg8ECyiBFsrPR43cv8+u19MOmVK27VnQEtEy8nFcjR6JW/uv2YpIJKQzjW2vfcxAQZVoYRTielbqppgskID6hvqcSC6iCbHTxBJ1bpoyhWtqRBM/X3RIaF1mMR2k6BzVAvelPxP89PTXQZZEwmqaGSzBdFKUcmRtPvUZ8pSgwfW4KJYvZWRIZYYWJsRiUbgrf48jJpnVU9t+rdnVdqV3kcRTiCYzgFDy6gBjfQgCYQEPAMr/DmKOfFeXc+5q0FJ585hD9wPn8AQkCQCg==</latexit>
+
+E1
+<latexit sha1_base64="Bi34J8SYWq1KLtBcT2QBNyIgAIM=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lEqMeiCB4r2g9oQ9lsN+3SzSbsToQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IJHCoOt+O4W19Y3NreJ2aWd3b/+gfHjUMnGqGW+yWMa6E1DDpVC8iQIl7ySa0yiQvB2Mb2Z++4lrI2L1iJOE+xEdKhEKRtFKD7d9r1+uuFV3DrJKvJxUIEejX/7qDWKWRlwhk9SYrucm6GdUo2CST0u91PCEsjEd8q6likbc+Nn81Ck5s8qAhLG2pZDM1d8TGY2MmUSB7YwojsyyNxP/87ophld+JlSSIldssShMJcGYzP4mA6E5QzmxhDIt7K2EjaimDG06JRuCt/zyKmldVD236t1fVurXeRxFOIFTOAcPalCHO2hAExgM4Rle4c2Rzovz7nwsWgtOPnMMf+B8/gC9741t</latexit><latexit sha1_base64="Bi34J8SYWq1KLtBcT2QBNyIgAIM=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lEqMeiCB4r2g9oQ9lsN+3SzSbsToQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IJHCoOt+O4W19Y3NreJ2aWd3b/+gfHjUMnGqGW+yWMa6E1DDpVC8iQIl7ySa0yiQvB2Mb2Z++4lrI2L1iJOE+xEdKhEKRtFKD7d9r1+uuFV3DrJKvJxUIEejX/7qDWKWRlwhk9SYrucm6GdUo2CST0u91PCEsjEd8q6likbc+Nn81Ck5s8qAhLG2pZDM1d8TGY2MmUSB7YwojsyyNxP/87ophld+JlSSIldssShMJcGYzP4mA6E5QzmxhDIt7K2EjaimDG06JRuCt/zyKmldVD236t1fVurXeRxFOIFTOAcPalCHO2hAExgM4Rle4c2Rzovz7nwsWgtOPnMMf+B8/gC9741t</latexit><latexit sha1_base64="Bi34J8SYWq1KLtBcT2QBNyIgAIM=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lEqMeiCB4r2g9oQ9lsN+3SzSbsToQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IJHCoOt+O4W19Y3NreJ2aWd3b/+gfHjUMnGqGW+yWMa6E1DDpVC8iQIl7ySa0yiQvB2Mb2Z++4lrI2L1iJOE+xEdKhEKRtFKD7d9r1+uuFV3DrJKvJxUIEejX/7qDWKWRlwhk9SYrucm6GdUo2CST0u91PCEsjEd8q6likbc+Nn81Ck5s8qAhLG2pZDM1d8TGY2MmUSB7YwojsyyNxP/87ophld+JlSSIldssShMJcGYzP4mA6E5QzmxhDIt7K2EjaimDG06JRuCt/zyKmldVD236t1fVurXeRxFOIFTOAcPalCHO2hAExgM4Rle4c2Rzovz7nwsWgtOPnMMf+B8/gC9741t</latexit><latexit sha1_base64="Bi34J8SYWq1KLtBcT2QBNyIgAIM=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lEqMeiCB4r2g9oQ9lsN+3SzSbsToQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IJHCoOt+O4W19Y3NreJ2aWd3b/+gfHjUMnGqGW+yWMa6E1DDpVC8iQIl7ySa0yiQvB2Mb2Z++4lrI2L1iJOE+xEdKhEKRtFKD7d9r1+uuFV3DrJKvJxUIEejX/7qDWKWRlwhk9SYrucm6GdUo2CST0u91PCEsjEd8q6likbc+Nn81Ck5s8qAhLG2pZDM1d8TGY2MmUSB7YwojsyyNxP/87ophld+JlSSIldssShMJcGYzP4mA6E5QzmxhDIt7K2EjaimDG06JRuCt/zyKmldVD236t1fVurXeRxFOIFTOAcPalCHO2hAExgM4Rle4c2Rzovz7nwsWgtOPnMMf+B8/gC9741t</latexit>
+
+E[SEP ]
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+… EN
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+E01
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+T0
+<latexit sha1_base64="X93JYNB4Gt2WCA50tQLVi297OSU=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lU0GPRi8eK/YI2lM120i7dbMLuRiihP8GLB0W8+ou8+W/ctjlo64OBx3szzMwLEsG1cd1vp7C2vrG5Vdwu7ezu7R+UD49aOk4VwyaLRaw6AdUouMSm4UZgJ1FIo0BgOxjfzfz2EyrNY9kwkwT9iA4lDzmjxkqPjb7bL1fcqjsHWSVeTiqQo94vf/UGMUsjlIYJqnXXcxPjZ1QZzgROS71UY0LZmA6xa6mkEWo/m586JWdWGZAwVrakIXP190RGI60nUWA7I2pGetmbif953dSEN37GZZIalGyxKEwFMTGZ/U0GXCEzYmIJZYrbWwkbUUWZsemUbAje8surpHVR9S6r7sNVpXabx1GEEziFc/DgGmpwD3VoAoMhPMMrvDnCeXHenY9Fa8HJZ47hD5zPH9PvjX0=</latexit>
+
+T1
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+T[SEP ]
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+TN
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+T 0i
+<latexit sha1_base64="ycagfIhPAcq9SuB1/HItSluEld4=">AAAB63icbVBNS8NAEJ3Ur1q/qh69LBbRU0lU0GPRi8cK/YI2lM120y7d3YTdjVBC/4IXD4p49Q9589+4SXPQ1gcDj/dmmJkXxJxp47rfTmltfWNzq7xd2dnd2z+oHh51dJQoQtsk4pHqBVhTziRtG2Y47cWKYhFw2g2m95nffaJKs0i2zCymvsBjyUJGsMmk1pCdD6s1t+7mQKvEK0gNCjSH1a/BKCKJoNIQjrXue25s/BQrwwin88og0TTGZIrHtG+pxIJqP81vnaMzq4xQGClb0qBc/T2RYqH1TAS2U2Az0cteJv7n9RMT3vopk3FiqCSLRWHCkYlQ9jgaMUWJ4TNLMFHM3orIBCtMjI2nYkPwll9eJZ3LundVdx+va427Io4ynMApXIAHN9CAB2hCGwhM4Ble4c0Rzovz7nwsWktOMXMMf+B8/gCLgo3n</latexit>
+
+T 01
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+… …
+
+[CLS] Tok1
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+[SEP ]
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+… TokN
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+Tok01
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+…
+
+Question + clues[x,G] Paragraph[x]
+
+Hop span
+
+x
+<latexit sha1_base64="T81e0FN4eiLN0l7csieDRUgh6Jc=">AAAB6HicbVBNS8NAEJ34WetX1aOXxSJ4KokKeix68diC/YA2lM120q7dbMLuRiyhv8CLB0W8+pO8+W/ctjlo64OBx3szzMwLEsG1cd1vZ2V1bX1js7BV3N7Z3dsvHRw2dZwqhg0Wi1i1A6pRcIkNw43AdqKQRoHAVjC6nfqtR1Sax/LejBP0IzqQPOSMGivVn3qlsltxZyDLxMtJGXLUeqWvbj9maYTSMEG17nhuYvyMKsOZwEmxm2pMKBvRAXYslTRC7WezQyfk1Cp9EsbKljRkpv6eyGik9TgKbGdEzVAvelPxP6+TmvDaz7hMUoOSzReFqSAmJtOvSZ8rZEaMLaFMcXsrYUOqKDM2m6INwVt8eZk0zyveRcWtX5arN3kcBTiGEzgDD66gCndQgwYwQHiGV3hzHpwX5935mLeuOPnMEfyB8/kD5uOM/g==</latexit>
+
+Prev2
+<latexit sha1_base64="NHajn1S7d4tKGHbUVsWnUGCMXZ0=">AAAB7XicbVBNS8NAEJ3Ur1q/qh69BIvgqSRV0GPRi8cKthbaUDbbSbt2sxt2N4US+h+8eFDEq//Hm//GbZuDtj4YeLw3w8y8MOFMG8/7dgpr6xubW8Xt0s7u3v5B+fCopWWqKDap5FK1Q6KRM4FNwwzHdqKQxCHHx3B0O/Mfx6g0k+LBTBIMYjIQLGKUGCu1GgrHvVqvXPGq3hzuKvFzUoEcjV75q9uXNI1RGMqJ1h3fS0yQEWUY5TgtdVONCaEjMsCOpYLEqINsfu3UPbNK342ksiWMO1d/T2Qk1noSh7YzJmaol72Z+J/XSU10HWRMJKlBQReLopS7Rrqz190+U0gNn1hCqGL2VpcOiSLU2IBKNgR/+eVV0qpV/Yuqd39Zqd/kcRThBE7hHHy4gjrcQQOaQOEJnuEV3hzpvDjvzseiteDkM8fwB87nDz1RjuY=</latexit>
+
+Next
+<latexit sha1_base64="/04fUx5CbtNJGNPyUDBDQPloL60=">AAAB63icbVBNS8NAEJ3Ur1q/qh69BIvgqSQq6LHoxZNUsB/QhrLZTtulu5uwuxFL6F/w4kERr/4hb/4bN20O2vpg4PHeDDPzwpgzbTzv2ymsrK6tbxQ3S1vbO7t75f2Dpo4SRbFBIx6pdkg0ciaxYZjh2I4VEhFybIXjm8xvPaLSLJIPZhJjIMhQsgGjxGTSHT6ZXrniVb0Z3GXi56QCOeq98le3H9FEoDSUE607vhebICXKMMpxWuomGmNCx2SIHUslEaiDdHbr1D2xSt8dRMqWNO5M/T2REqH1RIS2UxAz0oteJv7ndRIzuApSJuPEoKTzRYOEuyZys8fdPlNIDZ9YQqhi9laXjogi1Nh4SjYEf/HlZdI8q/rnVe/+olK7zuMowhEcwyn4cAk1uIU6NIDCCJ7hFd4c4bw4787HvLXg5DOH8AfO5w8XCo5D</latexit> Ans
+
+<latexit sha1_base64="EzJauHCFVmw9rVYLAt7MIeB3Ps8=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lU0GPVi8eK9gPaUDbbSbt0swm7G6GE/gQvHhTx6i/y5r9x2+agrQ8GHu/NMDMvSATXxnW/ncLK6tr6RnGztLW9s7tX3j9o6jhVDBssFrFqB1Sj4BIbhhuB7UQhjQKBrWB0O/VbT6g0j+WjGSfoR3QgecgZNVZ6uJa6V664VXcGsky8nFQgR71X/ur2Y5ZGKA0TVOuO5ybGz6gynAmclLqpxoSyER1gx1JJI9R+Njt1Qk6s0idhrGxJQ2bq74mMRlqPo8B2RtQM9aI3Ff/zOqkJr/yMyyQ1KNl8UZgKYmIy/Zv0uUJmxNgSyhS3txI2pIoyY9Mp2RC8xZeXSfOs6p1X3fuLSu0mj6MIR3AMp+DBJdTgDurQAAYDeIZXeHOE8+K8Ox/z1oKTzxzCHzifPzNjjbw=</latexit>
+
+T 0j
+<latexit sha1_base64="8WPqCaIDG188Dswr9/97u5Grotk=">AAAB63icbVBNSwMxEJ2tX7V+VT16CRbRU9m1gh6LXjxW6Be0S8mm2TY2yS5JVihL/4IXD4p49Q9589+YbfegrQ8GHu/NMDMviDnTxnW/ncLa+sbmVnG7tLO7t39QPjxq6yhRhLZIxCPVDbCmnEnaMsxw2o0VxSLgtBNM7jK/80SVZpFsmmlMfYFHkoWMYJNJzcHj+aBccavuHGiVeDmpQI7GoPzVH0YkEVQawrHWPc+NjZ9iZRjhdFbqJ5rGmEzwiPYslVhQ7afzW2fozCpDFEbKljRorv6eSLHQeioC2ymwGetlLxP/83qJCW/8lMk4MVSSxaIw4chEKHscDZmixPCpJZgoZm9FZIwVJsbGU7IheMsvr5L2ZdWrVd2Hq0r9No+jCCdwChfgwTXU4R4a0AICY3iGV3hzhPPivDsfi9aCk88cwx84nz+NB43o</latexit>
+
+T 0k
+<latexit sha1_base64="6Ps7j3DCjP4TdyO7DF0/yE/WYZQ=">AAAB63icbVBNS8NAEJ3Ur1q/qh69LBbRU0lU0GPRi8cK/YI2lM120y7d3YTdjVBC/4IXD4p49Q9589+4SXPQ1gcDj/dmmJkXxJxp47rfTmltfWNzq7xd2dnd2z+oHh51dJQoQtsk4pHqBVhTziRtG2Y47cWKYhFw2g2m95nffaJKs0i2zCymvsBjyUJGsMmk1nB6PqzW3LqbA60SryA1KNAcVr8Go4gkgkpDONa677mx8VOsDCOcziuDRNMYkyke076lEguq/TS/dY7OrDJCYaRsSYNy9fdEioXWMxHYToHNRC97mfif109MeOunTMaJoZIsFoUJRyZC2eNoxBQlhs8swUQxeysiE6wwMTaeig3BW355lXQu695V3X28rjXuijjKcAKncAEe3EADHqAJbSAwgWd4hTdHOC/Ou/OxaC05xcwx/IHz+QOOjI3p</latexit>
+
+T 0M
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+…
+
+E0M
+<latexit sha1_base64="nta34gE+XG+4LV5XUqH2RD7n1o0=">AAAB7HicbVBNS8NAEJ34WetX1aOXxSJ6KokKeiyK4EWoYNpCG8pmu2mX7m7C7kYoob/BiwdFvPqDvPlv3LQ5aOuDgcd7M8zMCxPOtHHdb2dpeWV1bb20Ud7c2t7ZreztN3WcKkJ9EvNYtUOsKWeS+oYZTtuJoliEnLbC0U3ut56o0iyWj2ac0EDggWQRI9hYyb/t3Z+Ue5WqW3OnQIvEK0gVCjR6la9uPyapoNIQjrXueG5iggwrwwink3I31TTBZIQHtGOpxILqIJseO0HHVumjKFa2pEFT9fdEhoXWYxHaToHNUM97ufif10lNdBVkTCapoZLMFkUpRyZG+eeozxQlho8twUQxeysiQ6wwMTafPARv/uVF0jyreec19+GiWr8u4ijBIRzBKXhwCXW4gwb4QIDBM7zCmyOdF+fd+Zi1LjnFzAH8gfP5A383jdA=</latexit>
+
+Tok0M
+<latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit><latexit sha1_base64="(null)">(null)</latexit>
+
+…
+
+| {z }
+<latexit sha1_base64="i4jo7GwtGwKoN3YeH1gvlbskDwc=">AAACBHicbVC7TsMwFHXKq5RXgLFLRIXEVCWlEoyVWBiLRB9SE1WOc9NadZzIdpCqKAMLv8LCAEKsfAQbf4PTZoCWI1k+OudeX9/jJ4xKZdvfRmVjc2t7p7pb29s/ODwyj0/6Mk4FgR6JWSyGPpbAKIeeoorBMBGAI5/BwJ/dFP7gAYSkMb9X8wS8CE84DSnBSktjs+6mPADhC0wgc6cyKW6nZScqz8dmw27aC1jrxClJA5Xojs0vN4hJGgFXhGEpR45+x8uwUJQwyGtuKkEPmOEJjDTlOALpZYslcutcK4EVxkIfrqyF+rsjw5GU88jXlRFWU7nqFeJ/3ihV4bWXUZ6kCjhZDgpTZqnYKhKxAiqAKDbXBBNB9V8tMsU6EKVzq+kQnNWV10m/1XQum/Zdu9Fpl3FUUR2doQvkoCvUQbeoi3qIoEf0jF7Rm/FkvBjvxseytGKUPafoD4zPHyWfmFs=</latexit>
+
+| {z }
+<latexit sha1_base64="Q2q815ab42RF67VFAub46kmu5lk=">AAACBHicbVC7TsMwFHXKq5RXgLFLRIXEVCWlEoyVWBiLRB9SE1WOc9NadZzIdpCqKAMLv8LCAEKsfAQbf4PTZoCWI1k+OudeX9/jJ4xKZdvfRmVjc2t7p7pb29s/ODwyj0/6Mk4FgR6JWSyGPpbAKIeeoorBMBGAI5/BwJ/dFP7gAYSkMb9X8wS8CE84DSnBSktjs+6mPADhC0wgc6cyKe6WbScqz8dmw27aC1jrxClJA5Xojs0vN4hJGgFXhGEpR45+x8uwUJQwyGtuKkEPmOEJjDTlOALpZYslcutcK4EVxkIfrqyF+rsjw5GU88jXlRFWU7nqFeJ/3ihV4bWXUZ6kCjhZDgpTZqnYKhKxAiqAKDbXBBNB9V8tMsU6EKVzq+kQnNWV10m/1XQum/Zdu9Fpl3FUUR2doQvkoCvUQbeoi3qIoEf0jF7Rm/FkvBjvxseytGKUPafoD4zPHyQXmFo=</latexit>
+
+z }| {
+<latexit sha1_base64="WkmkOQqV4y/G2CwEGjey+GFekFc=">AAACAnicbVDLSgMxFM3UV62vUVfiJlgEV2VGi7osuHFZwT6gM5RMeqcNzWSGJCOUobjxV9y4UMStX+HOvzHTzkJbD4Qczrn3JvcECWdKO863VVpZXVvfKG9WtrZ3dvfs/YO2ilNJoUVjHstuQBRwJqClmebQTSSQKODQCcY3ud95AKlYLO71JAE/IkPBQkaJNlLfPvJiYweSUMi8kUry+9JJ9HTat6tOzZkBLxO3IFVUoNm3v7xBTNMIhKacKNVzzRw/I1IzymFa8VIFZv6YDKFnqCARKD+brTDFp0YZ4DCW5giNZ+rvjoxESk2iwFRGRI/UopeL/3m9VIfXfsZEkmoQdP5QmHKsY5zngQdMAtV8Ygihkpm/YjoiJg9tUquYENzFlZdJ+7zmXtScu3q1US/iKKNjdILOkIuuUAPdoiZqIYoe0TN6RW/Wk/VivVsf89KSVfQcoj+wPn8A712XuA==</latexit>
+
+… …
+
+|Name of entity “Next”| |Possible answer “Ans”|
+z }| {
+
+<latexit sha1_base64="WkmkOQqV4y/G2CwEGjey+GFekFc=">AAACAnicbVDLSgMxFM3UV62vUVfiJlgEV2VGi7osuHFZwT6gM5RMeqcNzWSGJCOUobjxV9y4UMStX+HOvzHTzkJbD4Qczrn3JvcECWdKO863VVpZXVvfKG9WtrZ3dvfs/YO2ilNJoUVjHstuQBRwJqClmebQTSSQKODQCcY3ud95AKlYLO71JAE/IkPBQkaJNlLfPvJiYweSUMi8kUry+9JJ9HTat6tOzZkBLxO3IFVUoNm3v7xBTNMIhKacKNVzzRw/I1IzymFa8VIFZv6YDKFnqCARKD+brTDFp0YZ4DCW5giNZ+rvjoxESk2iwFRGRI/UopeL/3m9VIfXfsZEkmoQdP5QmHKsY5zngQdMAtV8Ygihkpm/YjoiJg9tUquYENzFlZdJ+7zmXtScu3q1US/iKKNjdILOkIuuUAPdoiZqIYoe0TN6RW/Wk/VivVsf89KSVfQcoj+wPn8A712XuA==</latexit>
+
+Ans span
+
+sem[x,Q, clues]
+
+Prev1
+<latexit sha1_base64="puK58MFBvgD1nt+jWdz8pL4eOOM=">AAAB7XicbVBNS8NAEJ3Ur1q/qh69LBbBU0lU0GPRi8cK9gPaUDbbSbt2kw27m0IJ/Q9ePCji1f/jzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU1DJVDBtMCqnaAdUoeIwNw43AdqKQRoHAVjC6m/mtMSrNZfxoJgn6ER3EPOSMGis16wrHPa9XrrhVdw6ySrycVCBHvVf+6vYlSyOMDRNU647nJsbPqDKcCZyWuqnGhLIRHWDH0phGqP1sfu2UnFmlT0KpbMWGzNXfExmNtJ5Ege2MqBnqZW8m/ud1UhPe+BmPk9RgzBaLwlQQI8nsddLnCpkRE0soU9zeStiQKsqMDahkQ/CWX14lzYuqd1l1H64qtds8jiKcwCmcgwfXUIN7qEMDGDzBM7zCmyOdF+fd+Vi0Fpx85hj+wPn8ATvNjuU=</latexit>
+
++
+<latexit sha1_base64="26BDQsRl0AvWjqpXxBRvcak+khY=">AAAB6HicbVBNS8NAEJ34WetX1aOXxSIIQklU0GPRi8cW7Ae0oWy2k3btZhN2N0IJ/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+Oyura+sbm4Wt4vbO7t5+6eCwqeNUMWywWMSqHVCNgktsGG4EthOFNAoEtoLR3dRvPaHSPJYPZpygH9GB5CFn1Fipft4rld2KOwNZJl5OypCj1it9dfsxSyOUhgmqdcdzE+NnVBnOBE6K3VRjQtmIDrBjqaQRaj+bHTohp1bpkzBWtqQhM/X3REYjrcdRYDsjaoZ60ZuK/3md1IQ3fsZlkhqUbL4oTAUxMZl+TfpcITNibAllittbCRtSRZmx2RRtCN7iy8ukeVHxLitu/apcvc3jKMAxnMAZeHANVbiHGjSAAcIzvMKb8+i8OO/Ox7x1xclnjuAPnM8fci+MsQ==</latexit>
+
+X[Prev2]
+<latexit sha1_base64="34xctzRhXynC5MRSN2gEdH2p5uw=">AAAB+3icbVDLSsNAFL2pr1pfsS7dBIvgqiRV0GXRjcsK9gFpCJPppB06mYSZSbGE/IobF4q49Ufc+TdO2iy09cDA4Zx7uWdOkDAqlW1/G5WNza3tnepubW//4PDIPK73ZJwKTLo4ZrEYBEgSRjnpKqoYGSSCoChgpB9M7wq/PyNC0pg/qnlCvAiNOQ0pRkpLvlkfRkhNgjAb5G5HkJnf8nyzYTftBax14pSkASU6vvk1HMU4jQhXmCEpXcdOlJchoShmJK8NU0kShKdoTFxNOYqI9LJF9tw618rICmOhH1fWQv29kaFIynkU6MkiqVz1CvE/z01VeONllCepIhwvD4Ups1RsFUVYIyoIVmyuCcKC6qwWniCBsNJ11XQJzuqX10mv1XQum/bDVaN9W9ZRhVM4gwtw4BracA8d6AKGJ3iGV3gzcuPFeDc+lqMVo9w5gT8wPn8A/ZyUZQ==</latexit>
+
+X[Prev1]
+<latexit sha1_base64="TXQJqDIeE3FAztKM5jG5ip1FY+c=">AAAB+3icbVBNS8NAFHypX7V+xXr0slgETyVRQY9FLx4r2FpoQ9hsN+3SzSbsbool5K948aCIV/+IN/+NmzYHbR1YGGbe481OkHCmtON8W5W19Y3Nrep2bWd3b//APqx3VZxKQjsk5rHsBVhRzgTtaKY57SWS4ijg9DGY3Bb+45RKxWLxoGcJ9SI8EixkBGsj+XZ9EGE9DsKsl/fbkk591/PthtN05kCrxC1JA0q0fftrMIxJGlGhCcdK9V0n0V6GpWaE07w2SBVNMJngEe0bKnBElZfNs+fo1ChDFMbSPKHRXP29keFIqVkUmMkiqVr2CvE/r5/q8NrLmEhSTQVZHApTjnSMiiLQkElKNJ8ZgolkJisiYywx0aauminBXf7yKumeN92LpnN/2WjdlHVU4RhO4AxcuIIW3EEbOkDgCZ7hFd6s3Hqx3q2PxWjFKneO4A+szx/8F5Rk</latexit>
+
+y
+<latexit sha1_base64="cs1Q9fet/6GNtc+Tzw/y6WCTX8Y=">AAAB6HicbVBNS8NAEJ3Ur1q/qh69LBbBU0lU0GPRi8cW7Ae0oWy2k3btZhN2N0Io/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4bua3n1BpHssHkyXoR3QoecgZNVZqZP1yxa26c5BV4uWkAjnq/fJXbxCzNEJpmKBadz03Mf6EKsOZwGmpl2pMKBvTIXYtlTRC7U/mh07JmVUGJIyVLWnIXP09MaGR1lkU2M6ImpFe9mbif143NeGNP+EySQ1KtlgUpoKYmMy+JgOukBmRWUKZ4vZWwkZUUWZsNiUbgrf88ippXVS9y6rbuKrUbvM4inACp3AOHlxDDe6hDk1ggPAMr/DmPDovzrvzsWgtOPnMMfyB8/kD6GeM/w==</latexit>
+
+Results of The 
+Step of 
+
+Visiting xX[x]<latexit sha1_base64="TklOcwpA1D9+YieOLHI872SLYNc=">AAAB9HicbVDLSgMxFL3js9ZX1aWbYBFclRkVdFl047KCfcB0KJk004ZmkjHJFMvQ73DjQhG3fow7/8ZMOwttPRA4nHMv9+SECWfauO63s7K6tr6xWdoqb+/s7u1XDg5bWqaK0CaRXKpOiDXlTNCmYYbTTqIojkNO2+HoNvfbY6o0k+LBTBIaxHggWMQINlYKujE2wzDKOlP/KehVqm7NnQEtE68gVSjQ6FW+un1J0pgKQzjW2vfcxAQZVoYRTqflbqppgskID6hvqcAx1UE2Cz1Fp1bpo0gq+4RBM/X3RoZjrSdxaCfzkHrRy8X/PD810XWQMZGkhgoyPxSlHBmJ8gZQnylKDJ9YgoliNisiQ6wwMbansi3BW/zyMmmd17yLmnt/Wa3fFHWU4BhO4Aw8uII63EEDmkDgEZ7hFd6csfPivDsf89EVp9g5gj9wPn8AFqCSTA==</latexit>
+
+(
+
+<latexit sha1_base64="GG7zAfyyjzEFCkqaqZiId0lVt+4=">AAACHHicbVDLSsNAFJ3UV62vqks3wSK4Kkkr6LLgxmUF+4CmlMnkJh06mYSZG6GEfogbf8WNC0XcuBD8G6ePRW09zMDhnHvvzD1+KrhGx/mxChubW9s7xd3S3v7B4VH5+KStk0wxaLFEJKrrUw2CS2ghRwHdVAGNfQEdf3Q79TuPoDRP5AOOU+jHNJI85IyikQbluicgRC8veT5EXOZU8EhCMCl53uyADJY0xaMhVgflilN1ZrDXibsgFbJAc1D+8oKEZTFIZIJq3XOdFPs5VciZADM305BSNqIR9AyVNAbdz2fLTewLowR2mChzJdozdbkjp7HW49g3lTHFoV71puJ/Xi/D8Kafc5lmCJLNHwozYWNiT5OyA66AoRgbQpni5q82G1JFGZo8SyYEd3XlddKuVd161bm/qjRqiziK5Iyck0vikmvSIHekSVqEkSfyQt7Iu/VsvVof1ue8tGAtek7JH1jfvxlvoU8=</latexit>
+
+�[x]
+<latexit sha1_base64="Ix9kWd0zRNXSI22F6B6cJwYtcDM=">AAAB8HicbVBNS8NAEJ34WetX1aOXYBE8lUQFPRb14LGC/ZA0lM122y7d3YTdiVhCf4UXD4p49ed489+4bXPQ1gcDj/dmmJkXJYIb9LxvZ2l5ZXVtvbBR3Nza3tkt7e03TJxqyuo0FrFuRcQwwRWrI0fBWolmREaCNaPh9cRvPjJteKzucZSwUJK+4j1OCVrpoX3DBJLgKeyUyl7Fm8JdJH5OypCj1il9tbsxTSVTSAUxJvC9BMOMaORUsHGxnRqWEDokfRZYqohkJsymB4/dY6t03V6sbSl0p+rviYxIY0Yysp2S4MDMexPxPy9IsXcZZlwlKTJFZ4t6qXAxdiffu12uGUUxsoRQze2tLh0QTSjajIo2BH/+5UXSOK34ZxXv7rxcvcrjKMAhHMEJ+HABVbiFGtSBgoRneIU3RzsvzrvzMWtdcvKZA/gD5/MHpOSQTA==</latexit>
+
+Pass clues
+to “Next”“Ans”
+
+System 2 (GNN) Cognitive Graph G Before Visiting x
+
+… … …
+
+W1
+<latexit sha1_base64="eRV+cFYyUVwcnsSDasavMiXevIM=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0m0oMeiF48V7Qe0oWy2m3bpZhN2J0IJ/QlePCji1V/kzX/jts1BWx8MPN6bYWZekEhh0HW/ncLa+sbmVnG7tLO7t39QPjxqmTjVjDdZLGPdCajhUijeRIGSdxLNaRRI3g7GtzO//cS1EbF6xEnC/YgOlQgFo2ilh3bf65crbtWdg6wSLycVyNHol796g5ilEVfIJDWm67kJ+hnVKJjk01IvNTyhbEyHvGupohE3fjY/dUrOrDIgYaxtKSRz9fdERiNjJlFgOyOKI7PszcT/vG6K4bWfCZWkyBVbLApTSTAms7/JQGjOUE4soUwLeythI6opQ5tOyYbgLb+8SloXVe+y6t7XKvWbPI4inMApnIMHV1CHO2hAExgM4Rle4c2Rzovz7nwsWgtOPnMMf+B8/gDaBY2B</latexit>
+
+W2
+<latexit sha1_base64="Up5tOwwgSUXlwkAGw0dYYCaLo54=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mqoMeiF48V7Qe0oWy2k3bpZhN2N0IJ/QlePCji1V/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4dua3n1BpHstHM0nQj+hQ8pAzaqz00O7X+uWKW3XnIKvEy0kFcjT65a/eIGZphNIwQbXuem5i/Iwqw5nAaamXakwoG9Mhdi2VNELtZ/NTp+TMKgMSxsqWNGSu/p7IaKT1JApsZ0TNSC97M/E/r5ua8NrPuExSg5ItFoWpICYms7/JgCtkRkwsoUxxeythI6ooMzadkg3BW355lbRqVe+i6t5fVuo3eRxFOIFTOAcPrqAOd9CAJjAYwjO8wpsjnBfn3flYtBacfOYY/sD5/AHbiY2C</latexit>
+
+Figure 2: Overview of CogQA implementation. When visiting the node x, System 1 generates new hop and answer
+nodes based on the clues[x,G] discovered by System 2. It also creates the inital representation sem[x,Q, clues],
+based on which the GNN in System 2 updates the hidden representations X[x].
+
+paragraphs is to access some specific paragraphs
+by their title indexes. For multi-hop questions,
+traditional retrieval-extraction frameworks might
+sacrifice the potential of follow-up models, be-
+cause paragraphs multiple hops away from the
+question could share few common words and little
+semantic relation with the question, leading to a
+failed retrieval. However, these paragraphs can be
+discovered by iteratively expanding with clues in
+our framework.
+
+Algorithm 1 describes the procedure of our
+framework CogQA. After initialization, an iter-
+ative process for graph expansion and reasoning
+begins. In each step we visit a frontier node x,
+and System 1 reads para[x] under the guidance of
+clues and the question Q, extracts spans and gen-
+erates semantic vector sem[x,Q, clues]. Mean-
+while, System 2 updates hidden representation X
+and prepares clues[y,G] for any successor node y.
+The final prediction is made based on X.
+
+3 Implementation
+
+The main part to implement the CogQA frame-
+work is to determine the concrete models of Sys-
+tem 1 and 2, and the form of clues.
+
+Our implementation uses BERT as System 1
+and GNN as System 2. Meanwhile, clues[x,G]
+are sentences in paragraphs of x’s predecessor
+
+nodes, from which x is extracted. We directly pass
+raw sentences as clues, rather than any form of
+computed hidden states, for easy training of Sys-
+tem 1. Because raw sentences are self-contained
+and independent of computations from previous
+iterative steps, training at different iterative steps
+is then decoupled, leading to efficiency gains dur-
+ing training. Details are introduced in § 3.4. Hid-
+den representations X for graph nodes are updated
+each time by a propagation step of GNN.
+
+Our overall model is illustrated in Figure 2.
+
+3.1 System 1
+The extraction capacity of System 1 model is fun-
+damental to construct the cognitive graph, thus a
+powerful model is needed. Recently, BERT (De-
+vlin et al., 2018) has become one of the most suc-
+cessful language representation models on various
+NLP tasks, including SQuAD (Rajpurkar et al.,
+2016). BERT consists of multiple layers of Trans-
+former (Vaswani et al., 2017), a self-attention
+based architecture, and is elaborately pre-trained
+on large corpora. Input sentences are composed of
+two different functional parts A and B.
+
+We use BERT as System 1, and its input when
+visiting the node x is as follows:
+
+[CLS] Question [SEP ] clues[x,G] [SEP ]︸ ︷︷ ︸
+Sentence A
+
+Para[x]︸ ︷︷ ︸
+Sentence B
+
+
+
+2697
+
+where clues[x,G] are sentences passed from pre-
+decessor nodes. The output vectors of BERT are
+denoted as T ∈ RL×H , where L is the length of
+the input sequence and H is the dimension size of
+the hidden representations.
+
+It is worth noting that for answer node x,
+Para[x] is probably missing. Thus we do not ex-
+tract spans but can still calculate sem[x,Q, clues]
+based on “Sentence A” part. And when extract-
+ing 1-hop nodes from question to initialize G, we
+do not calculate semantic vectors and only the
+Question part exists in the input.
+
+Span Extraction Answers and next-hop enti-
+ties have different properties. Answer extraction
+relies heavily on the character indicated by the
+question. For example “New York City” is more
+possible to be the answer of a where question than
+“2019”, while next-hop entities are often the en-
+tities whose description matches statements in the
+question. Therefore, we predict answer spans and
+next-hop spans separately.
+
+We introduce “pointer vectors” Shop,Ehop,
+Sans, Eans as additional learnable parameters to
+predict targeted spans. The probability of the
+ith input token to be the start of an answer span
+P startans [i] is calculated as follows:
+
+P startans [i] =
+eSans·Ti∑
+j e
+
+Sans·Tj
+(1)
+
+Let P endans [i] be the probability of the i
+th input to-
+
+ken to be the end of an answer span, which can be
+calculated following the same formula. We only
+focus on the positions with top K start probabili-
+ties {startk}. For each k, the end position endk is
+given by:
+
+endk = arg max
+startk≤j≤startk+maxL
+
+P endans [j] (2)
+
+where maxL is the maximum possible length of
+spans.
+
+To identify irrelevant paragraphs, we leverage
+negative sampling introduced in § 3.4.1 to train
+System 1 to generate a negative threshold. In top
+K spans, those whose start probability is less than
+the negative threshold will be discarded. Because
+the 0th token [CLS] is pre-trained to synthesize
+all input tokens for the Next Sentence Prediction
+task (Devlin et al., 2018), P startans [0] acts as the
+threshold in our implementation.
+
+We expand the cognitive graph with remaining
+predicted answer spans as new “answer nodes”.
+The same process is followed to expand “next-hop
+nodes” by replacing Sans,Eans with Shop,Ehop.
+
+Semantics Generation As mentioned above,
+outputs of BERT at position 0 have the ability to
+summarize the sequence. Thus the most straight-
+forward method is to use T0 as sem[x,Q, clues].
+However, the last few layers in BERT are mainly
+in charge of transforming hidden representations
+for span predictions. In our experiment, the us-
+age of the third-to-last layer output at position 0 as
+sem[x,Q, clues] performs the best.
+
+3.2 System 2
+
+The first function of System 2 is to prepare
+clues[x,G] for frontier nodes, which we imple-
+ment it as collecting the raw sentences of x’s pre-
+decessor nodes that mention x.
+
+The second function, to update hidden repre-
+sentations X, is the core function of System 2.
+Hidden representations X ∈ Rn×H stand for
+the understandings of all n entities in G. To
+fully understand the relation between an entity x
+and the question Q, barely analyzing semantics
+sem[x,Q, clues] is insufficient. GNN has been
+proposed to perform deep learning on graph (Kipf
+and Welling, 2017), especially relational reason-
+ing owing to the inductive bias of graph struc-
+ture (Battaglia et al., 2018).
+
+In our implementation, a variant of GNN is de-
+signed to serve as System 2. For each node x,
+the initial hidden representation X[x] ∈ RH is
+the semantic vector sem[x,Q, clues] from System
+1. Let X′ be the new hidden representations after
+a propagation step of GNN, and ∆ ∈ Rn×H be
+aggregated vectors passed from neighbours in the
+propagation. The updating formulas of X are as
+follows:
+
+∆ = σ((AD−1)Tσ(XW1)) (3)
+
+X′ = σ(XW2 + ∆) (4)
+
+where σ is the activation function and W1,W2 ∈
+RH×H are weight matrices. A is the adjacent ma-
+trix of G, which is column-normalized to AD−1
+where Djj =
+
+∑
+iAij . Transformed hidden vec-
+
+tor σ(XW1) is left multiplied by (AD−1)T , which
+can be explained as a localized spectral filter by
+Defferrard et al. (2016).
+
+In the iterative step of visiting frontier node x,
+its hidden representation X[x] is updated follow-
+ing Equation (3)(4). In experiments, we observe
+that this “asynchronous updating” shows no appar-
+ent difference in performance with updating X of
+all the nodes together by multiple steps after G is
+
+
+
+2698
+
+finalized, which is more efficient and adopted in
+practice.
+
+3.3 Predictor
+The questions in HotpotQA dataset generally fall
+into three categories: special question, alternative
+question and general question, which are treated
+as three different downstream prediction tasks tak-
+ing X as input. In the test set, they can also be eas-
+ily categorized according to interrogative words.
+
+Special question is the most common case, re-
+questing to find spans such as locations, dates or
+entity names in paragraphs. We use a two-layer
+fully connected network (FCN) to serve as predic-
+tor F :
+
+answer = arg max
+answer node x
+
+F(X[x]) (5)
+
+Alternative and general question both aims to
+compare a certain property of entity x and y
+in HotpotQA, respectively answered with entity
+name and “yes or no”. These questions are re-
+garded as binary classification with input X[x] −
+X[y] and solved by another two identical FCNs.
+
+3.4 Training
+Our model is trained under a supervised paradigm
+with negative sampling. In the training set, the
+next-hop and answer spans are pre-extracted in
+paragraphs. More exactly, for each para[x] rel-
+evant to question Q, we have spans data
+
+D[x,Q] = {(y1, start1, end1), ..., (yn, startn, endn)}
+
+where the span from starti to endi in para[x] is
+fuzzy matched with the name of an entity or an-
+swer yi. See § 4.1 for detail.
+
+3.4.1 Task #1: Span Extraction
+The ground truths of P startans , P
+
+end
+ans , P
+
+start
+hop , P
+
+end
+hop
+
+are constructed based on D[x,Q]. There is at
+most one answer span (y, start, end) in every
+paragraph, thus gtstartans is an one-hot vector where
+gtstartans [start] = 1. However, multiple different
+next-hop spans might appear in one paragraph, so
+that gtstarthop [starti] = 1/k where k is the number
+of next-hop spans.
+
+For the sake of the ability to discriminate irrele-
+vant paragraphs, irrelevant negative hop nodes are
+added to G in advance. As mentioned in § 3.1,
+the output of [CLS], T0, is in charge of gener-
+ating negative threshold. Therefore, P startans for
+each negative hop node is the one-hot vector where
+gtstartans [0] = 1.
+
+Cross entropy loss is used to train the span ex-
+traction task in System 1. The losses for the end
+position and for the next-hop spans are defined in
+the same way as follows.
+
+Lstartans = −
+∑
+
+i
+
+gtstartans [i] · logP startans [i] (6)
+
+3.4.2 Task #2: Answer Node Prediction
+To command the reasoning ability, our model must
+learn to identify the correct answer node from a
+cognitive graph. For each question in the training
+set, we construct a training sample for this task.
+Each training sample is a composition of the gold-
+only graph, which is the union of all correct rea-
+soning paths, and negative nodes. Negative nodes
+include negative hop nodes used in Task #1 and
+two negative answer nodes. A negative answer
+node is constructed from a span extracted at ran-
+dom from a randomly chosen hop node.
+
+For special question, we first compute the final
+answer probabilities for each node by performing
+softmax on the outputs of F . Loss L is defined as
+cross entropy between the probabilities and one-
+hot vector of answer node ans.
+
+L = − log
+(
+
+softmax
+(
+F(X)
+
+)
+[ans]
+
+)
+(7)
+
+Alternative and general questions are optimized by
+binary cross entropy in similar ways. The losses of
+this task not only are back-propagated to optimize
+predictors and System 2, but also fine-tune System
+1 through semantic vectors sem[x,Q, clues].
+
+4 Experiment
+
+4.1 Dataset
+We use the full-wiki setting of HotpotQA to con-
+duct our experiments. 112,779 questions are col-
+lected by crowdsourcing based on the first para-
+graphs in Wikipedia documents, 84% of which re-
+quire multi-hop reasoning. The data are split into a
+training set (90,564 questions), a development set
+(7,405 questions) and a test set (7,405 questions).
+All questions in development and test sets are hard
+multi-hop cases.
+
+In the training set, for each question, an answer
+and paragraphs of 2 gold (useful) entities are pro-
+vided, with multiple supporting facts, sentences
+containing key information for reasoning, marked
+out. There are also 8 unhelpful negative para-
+graphs for training. During evaluation, only ques-
+tions are offered and meanwhile supporting facts
+are required besides the answer.
+
+
+
+2699
+
+To construct cognitive graphs for training, edges
+in gold-only cognitive graphs are inferred from
+supporting facts by fuzzy matching based on Lev-
+enshtein distance (Navarro, 2001). For each sup-
+porting fact in para[x], if any gold entity or the
+answer, denoted as y, is fuzzy matched with a span
+in the supporting fact, edge (x, y) is added.
+
+4.2 Experimental Details
+
+We use pre-trained BERT-base model released by
+(Devlin et al., 2018) in System 1. The hidden
+size H is 768, unchanged in node vectors of GNN
+and predictors. All the activation functions in our
+model are gelu (Hendrycks and Gimpel, 2016).
+We train models on Task #1 for 1 epoch and then
+on Task #1 and #2 jointly for 1 epoch. Hyperpa-
+rameters in training are as follows:
+
+Model Task batch size learning rate weight decay
+BERT #1,#2 10 10−4, 4× 10−5 0.01
+GNN #2 graph 10−4 0
+
+BERT and GNN are optimized by two different
+Adam optimizers, where β1 = 0.9, β2 = 0.999.
+The predictors share the same optimizer as GNN.
+The learning rate for parameters in BERT warmup
+over the first 10% steps, and then linearly decays
+to zero.
+
+To select out supporting facts, we just regard
+the sentences in the clues of any node in graph
+as supporting facts. In the initialization of G, these
+1-hop spans exist in the question and can also be
+detected by fuzzy matching with supporting facts
+in training set. The extracted 1-hop entities by
+our framework can improve the retrieval phase of
+other models (See § 4.3), which motivated us to
+separate out the extraction of 1-hop entities to an-
+other BERT-base model for the purpose of reuse
+in implementation.
+
+4.3 Baselines
+
+The first category is previous work or competitor:
+• Yang et al. (2018) The strong baseline
+
+model proposed in the original HotpotQA
+paper (Yang et al., 2018). It follows
+the retrieval-extraction framework of
+DrQA (2017) and subsumes the advanced
+techniques in QA, such as self-attention,
+character-level model, bi-attention.
+• GRN, QFE, DecompRC, MultiQA The
+
+other models on the leaderboard.3
+
+3All these models are unpublished before this paper.
+
+• BERT State-of-art model on single-hop
+QA. BERT in original paper requires single-
+paragraph input and pre-trained BERT can
+barely handle paragraphs of at most 512
+tokens, much fewer than the average length
+of concatenated paragraphs. We add relevant
+sentences from predecessor nodes in the
+cognitive graph to every paragraphs and
+report the answer span with maximum start
+probability in all paragraphs.
+• Yang et al. (2018)-IR Yang et al. (2018)
+
+with Improved Retrieval. Yang et al. (2018)
+uses traditional inverted index filtering strat-
+egy to retrieve relevant paragraphs. The ef-
+fectiveness might be challenged due to its
+failures to find out entities mentioned in ques-
+tion sometimes. The main reason is that
+word-level matching in retrieval usually ne-
+glect language models, which indicates im-
+portance and POS of words. We improve
+the retrieval by adding 1-hop entities spot-
+ted in the question by our model, increasing
+the coverage of supporting facts from 56% to
+72%.
+
+Another category is for ablation study:
+• CogQA-onlyR model initializes G with the
+
+same entities retrieved in Yang et al. (2018)
+as 1-hop entities, mainly for fair comparison.
+• CogQA-onlyQ initializes G only with 1-hop
+
+entities extracted from question, free of
+retrieved paragraphs. Complete CogQA im-
+plementation uses both.
+• CogQA-sys1 only retains System 1 and lacks
+
+cascading reasoning in System 2.
+
+4.4 Results
+Following Yang et al. (2018), the evaluation of
+answer and supporting facts consists of two met-
+rics: Exact Match (EM) and F1 score. Joint EM
+is 1 only if answer string and supporting facts are
+both strictly correct. Joint precision and recall are
+the products of those of Ans and Sup, and then
+joint F1 is calculated. All results of these metrics
+are averaged over the test set.4 Experimental re-
+sults show superiority of our method in multiple
+aspects:
+
+Overall Performance Our CogQA outperforms
+all baselines on all metrics by a significant mar-
+gin (See Table 1). The leap of performance mainly
+
+4Thus it is possible that overall F1 is lower than both pre-
+cision and recall.
+
+
+
+2700
+
+Model Ans Sup Joint
+EM F1 Prec Rec EM F1 Prec Rec EM F1 Prec Rec
+
+Dev
+
+Yang et al. (2018) 23.9 32.9 34.9 33.9 5.1 40.9 47.2 40.8 2.5 17.2 20.4 17.8
+Yang et al. (2018)-IR 24.6 34.0 35.7 34.8 10.9 49.3 52.5 52.1 5.2 21.1 22.7 23.2
+
+BERT 22.7 31.6 33.4 31.9 6.5 42.4 54.6 38.7 3.1 17.8 24.3 16.2
+CogQA-sys1 33.6 45.0 47.6 45.4 23.7 58.3 67.3 56.2 12.3 32.5 39.0 31.8
+
+CogQA-onlyR 34.6 46.2 48.8 46.7 14.7 48.2 56.4 47.7 8.3 29.9 36.2 30.1
+CogQA-onlyQ 30.7 40.4 42.9 40.7 23.4 49.9 56.5 48.5 12.4 30.1 35.2 29.9
+
+CogQA 37.6 49.4 52.2 49.9 23.1 58.5 64.3 59.7 12.2 35.3 40.3 36.5
+
+Test
+
+Yang et al. (2018) 24.0 32.9 - - 3.86 37.7 - - 1.9 16.2 - -
+QFE 28.7 38.1 - - 14.2 44.4 - - 8.7 23.1 - -
+
+DecompRC 30.0 40.7 - - N/A N/A - - N/A N/A - -
+MultiQA 30.7 40.2 - - N/A N/A - - N/A N/A - -
+
+GRN 27.3 36.5 - - 12.2 48.8 - - 7.4 23.6 - -
+CogQA 37.1 48.9 - - 22.8 57.7 - - 12.4 34.9 - -
+
+Table 1: Results on HotpotQA (fullwiki setting). The test set is not public. The maintainer of HotpotQA only
+offers EM and F1 for every submission. N/A means the model cannot find supporting facts.
+
+results from the superiority of the CogQA frame-
+work over traditional retrieval-extraction methods.
+Since paragraphs that are multi-hop away may
+share few common words literally or even lit-
+tle semantic relation with the question, retrieval-
+extraction framework fails to find the paragraphs
+that become related only after the reasoning clues
+connected to them are found. Our framework,
+however, gradually discovers relevant entities fol-
+lowing clues.
+
+Logical Rigor QA systems are often criticized to
+answer questions with shallow pattern matching,
+not based on reasoning. To evaluate logical rigor
+of QA, we use JointEMAnsEM , the proportion of “joint
+correct answers” in correct answers. The joint cor-
+rect answers are those deduced from all necessary
+and correct supporting facts. Thus, this proportion
+stands for logical rigor of reasoning. The propor-
+tion of our method is up to 33.4%, far outnumber-
+ing 7.9% of Yang et al. (2018) and 30.3% of QFE.
+
+Question type
+
+Jo
+in
+
+t F
+1 
+
+sc
+or
+
+e
+
+Av
+er
+
+ag
+e 
+
+ho
+ps
+
+0
+
+0.1
+
+0.2
+
+0.3
+
+0.4
+
+0.5
+
+0.6
+
+2.4
+
+2.6
+
+2.8
+
+alter
+nativ
+
+e
+gene
+
+ral whic
+h what who othe
+
+r
+wher
+
+e
+when
+
+Average 
+hops
+
+CGQA
+
+CGQA-
+onlyR
+
+BIR
+
+Yang et al. 
+(2018)
+
+  Question type
+
+   
+  
+
+3.0
+
+3.2
+
+2.2
+
+2.0
+
+   
+ 
+
+         
+Yang et al. (2018)
+Average hops
+
+Yang et al. (2018)-IR
+
+CogQA
+CogQA-onlyR
+
+Figure 3: Model performance on 8 types of questions
+with different hops.
+
+Multi-hop Reasoning Figure 3 illustrates joint
+F1 scores and average hops of 8 types of ques-
+tions, including general, alternative and special
+
+questions with different interrogative word. As the
+hop number increases, the performance of Yang
+et al. (2018) and Yang et al. (2018)-IR drops dra-
+matically, while our approach is surprisingly ro-
+bust. However, there is no improvement in alter-
+native and general questions, because the evidence
+for judgment cannot be inferred from supporting
+facts, leading to lack of supervision. Further hu-
+man labeling is needed to answer these questions.
+
+Ablation Studies To study the impacts of initial
+entities in cognitive graphs, CogQA-onlyR begins
+with the same initial paragraphs as (Yang et al.,
+2018). We find that CogQA-onlyR still performs
+significantly better. The performance decreases
+slightly compared to CogQA, indicating that the
+contribution mainly comes from the framework.
+
+To compare against the retrieval-extraction
+framework, CogQA-onlyQ is designed that it only
+starts with the entities that appear in the question.
+Free of elaborate retrieval methods, this setting
+can be regarded as a natural thinking pattern of
+human being, in which only explicit and reliable
+relations are needed in reasoning. CogQA-onlyQ
+still outperforms all the baselines, which may re-
+veal the superiority of CogQA framework over the
+retrieval-extraction framework.
+
+BERT is not the key factor of improvement, al-
+though plays a necessary role. Vanilla BERT per-
+forms similar or even slightly poorer to (Yang
+et al., 2018) in this multi-hop QA task, possibly
+because of the pertinently designed architectures
+in Yang et al. (2018) to better leverage supervi-
+sion of supporting facts.
+
+To investigate the impacts of the absence of
+System 2, we design a System 1 only approach,
+CogQA-sys1, which inherits the iterative frame-
+
+
+
+2701
+
+Figure 4: Case Study. Different forms of cognitive graphs in our results, i.e., Tree, Directed Acyclic Graph (DAG),
+Cyclic Graph. Circles are candidate answer nodes while rounded rectangles are hop nodes. Green circles are the
+final answers given by CogQA and check marks represent the annotated ground truth.
+
+work but outputs answer spans with maximum
+predicted probability. On Ans metrics, the im-
+provement over the best competitor decreases
+about 50%, highlighting the reasoning capacity of
+GNN on cognitive graphs.
+
+Case Study We show how the cognitive graph
+clearly explains complex reasoning processes in
+our experiments in Figure 4. The cognitive graph
+highlights the heart of the question in case (1) –
+i.e., to choose between the number of members in
+two houses. CogQA makes the right choice based
+on semantic similarity between “Senate” and “up-
+per house”. Case (2) illustrates that the robust-
+ness of the answer can be boosted by exploring
+parallel reasoning paths. Case (3) is a semantic
+retrieval question without any entity mentioned,
+which is intractable for CogQA-onlyQ or even hu-
+man. Once combined with information retrieval,
+our model finally gets the answer “Marijus Ado-
+maitis” while the annotated ground truth is “Ten
+Walls”. However, when backtracking the reason-
+ing process in cognitive graph, we find that the
+model has already reached “Ten Walls” and an-
+swers with his real name, which is acceptable and
+even more accurate. Such explainable advantages
+are not enjoyed by black-box models.
+
+5 Related work
+
+Machine Reading Comprehension The research
+focus of machine reading comprehension (MRC)
+has been gradually transferred from cloze-style
+tasks (Hermann et al., 2015; Hill et al., 2015) to
+more complex QA tasks (Rajpurkar et al., 2016)
+recent years. Compared to the traditional compu-
+tational linguistic pipeline (Hermann et al., 2015),
+
+neural network models, for example BiDAF (Seo
+et al., 2017a) and R-net (Wang et al., 2017), ex-
+hibit outstanding capacity for answer extraction in
+text. Pre-trained on large corpra, recent BERT-
+based models nearly settle down the single para-
+graph MRC-QA problem with performances be-
+yond human-level, driving researchers to pay more
+attention to multi-hop reasoning.
+
+Multi-Hop QA Pioneering datasets of multi-hop
+QA are either based on limited knowledge base
+schemas (Talmor and Berant, 2018), or under mul-
+tiple choices setting (Welbl et al., 2018). The
+noise in these datasets also restricted the devel-
+opment of multi-hop QA until high-quality Hot-
+potQA (Yang et al., 2018) is released recently.
+The idea of “multi-step reasoning” also breeds
+multi-turn methods in single paragraph QA (Ku-
+mar et al., 2016; Seo et al., 2017b; Shen et al.,
+2017), assuming that models can capture informa-
+tion at deeper level implicitly by reading the text
+again.
+
+Open-Domain QA Open-Domain QA (QA at
+scale) refers to the setting where the search space
+of the supporting evidence is extremely large.
+Approaches to get paragraph-level answers has
+been thoroughly investigated by the information
+retrieval community, which can be dated back to
+the 1990s (Belkin, 1993; Voorhees et al., 1999;
+Moldovan et al., 2000). Recently, DrQA (Chen
+et al., 2017) leverages a neural model to extract the
+accurate answer from retrieved paragraphs, usu-
+ally called retrieval-extraction framework, greatly
+advancing this time-honored research topic again.
+Improvements are made to enhance retrieval by
+heuristic sampling (Clark and Gardner, 2018) or
+
+
+
+2702
+
+reinforcement learning (Hu et al., 2018; Wang
+et al., 2018a), while for complex reasoning, nec-
+essary revisits to the framework are neglected.
+
+6 Discussion and Conclusion
+
+We present a new framework CogQA to tackle
+multi-hop machine reading problem at scale. The
+reasoning process is organized as cognitive graph,
+reaching unprecedented entity-level explainabil-
+ity. Our implementation based on BERT and GNN
+obtains state-of-art results on HotpotQA dataset,
+which shows the efficacy of our framework.
+
+Multiple future research directions may be en-
+visioned. Benefiting from the explicit structure
+in the cognitive graph, System 2 in CogQA has
+potential to leverage neural logic techniques to
+improve reliability. Moreover, we expect that
+prospective architectures combining attention and
+recurrent mechanisms will largely improve the ca-
+pacity of System 1 by optimizing the interaction
+between systems. Finally, we believe that our
+framework can generalize to other cognitive tasks,
+such as conversational AI and sequential recom-
+mendation.
+
+Acknowledgements
+
+The work is supported by Development Pro-
+gram of China (2016QY01W0200), NSFC for
+Distinguished Young Scholar (61825602), NSFC
+(61836013), and a research fund supported by Al-
+ibaba. The authors would like to thank Junyang
+Lin, Zhilin Yang and Fei Sun for their insightful
+feedback, and responsible reviewers of ACL 2019
+for their valuable suggestions.
+
+References
+Alan Baddeley. 1992. Working memory. Science,
+
+255(5044):556–559.
+
+Peter W Battaglia, Jessica B Hamrick, Victor Bapst,
+Alvaro Sanchez-Gonzalez, Vinicius Zambaldi, Ma-
+teusz Malinowski, Andrea Tacchetti, David Raposo,
+Adam Santoro, Ryan Faulkner, et al. 2018. Rela-
+tional inductive biases, deep learning, and graph net-
+works. arXiv preprint arXiv:1806.01261.
+
+Nicholas J. Belkin. 1993. Interaction with texts: Infor-
+mation retrieval as information-seeking behavior. In
+Information Retrieval.
+
+Danqi Chen, Adam Fisch, Jason Weston, and Antoine
+Bordes. 2017. Reading wikipedia to answer open-
+domain questions. In Proceedings of the 55th An-
+nual Meeting of the Association for Computational
+
+Linguistics (Volume 1: Long Papers), volume 1,
+pages 1870–1879.
+
+Christopher Clark and Matt Gardner. 2018. Simple
+and effective multi-paragraph reading comprehen-
+sion. In Proceedings of the 56th Annual Meeting of
+the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), volume 1, pages 845–855.
+
+Michaël Defferrard, Xavier Bresson, and Pierre Van-
+dergheynst. 2016. Convolutional neural networks
+on graphs with fast localized spectral filtering. In
+Advances in neural information processing systems,
+pages 3844–3852.
+
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2018. BERT: Pre-training of
+deep bidirectional transformers for language under-
+standing. arXiv preprint arXiv:1810.04805.
+
+Jonathan St BT Evans. 1984. Heuristic and analytic
+processes in reasoning. British Journal of Psychol-
+ogy, 75(4):451–468.
+
+Jonathan St BT Evans. 2003. In two minds: dual-
+process accounts of reasoning. Trends in cognitive
+sciences, 7(10):454–459.
+
+Jonathan St BT Evans. 2008. Dual-processing ac-
+counts of reasoning, judgment, and social cognition.
+Annu. Rev. Psychol., 59:255–278.
+
+Dan Hendrycks and Kevin Gimpel. 2016. Bridg-
+ing nonlinearities and stochastic regularizers with
+gaussian error linear units. arXiv preprint
+arXiv:1606.08415.
+
+Karl Moritz Hermann, Tomas Kocisky, Edward
+Grefenstette, Lasse Espeholt, Will Kay, Mustafa Su-
+leyman, and Phil Blunsom. 2015. Teaching ma-
+chines to read and comprehend. In Advances in Neu-
+ral Information Processing Systems, pages 1693–
+1701.
+
+Felix Hill, Antoine Bordes, Sumit Chopra, and Jason
+Weston. 2015. The goldilocks principle: Reading
+children’s books with explicit memory representa-
+tions. arXiv preprint arXiv:1511.02301.
+
+Minghao Hu, Yuxing Peng, Zhen Huang, Xipeng Qiu,
+Furu Wei, and Ming Zhou. 2018. Reinforced
+mnemonic reader for machine reading comprehen-
+sion. In Proceedings of the 27th International Joint
+Conference on Artificial Intelligence, pages 4099–
+4106. AAAI Press.
+
+Robin Jia and Percy Liang. 2017. Adversarial exam-
+ples for evaluating reading comprehension systems.
+In Proceedings of the 2017 Conference on Empiri-
+cal Methods in Natural Language Processing, pages
+2021–2031.
+
+Daniel Kahneman and Patrick Egan. 2011. Thinking,
+fast and slow, volume 1. Farrar, Straus and Giroux
+New York.
+
+
+
+2703
+
+Thomas N Kipf and Max Welling. 2017. Semi-
+supervised classification with graph convolutional
+networks. In International Conference on Learning
+Representations.
+
+Ankit Kumar, Ozan Irsoy, Peter Ondruska, Mohit
+Iyyer, James Bradbury, Ishaan Gulrajani, Victor
+Zhong, Romain Paulus, and Richard Socher. 2016.
+Ask me anything: Dynamic memory networks for
+natural language processing. In International Con-
+ference on Machine Learning, pages 1378–1387.
+
+Dan Moldovan, Sanda Harabagiu, Marius Pasca, Rada
+Mihalcea, Roxana Girju, Richard Goodrum, and
+Vasile Rus. 2000. The structure and performance
+of an open-domain question answering system. In
+Proceedings of the 38th annual meeting on associ-
+ation for computational linguistics, pages 563–570.
+Association for Computational Linguistics.
+
+Gonzalo Navarro. 2001. A guided tour to approximate
+string matching. ACM computing surveys (CSUR),
+33(1):31–88.
+
+Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and
+Percy Liang. 2016. Squad: 100,000+ questions for
+machine comprehension of text. In Proceedings of
+the 2016 Conference on Empirical Methods in Nat-
+ural Language Processing, pages 2383–2392.
+
+Minjoon Seo, Aniruddha Kembhavi, Ali Farhadi, and
+Hannaneh Hajishirzi. 2017a. Bidirectional attention
+flow for machine comprehension. In International
+Conference on Learning Representations.
+
+Minjoon Seo, Sewon Min, Ali Farhadi, and Hannaneh
+Hajishirzi. 2017b. Query-reduction networks for
+question answering. In International Conference on
+Learning Representations.
+
+Yelong Shen, Po-Sen Huang, Jianfeng Gao, and
+Weizhu Chen. 2017. Reasonet: Learning to stop
+reading in machine comprehension. In Proceedings
+of the 23rd ACM SIGKDD International Conference
+on Knowledge Discovery and Data Mining, pages
+1047–1055. ACM.
+
+Steven A Sloman. 1996. The empirical case for
+two systems of reasoning. Psychological bulletin,
+119(1):3.
+
+Alon Talmor and Jonathan Berant. 2018. The web as
+a knowledge-base for answering complex questions.
+
+In Proceedings of the 2018 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+Volume 1 (Long Papers), volume 1, pages 641–651.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. In Advances in Neural Information Pro-
+cessing Systems, pages 5998–6008.
+
+Ellen M Voorhees et al. 1999. The trec-8 question an-
+swering track report. In Trec, volume 99, pages 77–
+82. Citeseer.
+
+Shuohang Wang, Mo Yu, Xiaoxiao Guo, Zhiguo Wang,
+Tim Klinger, Wei Zhang, Shiyu Chang, Gerry
+Tesauro, Bowen Zhou, and Jing Jiang. 2018a. r3:
+Reinforced ranker-reader for open-domain question
+answering. In Thirty-Second AAAI Conference on
+Artificial Intelligence.
+
+Wei Wang, Ming Yan, and Chen Wu. 2018b. Multi-
+granularity hierarchical attention fusion networks
+for reading comprehension and question answering.
+In Proceedings of the 56th Annual Meeting of the
+Association for Computational Linguistics (Volume
+1: Long Papers), volume 1, pages 1705–1714.
+
+Wenhui Wang, Nan Yang, Furu Wei, Baobao Chang,
+and Ming Zhou. 2017. Gated self-matching net-
+works for reading comprehension and question an-
+swering. In Proceedings of the 55th Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 1: Long Papers), volume 1, pages 189–198.
+
+Yingxu Wang, Dong Liu, and Ying Wang. 2003. Dis-
+covering the capacity of human memory. Brain and
+Mind, 4(2):189–198.
+
+Johannes Welbl, Pontus Stenetorp, and Sebastian
+Riedel. 2018. Constructing datasets for multi-hop
+reading comprehension across documents. Transac-
+tions of the Association of Computational Linguis-
+tics, 6:287–302.
+
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Ben-
+gio, William Cohen, Ruslan Salakhutdinov, and
+Christopher D Manning. 2018. Hotpotqa: A dataset
+for diverse, explainable multi-hop question answer-
+ing. In Proceedings of the 2018 Conference on Em-
+pirical Methods in Natural Language Processing,
+pages 2369–2380.
+
+

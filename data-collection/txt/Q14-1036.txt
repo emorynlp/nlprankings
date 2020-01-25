@@ -1,0 +1,2051 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Online Adaptor Grammars with Hybrid Inference
+Ke Zhai
+
+Computer Science and UMIACS
+University of Maryland
+College Park, MD USA
+zhaike@cs.umd.edu
+
+Jordan Boyd-Graber
+Computer Science
+
+University of Colorado
+Boulder, CO USA
+
+jordan.boyd.graber@colorado.edu
+
+Shay B. Cohen
+School of Informatics
+
+University of Edinburgh
+Edinburgh, Scotland, UK
+scohen@inf.ed.ac.uk
+
+Abstract
+
+Adaptor grammars are a flexible, powerful
+formalism for defining nonparametric, un-
+supervised models of grammar productions.
+This flexibility comes at the cost of expensive
+inference. We address the difficulty of infer-
+ence through an online algorithm which uses
+a hybrid of Markov chain Monte Carlo and
+variational inference. We show that this in-
+ference strategy improves scalability without
+sacrificing performance on unsupervised word
+segmentation and topic modeling tasks.
+
+1 Introduction
+
+Nonparametric Bayesian models are effective tools
+to discover latent structure in data (Müller and Quin-
+tana, 2004). These models have had great success in
+text analysis, especially syntax (Shindo et al., 2012).
+Nonparametric distributions provide support over a
+countably infinite long-tailed distributions common
+in natural language (Goldwater et al., 2011).
+
+We focus on adaptor grammars (Johnson et al.,
+2006), syntactic nonparametric models based on
+probabilistic context-free grammars. Adaptor gram-
+mars weaken the strong statistical independence as-
+sumptions PCFGs make (Section 2).
+
+The weaker statistical independence assumptions
+that adaptor grammars make come at the cost of ex-
+pensive inference. Adaptor grammars are not alone
+in this trade-off. For example, nonparametric exten-
+sions of topic models (Teh et al., 2006) have substan-
+tially more expensive inference than their parametric
+counterparts (Yao et al., 2009).
+
+A common approach to address this compu-
+tational bottleneck is through variational infer-
+ence (Wainwright and Jordan, 2008). One of the
+advantages of variational inference is that it can be
+easily parallelized (Nallapati et al., 2007) or trans-
+formed into an online algorithm (Hoffman et al.,
+
+2010), which often converges in fewer iterations
+than batch variational inference.
+
+Past variational inference techniques for adap-
+tor grammars assume a preprocessing step that
+looks at all available data to establish the support
+of these nonparametric distributions (Cohen et al.,
+2010). Thus, these past approaches are not directly
+amenable to online inference.
+
+Markov chain Monte Carlo (MCMC) inference, an
+alternative to variational inference, does not have
+this disadvantage. MCMC is easier to implement,
+and it discovers the support of nonparametric mod-
+els during inference rather than assuming it a priori.
+
+We apply stochastic hybrid inference (Mimno et
+al., 2012) to adaptor grammars to get the best of both
+worlds. We interleave MCMC inference inside vari-
+ational inference. This preserves the scalability of
+variational inference while adding the sparse statis-
+tics and improved exploration MCMC provides.
+
+Our inference algorithm for adaptor grammars
+starts with a variational algorithm similar to Cohen
+et al. (2010) and adds hybrid sampling within varia-
+tional inference (Section 3). This obviates the need
+for expensive preprocessing and is a necessary step
+to create an online algorithm for adaptor grammars.
+
+Our online extension (Section 4) processes exam-
+ples in small batches taken from a stream of data.
+As data arrive, the algorithm dynamically extends
+the underlying approximate posterior distributions
+as more data are observed. This makes the algo-
+rithm flexible, scalable, and amenable to datasets
+that cannot be examined exhaustively because of
+their size—e.g., terabytes of social media data ap-
+pear every second—or their nature—e.g., speech ac-
+quisition, where a language learner is limited to the
+bandwidth of the human perceptual system and can-
+not acquire data in a monolithic batch (Börschinger
+and Johnson, 2012).
+
+We show our approach’s scalability and effective-
+
+465
+
+Transactions of the Association for Computational Linguistics, 2 (2014) 465–476. Action Editor: Kristina Toutanova.
+Submitted 11/2013; Revised 5/2014; Revised 9/2014; Published 10/2014. c©2014 Association for Computational Linguistics.
+
+
+
+ness by applying our inference framework in Sec-
+tion 5 on two tasks: unsupervised word segmenta-
+tion and infinite-vocabulary topic modeling.
+
+2 Background
+
+In this section, we review probabilistic context-free
+grammars and adaptor grammars.
+
+2.1 Probabilistic Context-free Grammars
+Probabilistic context-free grammars (PCFG) de-
+fine probability distributions over derivations of a
+context-free grammar. We define a PCFG G to be
+a tuple 〈W ,N ,R, S,θ〉: a set of terminals W , a
+set of nonterminals N , productions R, start sym-
+bol S ∈ N and a vector of rule probabilities θ.
+The rules that rewrite nonterminal c is R(c). For
+a more complete description of PCFGs, see Manning
+and Schütze (1999).
+
+PCFGs typically use nonterminals with a syntactic
+interpretation. A sequence of terminals (the yield)
+is generated by recursively rewriting nonterminals
+as sequences of child symbols (either a nonterminal
+or a symbol). This builds a hierarchical phrase-tree
+structure for every yield.
+
+For example, a nonterminal VP represents a verb
+phrase, which probabilistically rewrites into a se-
+quence of nonterminals V,N (corresponding to verb
+and noun) using the production rule VP → V N.
+Both nonterminals can be further rewritten. Each
+nonterminal has a multinomial distribution over ex-
+pansions; for example, a multinomial for nonter-
+minal N would rewrite as “cake”, with probability
+θN→cake = 0.03. Rewriting terminates when the
+derivation has reached a terminal symbol such as
+“cake” (which does not rewrite).
+
+While PCFGs are used both in the supervised set-
+ting and in the unsupervised setting, in this paper
+we assume an unsupervised setting, in which only
+terminals are observed. Our goal is to predict the
+underlying phrase-structure tree.
+
+2.2 Adaptor Grammars
+PCFGs assume that the rewriting operations are in-
+dependent given the nonterminal. This context-
+freeness assumption often is too strong for modeling
+natural language.
+
+Adaptor grammars break this independence as-
+sumption by transforming a PCFG’s distribution over
+
+Algorithm 1 Generative Process
+1: For nonterminals c ∈ N , draw rule probabilities
+θc ∼ Dir(αc) for PCFG G.
+
+2: for adapted nonterminal c in c1, . . . , c|M| do
+3: Draw grammaton Hc ∼ PYGEM(ac, bc, Gc) according
+
+to Equation 1, where Gc is defined by the PCFG rulesR.
+4: For i ∈ {1, . . . , D}, generate a phrase-structure tree tS,i
+
+using the PCFG rules R(e) at non-adapted nonterminal e
+and the grammatons Hc at adapted nonterminals c.
+
+5: The yields of trees t1, . . . , tD are observations x1, . . . , xD .
+
+trees Gc rooted at nonterminal c into a richer distri-
+bution Hc over the trees headed by a nonterminal c,
+which is often referred to as the grammaton.
+
+A Pitman-Yor Adaptor grammar (PYAG) forms
+the adapted tree distributionsHc using a Pitman-Yor
+process (Pitman and Yor, 1997, PY), a generalization
+of the Dirichlet process (Ferguson, 1973, DP).1 A
+draw Hc ≡ (πc, zc) is formed by the stick break-
+ing process (Sudderth and Jordan, 2008, PYGEM)
+parametrized by scale parameter a, discount factor
+b, and base distribution Gc:
+
+π′k ∼Beta(1− b, a+ kb), zk ∼Gc,
+πk ≡π′k
+
+∏k−1
+j=1(1− π′j), H ≡
+
+∑
+k πkδzk . (1)
+
+Intuitively, the distribution Hc is a discrete recon-
+struction of the atoms sampled from Gc—hence,
+reweights Gc. Grammaton Hc assigns non-zero
+stick-breaking weights π to a countably infinite
+number of parse trees z. We describe learning these
+grammatons in Section 3.
+
+More formally, a PYAG is a quintuple A =
+〈G,M ,a, b,α〉 with: a PCFG G; a set of adapted
+nonterminals M ⊆ N ; Pitman-Yor process param-
+eters ac, bc at each adaptor c ∈ M and Dirichlet
+parameters αc for each nonterminal c ∈ N . We
+also assume an order on the adapted nonterminals,
+c1, . . . , c|M | such that cj is not reachable from ci in
+a derivation if j > i.2
+
+Algorithm 1 describes the generative process of
+an adaptor grammar on a set of D observed sen-
+tences x1, . . . , xD.
+
+1Adaptor grammars, in their general form, do not have to
+use the Pitman-Yor process but have only been used with the
+Pitman-Yor process.
+
+2This is possible because we assume that recursive nonter-
+minals are not adapted.
+
+466
+
+
+
+Given a PYAG A, the joint probability for a set of
+sentencesX and its collection of trees T is
+
+p(X,T ,π,θ, z|A) = ∏c∈M p(πc|ac, bc)p(zc|Gc)
+·∏c∈N p(θc|αc)
+
+∏
+xd∈X p(xd, td|θ,π, z),
+
+where xd and td represent the dth observed string
+and its corresponding parse. The multinomial PCFG
+parameter θc is drawn from a Dirichlet distribution
+at nonterminal c ∈ N . At each adapted nontermi-
+nal c ∈M , the stick-breaking weights πc are drawn
+from a PYGEM (Equation 1). Each weight has an as-
+sociated atom zc,i from base distribution Gc, a sub-
+tree rooted at c. The probability p(xd, td |θ,π, z) is
+the PCFG likelihood of yield xd with parse tree td.
+
+Adaptor grammars require a base PCFG such that
+it does not have recursive adapted nonterminals, i.e.,
+there cannot be a path in a derivation from a given
+adapted nonterminal to a second appearance of that
+adapted nonterminal.
+
+3 Hybrid Variational-MCMC Inference
+
+Discovering the latent variables of the model—trees,
+adapted probabilities, and PCFG rules—is a problem
+of posterior inference given observed data. Previ-
+ous approaches use MCMC (Johnson et al., 2006) or
+variational inference (Cohen et al., 2010).
+
+MCMC discovers the support of nonparametric
+models during the inference, but does not scale to
+larger datasets (due to tight coupling of variables).
+Variational inference, however, is inherently paral-
+lel and easily amendable to online inference, but re-
+quires preprocessing to discover the adapted produc-
+tions. We combine the best of both worlds and pro-
+pose a hybrid variational-MCMC inference algorithm
+for adaptor grammars.
+
+Variational inference posits a variational distribu-
+tion over the latent variables in the model; this in
+turn induces an “evidence lower bound” (ELBO, L)
+as a function of a variational distribution q, a lower
+bound on the marginal log-likelihood. Variational
+inference optimizes this objective function with re-
+spect to the parameters that define q.
+
+In this section, we derive coordinate-ascent up-
+dates for these variational parameters. A key math-
+ematical component is taking expectations with re-
+spect to the variational distribution q. We strategi-
+cally use MCMC sampling to compute the expecta-
+
+tion of q over parse trees z. Instead of explicitly
+computing the variational distribution for all param-
+eters, one can sample from it. This produces a sparse
+approximation of the variational distribution, which
+improves both scalability and performance. Sparse
+distributions are easier to store and transmit in im-
+plementations, which improves scalability. Mimno
+et al. (2012) also show that sparse representations
+improve performance. Moreover, because it can
+flexibly adjust its support, it is a necessary prereq-
+uisite to online inference (Section 4).
+
+3.1 Variational Lower Bound
+
+We posit a mean-field variational distribution:
+
+q(π,θ,T |γ,ν,φ) = ∏c∈M
+∏∞
+i=1 q(π
+
+′
+c,i|ν1c,i, ν2c,i)
+
+·∏c∈N q(θc|γc)
+∏
+xd∈X q(td|φd), (2)
+
+where π′c,i is drawn from a variational Beta distri-
+bution parameterized by ν1c,i, ν
+
+2
+c,i; and θc is from a
+
+variational Dirichlet prior γc ∈ R|R(c)|+ . Index i
+ranges over a possibly infinite number of adapted
+rules. The parse for the dth observation, td is mod-
+eled by a multinomial φd, where φd,i is the proba-
+bility generating the ith phrase-structure tree td,i.
+
+The variational distribution over latent variables
+induces the following ELBO on the likelihood:
+
+L(z,π,θ,T ,D;a, b,α) = H[q(θ,π,T )]
++
+∑
+
+c∈N Eq[log p(θc|αc)] (3)
++
+∑
+
+c∈M
+∑∞
+
+i=1 Eq[log p(π′c,i|ac, bc)]
++
+∑
+
+c∈M
+∑∞
+
+i=1 Eq[log p(zc,i |π,θ)]
++
+∑
+
+xd∈X Eq[log p(xd, td |π,θ, z)],
+
+where H[•] is the entropy function.
+To make this lower bound tractable, we truncate
+
+the distribution over π to a finite set (Blei and Jor-
+dan, 2005) for each adapted nonterminal c ∈ M ,
+i.e., π′c,Kc ≡ 1 for some indexKc. Because the atom
+weights πk are deterministically defined by Equa-
+tion 1, this implies that πc,i is zero beyond index
+Kc. Each weight πc,i is associated with an atom zc,i,
+a subtree rooted at c. We call the ordered set of zc,i
+the truncated nonterminal grammaton (TNG). Each
+adapted nonterminal c ∈M has its own TNGc. The
+ith subtree in TNGc is denoted TNGc(i).
+
+467
+
+
+
+In the rest of this section, we describe approxi-
+mate inference to maximize L. The most impor-
+tant update is φd,i, which we update using stochastic
+MCMC inference (Section 3.2). Past variational ap-
+proaches for adaptor grammars (Cohen et al., 2010)
+rely on a preprocessing step and heuristics to define
+a static TNG. In contrast, our model dynamically
+discovers trees. The TNG grows as the model sees
+more data, allowing online updates (Section 4).
+
+The remaining variational parameters are opti-
+mized using expected counts of adaptor grammar
+rules. These expected counts are described in Sec-
+tion 3.3, and the variational updates for the vari-
+ational parameters excluding φd,i are described in
+Section 3.4.
+
+3.2 Stochastic MCMC Inference
+Each observation xd has an associated variational
+multinomial distribution φd over trees td that can
+yield observation xd with probability φd,i. Hold-
+ing all other variational parameters fixed, the
+coordinate-ascent update (Mimno et al., 2012;
+Bishop, 2006) for φd,i is
+
+φd,i ∝ exp{E¬φdq [log p(td,i|xd,π,θ, z)]}, (4)
+
+where φd,i is the probability generating the ith
+
+phrase-structure tree td,i and E
+¬φd
+q [•] is the expec-
+
+tation with respect to the variational distribution q,
+excluding the value of φd.
+
+Instead of computing this expectation explicitly,
+we turn to stochastic variational inference (Mimno
+et al., 2012; Hoffman et al., 2013) to sample from
+this distribution. This produces a set of sampled
+trees σd ≡ {σd,1, . . . , σd,k}. From this set of trees
+we can approximate our variational distribution over
+trees φ using the empirical distribution σd, i.e.,
+
+φd,i ∝ I[σd,j = td,i, ∀σd,j ∈ σd]. (5)
+
+This leads to a sparse approximation of variational
+distribution φ.3
+
+Previous inference strategies (Johnson et al.,
+2006; Börschinger and Johnson, 2012) for adaptor
+grammars have used sampling. The adaptor gram-
+mar inference methods use an approximate PCFG to
+emulate the marginalized Pitman-Yor distributions
+
+3In our experiments, we use ten samples.
+
+at each nonterminal. Given this approximate PCFG,
+we can then sample a derivation z for string x from
+the possible trees (Johnson et al., 2007).
+
+Sampling requires a derived PCFG G′ that approx-
+imates the distribution over tree derivations condi-
+tioned on a yield. It includes the original PCFG rules
+R = {c → β} that define the base distribution and
+the new adapted productions R′ = {c ⇒ z, z ∈
+TNGc}. Under G′, the probability θ′ of adapted pro-
+duction c⇒ z is
+
+log θ′c⇒z =
+
+
+
+
+
+Eq[log πc,i], if TNGc(i) = z
+Eq[log πc,Kc ] + Eq[log θc⇒z],
+
+otherwise
+
+(6)
+
+where Kc is the truncation level of TNGc and πc,Kc
+represents the left-over stick weights in the stick-
+breaking process for adaptor c ∈ M . θc⇒z repre-
+sents the probability of generating tree c⇒ z under
+the base distribution. See also Cohen (2011).
+
+The expectation of the Pitman-Yor multinomial
+πc,i under the truncated variational stick-breaking
+distribution is
+
+Eq[log πa,i] = Ψ(ν1a,i)−Ψ(ν1a,i + ν2a,i) (7)
++
+∑i−1
+
+j=1(Ψ(ν
+2
+a,j)−Ψ(ν1a,j + ν2a,j)),
+
+and the expectation of generating the phrase-
+structure tree a ⇒ z based on PCFG productions
+under the variational Dirichlet distribution is
+
+Eq[log θa⇒z] =
+∑
+
+c→β∈a⇒z
+(
+Ψ(γc→β) (8)
+
+−Ψ(∑c→β′∈Rc γc→β′)
+)
+
+where Ψ(•) is the digamma function, and c →
+β ∈ a ⇒ z represents all PCFG productions in the
+phrase-structure tree a⇒ z.
+
+This PCFG can compose arbitrary subtrees and
+thus discover new trees that better describe the data,
+even if those trees are not part of the TNG. This is
+equivalent to creating a “new table” in MCMC in-
+ference and provides truncation-free variational up-
+dates (Wang and Blei, 2012) by sampling a unseen
+subtree with adapted nonterminal c ∈M at the root.
+This frees our model from preprocessing to initial-
+ize truncated grammatons in Cohen et al. (2010).
+This stochastic approach has the advantage of creat-
+ing sparse distributions (Wang and Blei, 2012): few
+unique trees will be represented.
+
+468
+
+
+
+S→AB
+B→{a,b,c}
+A→B
+
+B
+a
+
+B
+b
+
+Grammar Seating Assignments 
+(nonterminal A)
+
+Yield Parse Counts
+
+ca
+B cA
+
+S B a
+
+New Seating
+
+B
+a
+
+B
+
+b
+
+B
+
+c
+
+h(A →c) +=1
+g(B →c) +=1
+g(B →a) +=1
+
+ab
+B aA
+
+S B b B
+a
+
+B
+
+b
+
+B
+
+a
+
+h(A →a) +=1
+g(B →a) +=1
+g(B →b) +=1
+
+ba
+B bA
+
+S B a B
+a
+
+B
+
+b f(A →b) +=1
+g(B →a) +=1
+
+Figure 1: Given an adaptor grammar, we sample derivations
+given an approximate PCFG and show how these affect counts.
+The sampled derivations can be understood via the Chinese
+restaurant metaphor (Johnson et al., 2006). Existing cached
+rules (elements in the TNG) can be thought of as occupied ta-
+bles; this happens in the case of the yield “ba”, which increases
+counts for unadapted rules g and for entries in TNGA, f . For
+the yield “ca”, there is no appropriate entry in the TNG , so it
+must use the base distribution, which corresponds to sitting at a
+new table. This generates counts for g, as it uses the unadapted
+rule and for h, which represents entries that could be included
+in the TNG in the future. The final yield, “ab”, shows that even
+when compatible entries are in the TNG , it might still create a
+new table, changing the underlying base distribution.
+
+Parallelization As noted in Cohen et al. (2010),
+the inside-outside algorithm dominates the runtime
+of every iteration, both for sampling and variational
+inference. However, unlike MCMC, variational in-
+ference is highly parallelizable and requires fewer
+synchronizations per iteration (Zhai et al., 2012). In
+our approach, both inside algorithms and sampling
+process can be distributed, and those counts can be
+aggregated afterwards. In our implementation, we
+use multiple threads to parallelize tree sampling.
+
+3.3 Calculating Expected Rule Counts
+
+For every observation xd, the hybrid approach pro-
+duces a set of sampled trees, each of which contains
+three types of productions: adapted rules, original
+PCFG rules, and potentially adapted rules. The last
+set is most important, as these are new rules dis-
+covered by the sampler. These are explained using
+the Chinese restaurant metaphor in Figure 1. The
+multiset of all adapted productions is M(td,i) and
+the multiset of non-adapted productions that gener-
+ate tree td,i is N(td,i). We compute three counts:
+
+1: f is the expected number of productions within
+the TNG. It is the sum over the probability of a
+tree td,k times the number of times an adapted
+production appeared in td,k, fd(a⇒ za,i) =
+∑
+
+k
+
+(
+φd,k |a⇒ za,i : a⇒ za,i ∈M(td,k)|︸ ︷︷ ︸
+
+count of rule a⇒ za,i in tree td,k
+
+)
+.
+
+2: g is the expected counts of PCFG productionsR
+that defines the base distribution of the adaptor
+grammar, gd(a→ β) =
+
+∑
+k (φd,k |a→ β : a→ β ∈ N(td,k)|) .
+
+3: Finally, a third set of productions are newly dis-
+covered by the sampler and not in the TNG.
+These subtrees are rules that could be adapted,
+with expected counts hd(c⇒ zc,i) =
+∑
+
+k (φd,k |c⇒ zc,i : c⇒ zc,i /∈M(td,k)|) .
+
+These subtrees—lists of PCFG rules sampled
+from Equation 6—correspond to adapted pro-
+ductions not yet present in the TNG.
+
+3.4 Variational Updates
+Given the sparse vectors φ sampled from the hybrid
+MCMC step, we update all variational parameters as
+
+γa→β =αa→β +
+∑
+
+xd∈X gd(a→ β)
++
+∑
+
+b∈M
+∑Kb
+
+i=1 n(a→ β, zb,i),
+ν1a,i =1− ba +
+
+∑
+xd∈X fd(a⇒ za,i)
+
++
+∑
+
+b∈M
+∑Kb
+
+k=1 n(a⇒ za,i, zb,k),
+ν2a,i =aa + iba +
+
+∑
+xd∈X
+
+∑Ka
+j=1 fd(a⇒ za,j)
+
++
+∑
+
+b∈M
+∑Kb
+
+k=1
+
+∑Ka
+j=1 n(a⇒ za,j , zb,k),
+
+where n(r, t) is the expected number of times pro-
+duction r is in tree t, estimated during sampling.
+
+Hyperparameter Update We update our PCFG
+hyperparameter α, PYGEM hyperparameters a and
+b as in Cohen et al. (2010).
+
+4 Online Variational Inference
+
+Online inference for probabilistic models requires us
+to update our posterior distribution as new observa-
+tions arrive. Unlike batch inference algorithms, we
+do not assume we always have access to the entire
+
+469
+
+
+
+dataset. Instead, we assume that observations arrive
+in small groups called minibatches. The advantage
+of online inference is threefold: a) it does not re-
+quire retaining the whole dataset in memory; b) each
+online update is fast; and c) the model usually con-
+verges faster. All of these make adaptor grammars
+scalable to larger datasets.
+
+Our approach is based on the stochastic varia-
+tional inference for topic models (Hoffman et al.,
+2013). This inference strategy uses a form of
+stochastic gradient descent (Bottou, 1998): using
+the gradient of the ELBO, it finds the sufficient
+statistics necessary to update variational parameters
+(which are mostly expected counts calculated using
+the inside-outside algorithm), and interpolates the
+result with the current model.
+
+We assume data arrive in minibatches B (a set of
+sentences). We accumulate expected counts
+
+f̃ (l)(a⇒ za,i) =(1− �) · f̃ (l−1)(a⇒ za,i) (9)
++ � · |X||Bl|
+
+∑
+xd∈Bl fd(a⇒ za,i),
+
+g̃(l)(a→ β) =(1− �) · g̃(l−1)(a→ β) (10)
++ � · |X||Bl|
+
+∑
+xd∈Bl gd(a→ β),
+
+with decay factor � ∈ (0, 1) to guarantee conver-
+gence. We set it to � = (τ + l)−κ, where l is the
+minibatch counter. The decay inertia τ prevents pre-
+mature convergence, and decay rate κ controls the
+speed of change in sufficient statistics (Hoffman et
+al., 2010). We recover batch variational approach
+whenB = D and κ = 0.
+
+The variables f̃ (l) and g̃(l) are accumulated suffi-
+cient statistics of adapted and unadapted productions
+after processing minibatch Bl. They update the ap-
+proximate gradient. The updates for variational pa-
+rameters become
+
+γa→β =αa→β + g̃
+(l)(a→ β) (11)
+
++
+∑
+
+b∈M
+∑Kb
+
+i=1 n(a→ β, zb,i),
+ν1a,i =1− ba + f̃ (l)(a⇒ za,i) (12)
+
++
+∑
+
+b∈M
+∑Kb
+
+k=1 n(a⇒ za,i, zb,k),
+ν2a,i =aa + iba +
+
+∑Ka
+j=1 f̃
+
+(l)(a⇒ za,j) (13)
++
+∑
+
+b∈M
+∑Kb
+
+k=1
+
+∑Ka
+j=1 n(a⇒ za,j , zb,k),
+
+where Ka is the size of the TNG at adaptor a ∈M .
+
+4.1 Refining the Truncation
+
+As we observe more data during inference, our TNGs
+need to change. New rules should be added, useless
+rules should be removed, and derivations for existing
+rules should be updated. In this section, we describe
+heuristics for performing each of these operations.
+
+Adding Productions Sampling can identify pro-
+ductions that are not adapted but were instead drawn
+from the base distribution. These are candidates for
+the TNG. For every nonterminal a, we add these
+potentially adapted productions to TNGa after each
+minibatch. The count associated with candidate pro-
+ductions is now associated with an adapted produc-
+tion, i.e., the h count contributes to the relevant f
+count. This mechanism dynamically expands TNGa.
+
+Sorting and Removing Productions Our model
+does not require a preprocessing step to initialize the
+TNGs, rather, it constructs and expands all TNGs on
+the fly. To prevent the TNG from growing unwieldy,
+we prune TNG after every u minibatches. As a re-
+sult, we need to impose an ordering over all the parse
+trees in the TNG. The underlying PYGEM distribu-
+tion implicitly places an ranking over all the atoms
+according to their corresponding sufficient statis-
+tics (Kurihara et al., 2007), as shown in Equation 9.
+It measures the “usefulness” of every adapted pro-
+duction throughout inference process.
+
+In addition to accumulated sufficient statistics,
+Cohen et al. (2010) add a secondary term to discour-
+age short constituents (Mochihashi et al., 2009). We
+impose a reward term for longer phrases in addition
+to f̃ and sort all adapted productions in TNGa using
+the ranking score
+
+Λ(a⇒ za,i) = f̃ (l)(a⇒ za,i) · log(� · |s|+ 1),
+
+where |s| is the number of yields in production a⇒
+za,i. Because � decreases each minibatch, the reward
+for long phrases diminishes. This is similar to an
+annealed version of Cohen et al. (2010)—where the
+reward for long phrases is fixed, see also Mochihashi
+et al. (2009). After sorting, we remove all but the top
+Ka adapted productions.
+
+Rederiving Adapted Productions For MCMC in-
+ference, Johnson and Goldwater (2009) observe that
+atoms already associated with a yield may have trees
+
+470
+
+
+
+Algorithm 2 Online inference for adaptor grammars
+1: Random initialize all variational parameters.
+2: for minibatch of l = 1, 2, . . . do
+3: Construct approximate PCFG θ′ of A (Equation 6).
+4: for input sentence d = 1, 2, . . . , Dl do
+5: Accumulate inside probabilities from approximate
+
+PCFG θ′.
+6: Sample phrase-structure trees σ and update the tree
+
+distribution φ (Equation 5).
+7: For every adapted nonterminal c, append adapted pro-
+
+ductions to TNGc.
+8: Accumulate sufficient statistics (Equations 9 and 10).
+9: Update γ, ν1, and ν2 (Equations 11-13).
+
+10: Refine and prune the truncation every u minibatches.
+
+that do not explain their yield well. They propose ta-
+ble label resampling to rederive yields.
+
+In our approach this is equivalent to “mutating”
+some derivations in a TNG. After pruning rules ev-
+ery u minibatches, we perform table label resam-
+pling for adapted nonterminals from general to spe-
+cific (i.e., a topological sort). This provides better
+expected counts n(r, •) for rules used in phrase-
+structure subtrees. Empirically, we find table la-
+bel resampling only marginally improves the word-
+segmentation result.
+
+Initialization Our inference begins with random
+variational Dirichlets and empty TNGs, which obvi-
+ates the preprocessing step in Cohen et al. (2010).
+Our model constructs and expands all TNGs on the
+fly. It mimics the incremental initialization of John-
+son and Goldwater (2009). Algorithm 2 summarizes
+the pseudo-code of our online approach.
+
+4.2 Complexity
+Inside and outside calls dominate execution time
+for adaptor grammar inference. Variational ap-
+proaches compute inside-outside algorithms and es-
+timate the expected counts for every possible tree
+derivation (Cohen et al., 2010). For a dataset withD
+observations, variational inference requires O
+
+(
+DI
+)
+
+calls to inside-outside algorithm, where I is the
+number of iterations, typically in the tens.
+
+In contrast, MCMC only needs to accumulate in-
+side probabilities, and then sample a tree deriva-
+tion (Chappelier and Rajman, 2000). The sampling
+step is negligible in processing time compared to the
+inside algorithm. MCMC inference requires O
+
+(
+DI
+)
+
+calls to the inside algorithm—hence every iteration
+
+co
+llo
+
+ca
+tio
+
+n
+
+SENT 7→ COLLOC
+SENT 7→ COLLOC SENT
+COLLOC 7→ WORDS
+
+un
+ig
+
+ra
+m
+
+WORDS 7→ WORD
+WORDS 7→ WORD WORDS
+WORD 7→ CHARS
+CHARS 7→ CHAR
+CHARS 7→ CHAR CHARS
+CHAR 7→ ?
+
+In
+fV
+
+oc
+LD
+
+A
+
+SENT 7→ DOCj
+j=1, 2, . . . D
+
+DOCj 7→ −j TOPICi
+i=1, 2, . . . K
+
+TOPICi 7→WORD
+WORD 7→ CHARS
+CHARS 7→ CHAR
+CHARS 7→ CHAR CHARS
+CHAR 7→ ?
+
+Table 1: Grammars used in our experiments. The nonterminal
+CHAR is a non-adapted rule that expands to all characters used
+in the data, sometimes called pre-terminals. Adapted nonter-
+minals are underlined. For the unigram grammar, only nonter-
+minal WORD is adapted; whereas for the collocation grammar,
+both nonterminals WORD and COLLOC are adapted. For the IN-
+FVOC LDA grammar, D is the total number of documents and
+K is the number of topics. Therefore, j ranges over {1, . . . , D}
+and i ranges over {1, . . . ,K}.
+
+is much faster than variational approach—but I is
+usually on the order of thousands.
+
+Likewise, our hybrid approach also only needs
+the less expensive inside algorithm to sample trees.
+And while each iteration is less expensive, our ap-
+proach can achieve reasonable results with only a
+single pass through the data. And thus only requires
+O(D) calls to the inside algorithm.
+
+Because the inside-outside algorithm is funda-
+mental to each of these algorithms, we use it as a
+common basis for comparison across different im-
+plementations. This is over-generous to variational
+approaches, as the full inside-outside computation
+is more expensive than the inside algorithm required
+for sampling in MCMC and our hybrid approach.
+
+5 Experiments and Discussion
+
+We implement our online adaptor grammar model
+(ONLINE) in Python4 and compare it against both
+MCMC (Johnson and Goldwater, 2009, MCMC) and
+the variational inference (Cohen et al., 2010, VARI-
+ATIONAL). We use the latest implementation of
+MCMC sampler for adaptor grammars5 and simulate
+the variational approach using our implementation.
+For MCMC approach, we use the best settings re-
+ported in Johnson and Goldwater (2009) with incre-
+mental initialization and table label resampling.
+
+4Available at http://www.umiacs.umd.edu/˜zhaike/.
+5http://web.science.mq.edu.au/˜mjohnson/code/
+
+py-cfg-2013-02-25.tgz
+
+471
+
+
+
+Model and Settings
+ctb7 pku cityu
+
+unigram collocation unigram collocation unigram collocation
+
+M
+C
+
+M
+C
+
+500 iter 72.70 (2.81) 50.53 (2.82) 72.01 (2.82) 49.06 (2.81) 74.19 (3.55) 63.14 (3.53)
+1000 iter 72.65 (2.83) 62.27 (2.79) 71.81 (2.81) 62.47 (2.77) 74.37 (3.54) 70.62 (3.51)
+1500 iter 72.17 (2.80) 69.65 (2.77) 71.46 (2.80) 70.20 (2.73) 74.22 (3.54) 72.33 (3.50)
+2000 iter 71.75 (2.79) 71.66 (2.76) 71.04 (2.79) 72.55 (2.70) 74.01 (3.53) 73.15 (3.48)
+
+O
+N
+
+L
+IN
+
+E
+
+κ τ KWord = 30k KColloc = 100k KWord = 40k KColloc = 120k KWord = 50k KColloc = 150K
+
+0.6
+32 70.17 (2.84) 68.43 (2.77) 69.93 (2.89) 68.09 (2.71) 72.59 (3.62) 69.27 (3.61)
+128 72.98 (2.72) 65.20 (2.81) 72.26 (2.63) 65.57 (2.83) 74.73 (3.40) 64.83 (3.62)
+512 72.76 (2.78) 56.05 (2.85) 71.99 (2.74) 58.94 (2.94) 73.68 (3.60) 60.40 (3.70)
+
+0.8
+32 71.10 (2.77) 70.84 (2.76) 70.31 (2.78) 70.91 (2.71) 73.12 (3.60) 71.89 (3.50)
+128 72.79 (2.64) 70.93 (2.63) 72.08 (2.62) 72.02 (2.63) 74.62 (3.45) 72.28 (3.51)
+512 72.82 (2.58) 68.53 (2.76) 72.14 (2.58) 70.07 (2.69) 74.71 (3.37) 72.58 (3.49)
+
+1.0
+32 69.98 (2.87) 70.71 (2.63) 69.42 (2.84) 71.45 (2.67) 73.18 (3.59) 72.42 (3.45)
+128 71.84 (2.72) 71.29 (2.58) 71.29 (2.67) 72.56 (2.61) 73.23 (3.39) 72.61 (3.41)
+512 72.68 (2.62) 70.67 (2.60) 71.86 (2.63) 71.39 (2.66) 74.45 (3.41) 72.88 (3.38)
+
+VARIATIONAL 69.83 (2.85) 67.78 (2.75) 67.82 (2.80) 66.97 (2.75) 70.47 (3.72) 69.06 (3.69)
+
+Table 2: Word segmentation accuracy measured by word token F1 scores and negative log-likelihood on held-out test dataset in the
+brackets (lower the better, on the scale of 106) for our ONLINE model against MCMC approach (Johnson et al., 2006) on various
+dataset using the unigram and collocation grammar.7
+
+40
+50
+60
+70
+80
+
+1e+03 1e+04 1e+05 1e+06 1e+07
+# of inside−outside function calls
+
+f−
+1 
+
+sc
+or
+
+e
+
+model mcmc online variational
+
+(a) unigram grammar.
+
+30
+40
+50
+60
+70
+80
+
+1e+03 1e+04 1e+05 1e+06 1e+07
+# of inside−outside function calls
+
+f−
+1 
+
+sc
+or
+
+e
+
+model mcmc online variational
+
+(b) collocation grammar.
+
+Figure 2: Word segmentation accuracy measured by word token
+F1 scores on brent corpus of three approaches against number
+of inside-outside function call using unigram (upper) and collo-
+cation (lower) grammars in Table 1.6
+
+6Our ONLINE settings are batch size B = 20, decay inertia
+τ = 128, decay rate κ = 0.6 for unigram grammar; and mini-
+batch size B = 5, decay inertia τ = 256, decay rate κ = 0.8
+for collocation grammar. TNGs are refined at interval u = 50.
+Truncation size is set to KWord = 1.5k and KColloc = 3k. The
+settings are chosen from cross validation. We observe simi-
+lar behavior under κ = {0.7, 0.9, 1.0}, τ = {32, 64, 512},
+B = {10, 50} and u = {10, 20, 100}.
+
+7For ONLINE inference, we parallelize each minibatch with
+four threads with settings: batch size B = 100 and TNG refine-
+ment interval u = 100. ONLINE approach runns for two passes
+over datasets. VARIATIONAL runs fifty iterations, with the same
+truncation level as in ONLINE. For negative log-likelihood eval-
+uation, we train the model on a random 70% of the data, and
+hold out the rest for testing. We observe similar behavior for
+
+5.1 Word Segmentation
+We evaluate our online adaptor grammar on the task
+of word segmentation, which focuses on identify-
+ing word boundaries from a sequence of characters.
+This is especially the case for Chinese, since char-
+acters are written in sequence without word bound-
+aries.
+
+We first evaluate all three models on the stan-
+dard Brent version of the Bernstein-Ratner cor-
+pus (Bernstein-Ratner, 1987; Brent and Cartwright,
+1996, brent). The dataset contains 10k sentences,
+1.3k distinct words, and 72 distinct characters. We
+compare the results on both unigram and colloca-
+tion grammars introduced in Johnson and Goldwater
+(2009) as listed in Table 1.
+
+Figure 2 illustrates the word segmentation ac-
+curacy in terms of word token F1-scores on brent
+against the number of inside-outside function calls
+for all three approaches using unigram and colloca-
+tion grammars. In both cases, our ONLINE approach
+converges faster than MCMC and VARIATIONAL ap-
+proaches, yet yields comparable or better perfor-
+mance when seeing more data.
+
+In addition to the brent corpus, we also evalu-
+ate three approaches on three other Chinese datasets
+compiled by Xue et al. (2005) and Emerson (2005):8
+
+• Chinese Treebank 7.0 (ctb7): 162k sentences,
+57k distinct words, 4.5k distinct characters;
+
+our model under κ = {0.7, 0.9} and τ = {64, 256}.
+8We use all punctuation as natural delimiters (i.e., words
+
+cannot cross punctuation).
+
+472
+
+
+
+• Peking University (pku): 183k sentences, 53k
+distinct words, 4.6k distinct characters; and
+• City University of Hong Kong (cityu): 207k
+
+sentences, 64k distinct words, and 5k distinct
+characters.
+
+We compare our inference method against other
+approaches on F1 score. While other unsupervised
+word segmentation systems are available (Mochi-
+hashi et al. (2009), inter alia),9 our focus is on a di-
+rect comparison of inference techniques for adaptor
+grammar, which achieve competitive (if not state-of-
+the-art) performance.
+
+Table 2 shows the word token F1-scores and neg-
+ative likelihood on held-out test dataset of our model
+against MCMC and VARIATIONAL. We randomly
+sample 30% of the data for testing and the rest for
+training. We compute the held-out likelihood of the
+most likely sampled parse trees out of each model.10
+
+Our ONLINE approach consistently better segments
+words than VARIATIONAL and achieves comparable
+or better results than MCMC.
+
+For MCMC, Johnson and Goldwater (2009) show
+that incremental initialization—or online updates in
+general—results in more accurate word segmenta-
+tion, even though the trees have lower posterior
+probability. Similarly, our ONLINE approach initial-
+izes and learns them on the fly, instead of initializing
+the grammatons and parse trees for all data upfront
+as for VARIATIONAL. This uniformly outperforms
+batch initialization on the word segmentation tasks.
+
+5.2 Infinite Vocabulary Topic Modeling
+Topic models often can be replicated using a care-
+fully crafted PCFG (Johnson, 2010). These pow-
+erful extensions can capture topical collocations
+and sticky topics; these embelishments could fur-
+ther improve NLP applications of simple unigram
+topic models such as word sense disambigua-
+tion (Boyd-Graber and Blei, 2007), part of speech
+
+9Their results are not directly comparable: they use different
+subsets and assume different preprocessing.
+
+10Note that this is only an approximation to the true held-out
+likelihood, since it is impossible to enumerate all the possible
+parse trees and hence compute the likelihood for a given sen-
+tence under the model.
+
+11We train all models with 5 topics with settings: TNG re-
+finement interval u = 100, truncation size KTopic = 3k, and
+the mini-batch size B = 50. We observe a similar behavior
+under κ ∈ {0.7, 0.9} and τ ∈ {64, 256}.
+
+32 128 512
+
+50
+60
+70
+
+50
+60
+70
+
+50
+60
+70
+
+0.6
+0.8
+
+1
+
+1 10 10
+0
+10
+
+00 1 10 10
+0
+10
+
+00 1 10 10
+0
+10
+
+00
+
+# of passes over the dataset
+
+pm
+i
+
+inference infvoc mcmc online variational
+
+⌧ : ⌧ : ⌧ : 
+
+70
+60
+50
+
+70
+60
+50
+
+70
+60
+50
+
+32 128 512
+
+50
+60
+70
+
+50
+60
+70
+
+50
+60
+70
+
+0.6
+0.8
+
+1
+
+1 10 10
+0
+10
+
+00 1 10 10
+0
+10
+
+00 1 10 10
+0
+10
+
+00
+
+# of passes over the dataset
+
+pm
+i
+
+inference infvoc mcmc online variational
+
+co
+he
+re
+nc
+e
+
+Figure 3: The average coherence score of topics on de-news
+datasets against INFVOC approach and other inference tech-
+niques (MCMC, VARIATIONAL) under different settings of de-
+cay rate κ and decay inertia τ using the InfVoc LDA grammar in
+Table 1. The horizontal axis shows the number of passes over
+the entire dataset.11
+
+tagging (Toutanova and Johnson, 2008) or dialogue
+modeling (Zhai and Williams, 2014). However, ex-
+pressing topic models in adaptor grammars is much
+slower than traditional topic models, for which fast
+online inference (Hoffman et al., 2010) is available.
+
+Zhai and Boyd-Graber (2013) argue that online
+inference and topic models violate a fundamental
+assumption in online algorithms: new words are
+introduced as more data are streamed to the algo-
+rithm. Zhai and Boyd-Graber (2013) then introduce
+an inference framework, INFVOC, to discover words
+from a Dirichlet process with a character n-gram
+base distribution.
+
+We show that their complicated model and on-
+line inference can be captured and extended via an
+appropriate PCFG grammar and our online adap-
+tor grammar inference algorithm. Our extension to
+INFVOC generalizes their static character n-gram
+model, learning the base distribution (i.e., how
+words are composed from characters) from data. In
+contrast, their base distribution was learned from a
+dictionary as a preprocessing step and held fixed.
+
+This is an attractive testbed for our online infer-
+ence. Within a topic, we can verify that the words we
+discover are relevant to the topic and that new words
+rise in importance in the topic over time if they are
+relevant. For these experiments, we treat each token
+(with its associated document pseudo-word −j) as a
+single sentence, and each minibatch contains only
+one sentence (token).
+
+12The plot is generated with truncation size KTopic = 2k,
+mini-batch size B = 1, truncation pruning interval u = 50,
+decay inertia τ = 256, and decay rate κ = 0.8. All PY hyper-
+parameters are optimized.
+
+473
+
+
+
+new words added at corresponding minibatch
+
+minibatch-3k
+...
+
+2-union
+3-wage
+...
+
+16-minist
+...
+
+18-year
+...
+
+21-bill
+...
+
+32-increas
+33-tax
+...
+
+48-reform
+...
+
+58-lower
+...
+
+82-percent
+...
+
+95-committe
+...
+
+180-pension
+...
+
+minibatch-8k
+1-year
+2-minist
+3-tax
+
+4-pension
+5-reform
+
+...
+10-committe
+
+...
+12-percent
+
+...
+16-lower
+
+...
+19-increas
+
+...
+25-bill
+...
+
+42-union
+43-wage
+
+...
+181-schroeder
+
+...
+436-deduct
+
+...
+
+minibatch-19k
+1-deduct
+2-tax
+3-year
+
+4-pension
+5-reform
+
+...
+7-minist
+
+...
+9-increas
+
+...
+11-committe
+
+...
+13-schroeder
+14-percent
+
+...
+17-lower
+
+...
+23-bill
+...
+
+49-union
+...
+
+92-wage
+...
+
+minibatch-20k
+1-tax
+2-year
+3-reform
+4-pension
+5-minist
+6-increas
+
+...
+9-schroeder
+
+...
+11-committe
+
+...
+19-percent
+
+...
+31-lower
+
+...
+49-bill
+...
+
+51-union
+...
+
+53-deduct
+...
+
+127-wage
+...
+
+minibatch-10k
+1-tax
+
+2-reform
+3-pension
+4-year
+5-minist
+6-increas
+
+...
+8-lower
+...
+
+13-percent
+...
+
+30-committe
+...
+
+33-bill
+...
+
+106-wage
+...
+
+115-union
+...
+
+120-schroeder
+...
+
+530-deduct
+...
+
+minibatch-1k
+1-reform
+
+...
+5-increas
+
+...
+10-union
+
+...
+13-wage
+
+...
+47-percent
+
+...
+53-year
+
+...
+67-tax
+...
+
+70-minist
+...
+
+108-bill
+...
+
+164-lower
+
+pension
+committe
+
+...
+
+schroeder
+affair
+...
+
+minibatch-4k
+...
+
+4-percent
+5-tax
+
+6-reform
+...
+
+12-year
+13-increas
+
+...
+16-wage
+
+...
+19-minist
+
+...
+22-union
+
+...
+49-lower
+
+...
+82-schroeder
+
+...
+90-bill
+...
+
+106-committe
+...
+
+229-pension
+...
+
+deduct
+shop
+...
+
+recess
+...
+
+primarili
+...
+
+minibatch-15k
+1-tax
+
+2-schroeder
+3-year
+4-reform
+5-minist
+6-pension
+
+...
+8-increas
+
+...
+13-lower
+
+...
+16-percent
+17-committe
+
+...
+20-union
+
+...
+235-bill
+...
+
+272-wage
+...
+
+306-deduct
+...
+
+recipi
+...
+
+minibatch-17k
+1-tax
+2-year
+3-reform
+
+4-schroeder
+5-increas
+6-minist
+
+...
+9-pension
+
+...
+11-percent
+
+...
+15-lower
+
+...
+19-bill
+...
+
+28-committe
+...
+
+51-union
+...
+
+78-wage
+...
+
+382-deduct
+...
+
+alloc
+...
+
+club
+...
+
+Figure 4: The evolution of one topic—concerning tax policy—out of five topics learned using online adaptor grammar inference
+on the de-news dataset. Each minibatch represents a word processed by this online algorithm; time progresses from left to right. As
+the algorithm encounters new words (bottom) they can make their way into the topic. The numbers next to words represent their
+overall rank in the topic. For example, the word “pension” first appeared in mini-batch 100, was ranked at 229 after minibatch 400
+and became one of the top 10 words in this topic after 2000 minibatches (tokens).12
+
+Quantitatively, we evaluate three different infer-
+ence schemes and the INFVOC approach13 on a col-
+lection of English daily news snippets (de-news).14
+
+We used the InfVoc LDA grammar (Table 1). For
+all approaches, we train the model with five topics,
+and evaluate topic coherence (Newman et al., 2009),
+which correlates well with human ratings of topic
+interpretability (Chang et al., 2009). We collect the
+co-occurrence counts from Wikipedia and compute
+the average pairwise pointwise mutual information
+(PMI) score between the top 10 ranked words of ev-
+ery topic. Figure 3 illustrates the PMI score, and our
+approach yields comparable or better results against
+all other approaches under most conditions.
+
+Qualitatively, Figure 4 shows an example of a
+topic evolution using online adaptor grammar for
+the de-news dataset. The topic is about “tax pol-
+icy”. The topic improves over time; words like
+“year”, “tax” and “minist(er)” become more promi-
+nent. More importantly, the online approach discov-
+ers new words and incorporates them into the topic.
+
+13Available at http://www.umiacs.umd.edu/˜zhaike/.
+14The de-news dataset is randomly selected subset of 2.2k
+
+English documents from http://homepages.inf.ed.ac.
+uk/pkoehn/publications/de-news/. It contains 6.5k
+unique types and over 200k word tokens. Tokenization and
+stemming provided by NLTK (Bird et al., 2009).
+
+For example, “schroeder” (former German chancel-
+lor) first appeared in minibatch 300, was success-
+fully picked up by our model, and became one of
+the top ranked words in the topic.
+
+6 Conclusion
+
+Probabilistic modeling is a useful tool in understand-
+ing unstructured data or data where the structure is
+latent, like language. However, developing these
+models is often a difficult process, requiring signifi-
+cant machine learning expertise.
+
+Adaptor grammars offer a flexible and quick way
+to prototype and test new models. Despite ex-
+pensive inference, they have been used for topic
+modeling (Johnson, 2010), discovering perspec-
+tive (Hardisty et al., 2010), segmentation (Johnson
+and Goldwater, 2009), and grammar induction (Co-
+hen et al., 2010).
+
+We have presented a new online, hybrid inference
+scheme for adaptor grammars. Unlike previous ap-
+proaches, it does not require extensive preprocess-
+ing. It is also able to faster discover useful structure
+in text; with further development, these algorithms
+could further speed the development and application
+of new nonparametric models to large datasets.
+
+474
+
+
+
+Acknowledgments
+
+We would like to thank the anonymous reviewers,
+Kristina Toutanova, Mark Johnson, and Ke Wu for
+insightful discussions. This work was supported
+by NSF Grant CCF-1018625. Boyd-Graber is also
+supported by NSF Grant IIS-1320538. Any opin-
+ions, findings, conclusions, or recommendations ex-
+pressed here are those of the authors and do not nec-
+essarily reflect the view of the sponsor.
+
+References
+Nan Bernstein-Ratner. 1987. The phonology of parent
+
+child speech. Children’s language, 6:159–174.
+Steven Bird, Ewan Klein, and Edward Loper. 2009. Nat-
+
+ural Language Processing with Python. O’Reilly Me-
+dia.
+
+Christopher M. Bishop. 2006. Pattern Recognition and
+Machine Learning. Springer-Verlag New York, Inc.,
+Secaucus, NJ, USA.
+
+David M. Blei and Michael I. Jordan. 2005. Variational
+inference for Dirichlet process mixtures. Journal of
+Bayesian Analysis, 1(1):121–144.
+
+Benjamin Börschinger and Mark Johnson. 2012. Using
+rejuvenation to improve particle filtering for bayesian
+word segmentation. In Proceedings of the Association
+for Computational Linguistics.
+
+Léon Bottou. 1998. Online algorithms and stochastic
+approximations. In Online Learning and Neural Net-
+works. Cambridge University Press, Cambridge, UK.
+
+Jordan Boyd-Graber and David M. Blei. 2007. PUTOP:
+Turning predominant senses into a topic model for
+WSD. In 4th International Workshop on Semantic
+Evaluations.
+
+Michael R. Brent and Timothy A. Cartwright. 1996. Dis-
+tributional regularity and phonotactic constraints are
+useful for segmentation. volume 61, pages 93–125.
+
+Jonathan Chang, Jordan Boyd-Graber, and David M.
+Blei. 2009. Connections between the lines: Augment-
+ing social networks with text. In Knowledge Discovery
+and Data Mining.
+
+Jean-Cédric Chappelier and Martin Rajman. 2000.
+Monte-Carlo sampling for NP-hard maximization
+problems in the framework of weighted parsing. In
+Natural Language Processing, pages 106–117.
+
+Shay B. Cohen, David M. Blei, and Noah A. Smith.
+2010. Variational inference for adaptor grammars. In
+Conference of the North American Chapter of the As-
+sociation for Computational Linguistics.
+
+Shay B. Cohen. 2011. Computational Learning of Prob-
+abilistic Grammars in the Unsupervised Setting. Ph.D.
+thesis, Carnegie Mellon University.
+
+Thomas Emerson. 2005. The second international chi-
+nese word segmentation bakeoff. In Fourth SIGHAN
+Workshop on Chinese Language, Jeju, Korea.
+
+Thomas S. Ferguson. 1973. A Bayesian analysis of
+some nonparametric problems. The Annals of Statis-
+tics, 1(2).
+
+Sharon Goldwater, Thomas L. Griffiths, and Mark John-
+son. 2011. Producing power-law distributions and
+damping word frequencies with two-stage language
+models. Journal of Machine Learning Research,
+pages 2335–2382, July.
+
+Eric Hardisty, Jordan Boyd-Graber, and Philip Resnik.
+2010. Modeling perspective using adaptor grammars.
+In Proceedings of Emperical Methods in Natural Lan-
+guage Processing.
+
+Matthew Hoffman, David M. Blei, and Francis Bach.
+2010. Online learning for latent Dirichlet allocation.
+In Proceedings of Advances in Neural Information
+Processing Systems.
+
+Matthew Hoffman, David M. Blei, Chong Wang, and
+John Paisley. 2013. Stochastic variational inference.
+In Journal of Machine Learning Research.
+
+Mark Johnson and Sharon Goldwater. 2009. Improving
+nonparameteric Bayesian inference: experiments on
+unsupervised word segmentation with adaptor gram-
+mars. In Conference of the North American Chapter
+of the Association for Computational Linguistics.
+
+Mark Johnson, Thomas L. Griffiths, and Sharon Goldwa-
+ter. 2006. Adaptor grammars: A framework for speci-
+fying compositional nonparametric Bayesian models.
+In Proceedings of Advances in Neural Information
+Processing Systems.
+
+Mark Johnson, Thomas L. Griffiths, and Sharon Goldwa-
+ter. 2007. Bayesian inference for PCFGs via Markov
+chain Monte Carlo. In Conference of the North Ameri-
+can Chapter of the Association for Computational Lin-
+guistics.
+
+Mark Johnson. 2010. PCFGs, topic models, adaptor
+grammars and learning topical collocations and the
+structure of proper names. In Proceedings of the As-
+sociation for Computational Linguistics.
+
+Kenichi Kurihara, Max Welling, and Yee Whye Teh.
+2007. Collapsed variational Dirichlet process mixture
+models. In International Joint Conference on Artifi-
+cial Intelligence.
+
+Christopher D. Manning and Hinrich Schütze. 1999.
+Foundations of Statistical Natural Language Process-
+ing. The MIT Press, Cambridge, MA.
+
+David Mimno, Matthew Hoffman, and David Blei. 2012.
+Sparse stochastic inference for latent Dirichlet alloca-
+tion. In Proceedings of the International Conference
+of Machine Learning.
+
+475
+
+
+
+Daichi Mochihashi, Takeshi Yamada, and Naonori Ueda.
+2009. Bayesian unsupervised word segmentation with
+nested pitman-yor language modeling. In Proceedings
+of the Association for Computational Linguistics.
+
+Peter Müller and Fernando A. Quintana. 2004. Non-
+parametric Bayesian data analysis. Statistical Science,
+19(1).
+
+Ramesh Nallapati, William Cohen, and John Lafferty.
+2007. Parallelized variational EM for latent Dirichlet
+allocation: An experimental evaluation of speed and
+scalability. In ICDMW.
+
+David Newman, Sarvnaz Karimi, and Lawrence Cave-
+don. 2009. External evaluation of topic models. In
+Proceedings of the Aurstralasian Document Comput-
+ing Symposium.
+
+J. Pitman and M. Yor. 1997. The two-parameter Poisson-
+Dirichlet distribution derived from a stable subordina-
+tor. Annals of Probability, 25(2):855–900.
+
+Hiroyuki Shindo, Yusuke Miyao, Akinori Fujino, and
+Masaaki Nagata. 2012. Bayesian symbol-refined tree
+substitution grammars for syntactic parsing. In Pro-
+ceedings of the Association for Computational Lin-
+guistics.
+
+Erik B. Sudderth and Michael I. Jordan. 2008.
+Shared segmentation of natural scenes using depen-
+dent Pitman-Yor processes. In Proceedings of Ad-
+vances in Neural Information Processing Systems.
+
+Yee Whye Teh, Michael I. Jordan, Matthew J. Beal, and
+David M. Blei. 2006. Hierarchical Dirichlet pro-
+cesses. Journal of the American Statistical Associa-
+tion, 101(476):1566–1581.
+
+Kristina Toutanova and Mark Johnson. 2008. A
+Bayesian LDA-based model for semi-supervised part-
+of-speech tagging. In Proceedings of Advances in
+Neural Information Processing Systems, pages 1521–
+1528.
+
+Martin J. Wainwright and Michael I. Jordan. 2008.
+Graphical models, exponential families, and varia-
+tional inference. Foundations and Trends in Machine
+Learning, 1(1–2):1–305.
+
+Chong Wang and David M. Blei. 2012. Truncation-free
+online variational inference for Bayesian nonparamet-
+ric models. In Proceedings of Advances in Neural In-
+formation Processing Systems.
+
+Naiwen Xue, Fei Xia, Fu-dong Chiou, and Marta Palmer.
+2005. The Penn Chinese TreeBank: Phrase structure
+annotation of a large corpus. Natural Language Engi-
+neering.
+
+Limin Yao, David Mimno, and Andrew McCallum.
+2009. Efficient methods for topic model inference on
+streaming document collections. In Knowledge Dis-
+covery and Data Mining.
+
+Ke Zhai and Jordan Boyd-Graber. 2013. Online latent
+Dirichlet allocation with infinite vocabulary. In Pro-
+ceedings of the International Conference of Machine
+Learning.
+
+Ke Zhai and Jason D. Williams. 2014. Discovering latent
+structure in task-oriented dialogues. In Proceedings of
+the Association for Computational Linguistics.
+
+Ke Zhai, Jordan Boyd-Graber, Nima Asadi, and Mo-
+hamad Alkhouja. 2012. Mr. LDA: A flexible large
+scale topic modeling package using variational infer-
+ence in mapreduce. In Proceedings of World Wide Web
+Conference.
+
+476
+
+

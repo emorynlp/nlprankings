@@ -1,0 +1,1461 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Backpropagating through Structured Argmax using a SPIGOT
+
+
+Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Long Papers), pages 1863–1873
+Melbourne, Australia, July 15 - 20, 2018. c©2018 Association for Computational Linguistics
+
+1863
+
+Backpropagating through Structured Argmax using a SPIGOT
+
+Hao Peng♦ Sam Thomson♣ Noah A. Smith♦
+♦ Paul G. Allen School of Computer Science & Engineering, University of Washington
+
+♣ School of Computer Science, Carnegie Mellon University
+{hapeng,nasmith}@cs.washington.edu, sthomson@cs.cmu.edu
+
+Abstract
+
+We introduce the structured projec-
+tion of intermediate gradients optimiza-
+tion technique (SPIGOT), a new method
+for backpropagating through neural net-
+works that include hard-decision struc-
+tured predictions (e.g., parsing) in in-
+termediate layers. SPIGOT requires no
+marginal inference, unlike structured at-
+tention networks (Kim et al., 2017) and
+some reinforcement learning-inspired so-
+lutions (Yogatama et al., 2017). Like so-
+called straight-through estimators (Hinton,
+2012), SPIGOT defines gradient-like quan-
+tities associated with intermediate nondif-
+ferentiable operations, allowing backprop-
+agation before and after them; SPIGOT’s
+proxy aims to ensure that, after a param-
+eter update, the intermediate structure will
+remain well-formed.
+
+We experiment on two structured NLP
+pipelines: syntactic-then-semantic depen-
+dency parsing, and semantic parsing fol-
+lowed by sentiment classification. We
+show that training with SPIGOT leads to
+a larger improvement on the downstream
+task than a modularly-trained pipeline, the
+straight-through estimator, and structured
+attention, reaching a new state of the art
+on semantic dependency parsing.
+
+1 Introduction
+
+Learning methods for natural language process-
+ing are increasingly dominated by end-to-end dif-
+ferentiable functions that can be trained using
+gradient-based optimization. Yet traditional NLP
+often assumed modular stages of processing that
+formed a pipeline; e.g., text was tokenized, then
+tagged with parts of speech, then parsed into a
+
+phrase-structure or dependency tree, then semanti-
+cally analyzed. Pipelines, which make “hard” (i.e.,
+discrete) decisions at each stage, appear to be in-
+compatible with neural learning, leading many re-
+searchers to abandon earlier-stage processing.
+
+Inspired by findings that continue to see benefit
+from various kinds of linguistic or domain-specific
+preprocessing (He et al., 2017; Oepen et al., 2017;
+Ji and Smith, 2017), we argue that pipelines can
+be treated as layers in neural architectures for NLP
+tasks. Several solutions are readily available:
+• Reinforcement learning (most notably the
+
+REINFORCE algorithm; Williams, 1992), and
+structured attention (SA; Kim et al., 2017).
+These methods replace argmax with a sam-
+pling or marginalization operation. We
+note two potential downsides of these ap-
+proaches: (i) not all argmax-able operations
+have corresponding sampling or marginaliza-
+tion methods that are efficient, and (ii) in-
+spection of intermediate outputs, which could
+benefit error analysis and system improve-
+ment, is more straightforward for hard deci-
+sions than for posteriors.
+• The straight-through estimator (STE; Hin-
+
+ton, 2012) treats discrete decisions as if
+they were differentiable and simply passes
+through gradients. While fast and surpris-
+ingly effective, it ignores constraints on the
+argmax problem, such as the requirement
+that every word has exactly one syntactic par-
+ent. We will find, experimentally, that the
+quality of intermediate representations de-
+grades substantially under STE.
+
+This paper introduces a new method, the struc-
+tured projection of intermediate gradients opti-
+mization technique (SPIGOT; §2), which defines a
+proxy for the gradient of a loss function with re-
+spect to the input to argmax. Unlike STE’s gradi-
+ent proxy, SPIGOT aims to respect the constraints
+
+
+
+1864
+
+in the argmax problem. SPIGOT can be applied
+with any intermediate layer that is expressible as
+a constrained maximization problem, and whose
+feasible set can be projected onto. We show em-
+pirically that SPIGOT works even when the max-
+imization and the projection are done approxi-
+mately.
+
+We offer two concrete architectures that employ
+structured argmax as an intermediate layer: se-
+mantic parsing with syntactic parsing in the mid-
+dle, and sentiment analysis with semantic parsing
+in the middle (§3). These architectures are trained
+using a joint objective, with one part using data for
+the intermediate task, and the other using data for
+the end task. The datasets are not assumed to over-
+lap at all, but the parameters for the intermediate
+task are affected by both parts of the training data.
+
+Our experiments (§4) show that our architecture
+improves over a state-of-the-art semantic depen-
+dency parser, and that SPIGOT offers stronger per-
+formance than a pipeline, SA, and STE. On sen-
+timent classification, we show that semantic pars-
+ing offers improvement over a BiLSTM, more so
+with SPIGOT than with alternatives. Our analy-
+sis considers how the behavior of the intermedi-
+ate parser is affected by the end task (§5). Our
+code is open-source and available at https://
+github.com/Noahs-ARK/SPIGOT.
+
+2 Method
+
+Our aim is to allow a (structured) argmax layer
+in a neural network to be treated almost like any
+other differentiable function. This would allow us
+to place, for example, a syntactic parser in the mid-
+dle of a neural network, so that the forward calcu-
+lation simply calls the parser and passes the parse
+tree to the next layer, which might derive syntactic
+features for the next stage of processing.
+
+The challenge is in the backward computation,
+which is key to learning with standard gradient-
+based methods. When its output is discrete as we
+assume here, argmax is a piecewise constant func-
+tion. At every point, its gradient is either zero or
+undefined. So instead of using the true gradient,
+we will introduce a proxy for the gradient of the
+loss function with respect to the inputs to argmax,
+allowing backpropagation to proceed through the
+argmax layer. Our proxy is designed as an im-
+provement to earlier methods (discussed below)
+that completely ignore constraints on the argmax
+operation. It accomplishes this through a projec-
+
+tion of the gradients.
+We first lay out notation, and then briefly review
+
+max-decoding and its relaxation (§2.1). We define
+SPIGOT in §2.2, and show how to use it to back-
+propagate through NLP pipelines in §2.3.
+
+Notation. Our discussion centers around two
+tasks: a structured intermediate task followed by
+an end task, where the latter considers the out-
+puts of the former (e.g., syntactic-then-semantic
+parsing). Inputs are denoted as x, and end task
+outputs as y. We use z to denote intermedi-
+ate structures derived from x. We will often re-
+fer to the intermediate task as “decoding”, in the
+structured prediction sense. It seeks an output
+ẑ = argmaxz∈Z S from the feasible set Z , max-
+imizing a (learned, parameterized) scoring func-
+tion S for the structured intermediate task. L de-
+notes the loss of the end task, which may or may
+not also involve structured predictions. We use
+∆k−1 = {p ∈ Rk | 1>p = 1,p ≥ 0} to
+denote the (k − 1)-dimensional simplex. We de-
+note the domain of binary variables as B = {0, 1},
+and the unit interval as U = [0, 1]. By projection
+of a vector v onto a set A, we mean the closest
+point in A to v, measured by Euclidean distance:
+projA(v) = argminv′∈A ‖v′ − v‖2.
+
+2.1 Relaxed Decoding
+
+Decoding problems are typically decomposed into
+a collection of “parts”, such as arcs in a depen-
+dency tree or graph. In such a setup, each element
+of z, zi, corresponds to one possible part, and zi
+takes a boolean value to indicate whether the part
+is included in the output structure. The scoring
+function S is assumed to decompose into a vector
+s(x) of part-local, input-specific scores:
+
+ẑ = argmax
+z∈Z
+
+S(x, z) = argmax
+z∈Z
+
+z>s(x) (1)
+
+In the following, we drop s’s dependence on x for
+clarity.
+
+In many NLP problems, the output space Z can
+be specified by linear constraints (Roth and Yih,
+2004):
+
+A
+
+[
+z
+ψ
+
+]
+≤ b, (2)
+
+where ψ are auxiliary variables (also scoped by
+argmax), together with integer constraints (typi-
+cally, each zi ∈ B).
+
+https://github.com/Noahs-ARK/SPIGOT
+https://github.com/Noahs-ARK/SPIGOT
+
+
+1865
+
+ẑ
+
+z̃
+
+ẑ� ⌘rẑL
+
+�rsL
+ẑ
+
+ẑ� ⌘rẑL
+
+�rsL
+
+Figure 1: The original feasible set Z (red ver-
+tices), is relaxed into a convex polytope P (the
+area encompassed by blue edges). Left: making
+a gradient update to ẑ makes it step outside the
+polytope, and it is projected back to P , resulting
+in the projected point z̃. ∇sL is then along the
+edge. Right: updating ẑ keeps it within P , and
+thus∇sL = η∇ẑL.
+
+The problem in Equation 1 can be NP-complete
+in general, so the {0, 1} constraints are often re-
+laxed to [0, 1] to make decoding tractable (Mar-
+tins et al., 2009). Then the discrete combinatorial
+problem over Z is transformed into the optimiza-
+tion of a linear objective over a convex polytope
+P={p ∈ Rd |Ap≤b}, which is solvable in poly-
+nomial time (Bertsimas and Tsitsiklis, 1997). This
+is not necessary in some cases, where the argmax
+can be solved exactly with dynamic programming.
+
+2.2 From STE to SPIGOT
+We now view structured argmax as an activation
+function that takes a vector of input-specific part-
+scores s and outputs a solution ẑ. For backpropa-
+gation, to calculate gradients for parameters of s,
+the chain rule defines:
+
+∇sL = J ∇ẑL, (3)
+where the Jacobian matrix J = ∂ẑ∂s contains the
+derivative of each element of ẑ with respect to
+each element of s. Unfortunately, argmax is a
+piecewise constant function, so its Jacobian is ei-
+ther zero (almost everywhere) or undefined (in the
+case of ties).
+
+One solution, taken in structured attention, is to
+replace the argmax with marginal inference and
+a softmax function, so that ẑ encodes probability
+distributions over parts (Kim et al., 2017; Liu and
+Lapata, 2018). As discussed in §1, there are two
+reasons to avoid this modification. Softmax can
+only be used when marginal inference is feasible,
+by sum-product algorithms for example (Eisner,
+2016; Friesen and Domingos, 2016); in general
+marginal inference can be #P-complete. Further,
+a soft intermediate layer will be less amenable to
+inspection by anyone wishing to understand and
+improve the model.
+
+In another line of work, argmax is aug-
+mented with a strongly-convex penalty on the so-
+lutions (Martins and Astudillo, 2016; Amos and
+Kolter, 2017; Niculae and Blondel, 2017; Niculae
+et al., 2018; Mensch and Blondel, 2018). How-
+ever, their approaches require solving a relaxation
+even when exact decoding is tractable. Also, the
+penalty will bias the solutions found by the de-
+coder, which may be an undesirable conflation of
+computational and modeling concerns.
+
+A simpler solution is the STE method (Hin-
+ton, 2012), which replaces the Jacobian matrix in
+Equation 3 by the identity matrix. This method
+has been demonstrated to work well when used
+to “backpropagate” through hard threshold func-
+tions (Bengio et al., 2013; Friesen and Domin-
+gos, 2018) and categorical random variables (Jang
+et al., 2016; Choi et al., 2017).
+
+Consider for a moment what we would do if ẑ
+were a vector of parameters, rather than intermedi-
+ate predictions. In this case, we are seeking points
+in Z that minimize L; denote that set of minimiz-
+ers by Z∗. Given ∇ẑL and step size η, we would
+update ẑ to be ẑ − η∇ẑL. This update, however,
+might not return a value in the feasible set Z , or
+even (if we are using a linear relaxation) the re-
+laxed set P .
+
+SPIGOT therefore introduces a projection step
+that aims to keep the “updated” ẑ in the feasible
+set. Of course, we do not directly update ẑ; we
+continue backpropagation through s and onward
+to the parameters. But the projection step nonethe-
+less alters the parameter updates in the way that
+our proxy for “∇sL” is defined.
+
+The procedure is defined as follows:
+
+p̂ = ẑ− η∇ẑL, (4a)
+z̃ = projP(p̂), (4b)
+
+∇sL , ẑ− z̃. (4c)
+
+First, the method makes an “update” to ẑ as if it
+contained parameters (Equation 4a), letting p̂ de-
+note the new value. Next, p̂ is projected back onto
+the (relaxed) feasible set (Equation 4b), yielding a
+feasible new value z̃. Finally, the gradients with
+respect to s are computed by Equation 4c.
+
+Due to the convexity of P , the projected point z̃
+will always be unique, and is guaranteed to be no
+farther than p̂ from any point in Z∗ (Luenberger
+and Ye, 2015).1 Compared to STE, SPIGOT in-
+
+1Note that this property follows from P’s convexity, and
+we do not assume the convexity of L.
+
+
+
+1866
+
+volves a projection and limits ∇sL to a smaller
+space to satisfy constraints. See Figure 1 for an
+illustration.
+
+When efficient exact solutions (such as dynamic
+programming) are available, they can be used. Yet,
+we note that SPIGOT does not assume the argmax
+operation is solved exactly.
+
+2.3 Backpropagation through Pipelines
+Using SPIGOT, we now devise an algorithm to
+“backpropagate” through NLP pipelines. In these
+pipelines, an intermediate task’s output is fed into
+an end task for use as features. The parameters of
+the complete model are divided into two parts: de-
+note the parameters of the intermediate task model
+byφ (used to calculate s), and those in the end task
+model as θ.2 As introduced earlier, the end-task
+loss function to be minimized is L, which depends
+on both φ and θ.
+
+Algorithm 1 describes the forward and back-
+ward computations. It takes an end task training
+pair 〈x,y〉, along with the intermediate task’s fea-
+sible set Z , which is determined by x. It first runs
+the intermediate model and decodes to get inter-
+mediate structure ẑ, just as in a standard pipeline.
+Then forward propagation is continued into the
+end-task model to compute loss L, using ẑ to de-
+fine input features. Backpropagation in the end-
+task model computes ∇θL and ∇ẑL, and ∇sL is
+then constructed using Equations 4. Backpropa-
+gation then continues into the intermediate model,
+computing∇φL.
+
+Due to its flexibility, SPIGOT is applicable to
+many training scenarios. When there is no 〈x, z〉
+training data for the intermediate task, SPIGOT can
+be used to induce latent structures for the end-task
+(Yogatama et al., 2017; Kim et al., 2017; Choi
+et al., 2017, inter alia). When intermediate-task
+training data is available, one can use SPIGOT to
+adopt joint learning by minimizing an interpo-
+lation of L (on end-task data 〈x,y〉) and an
+intermediate-task loss function L̃ (on intermediate
+task data 〈x, z〉). This is the setting in our experi-
+ments; note that we do not assume any overlap in
+the training examples for the two tasks.
+
+3 Solving the Projections
+
+In this section we discuss how to compute approx-
+imate projections for the two intermediate tasks
+
+2Nothing prohibits tying across pre-argmax parameters
+and post-argmax parameters; this separation is notationally
+convenient but not at all necessary.
+
+Algorithm 1 Forward and backward computation
+with SPIGOT.
+1: procedure SPIGOT(x,y,Z)
+2: Construct A, b such that Z = {p ∈ Zd | Ap ≤ b}
+3: P ← {p ∈ Rd | Ap ≤ b} . Relaxation
+4: Forwardprop and compute sφ(x)
+5: ẑ← argmaxz∈Z z>sφ(x) . Intermediate decoding
+6: Forwardprop and compute L given x, y, and ẑ
+7: Backprop and compute∇θL and∇ẑL
+8: z̃← projP(ẑ− η∇ẑL) . Projection
+9: ∇sL← ẑ− z̃
+
+10: Backprop and compute∇φL
+11: end procedure
+
+considered in this work, arc-factored unlabeled de-
+pendency parsing and first-order semantic depen-
+dency parsing.
+
+In early experiments we observe that for both
+tasks, projecting with respect to all constraints
+of their original formulations using a generic
+quadratic program solver was prohibitively slow.
+Therefore, we construct relaxed polytopes by con-
+sidering only a subset of the constraints.3 The
+projection then decomposes into a series of singly
+constrained quadratic programs (QP), each of
+which can be efficiently solved in linear time.
+
+The two approximate projections discussed here
+are used in backpropagation only. In the forward
+pass, we solve the decoding problem using the
+models’ original decoding algorithms.
+
+Arc-factored unlabeled dependency parsing.
+For unlabeled dependency trees, we impose [0, 1]
+constraints and single-headedness constraints.4
+
+Formally, given a length-n input sentence, ex-
+cluding self-loops, an arc-factored parser consid-
+ers d = n(n − 1) candidate arcs. Let i→j denote
+an arc from the ith token to the jth, and σ(i→j)
+denote its index. We construct the relaxed feasible
+set by:
+
+PDEP =
+
+p ∈ Ud
+∣∣∣∣∣∣
+∑
+i 6=j
+
+pσ(i→j) = 1,∀j
+
+ , (5)
+i.e., we consider each token j individually, and
+force single-headedness by constraining the num-
+ber of arcs incoming to j to sum to 1. Algorithm 2
+summarizes the procedure to project onto PDEP.
+
+3A parallel work introduces an active-set algorithm to
+solve the same class of quadratic programs (Niculae et al.,
+2018). It might be an efficient approach to solve the projec-
+tions in Equation 4b, which we leave to future work.
+
+4 It requires O(n2) auxiliary variables and O(n3) addi-
+tional constraints to ensure well-formed tree structures (Mar-
+tins et al., 2013).
+
+
+
+1867
+
+Line 3 forms a singly constrained QP, and can be
+solved in O(n) time (Brucker, 1984).
+
+Algorithm 2 Projection onto the relaxed polytope
+PDEP for dependency tree structures. Let bold
+σ(·→j) denote the index set of arcs incoming to
+j. For a vector v, we use vσ(·→j) to denote vector
+[vk]k∈σ(·→j).
+
+1: procedure DEPPROJ(p̂)
+2: for j = 1, 2, . . . , n do
+3: z̃σ(·→j) ← proj∆n−2
+
+(
+p̂σ(·→j)
+
+)
+4: end for
+5: return z̃
+6: end procedure
+
+First-order semantic dependency parsing. Se-
+mantic dependency parsing uses labeled bilexical
+dependencies to represent sentence-level seman-
+tics (Oepen et al., 2014, 2015, 2016). Each de-
+pendency is represented by a labeled directed arc
+from a head token to a modifier token, where the
+arc label encodes broadly applicable semantic re-
+lations. Figure 2 diagrams a semantic graph from
+the DELPH-IN MRS-derived dependencies (DM),
+together with a syntactic tree.
+
+We use a state-of-the-art semantic dependency
+parser (Peng et al., 2017) that considers three types
+of parts: heads, unlabeled arcs, and labeled arcs.
+Let σ(i `→ j) denote the index of the arc from
+i to j with semantic role `. In addition to [0, 1]
+constraints, we constrain that the predictions for
+labeled arcs sum to the prediction of their associ-
+ated unlabeled arc:
+
+PSDP
+{
+p ∈ Ud
+
+∣∣∣∣∣∑
+`
+
+p
+σ(i
+
+`→j)
+= pσ(i→j), ∀i 6= j
+
+}
+.
+
+(6)
+
+This ensures that exactly one label is predicted if
+and only if its arc is present. The projection onto
+PSDP can be solved similarly to Algorithm 2. We
+drop the determinism constraint imposed by Peng
+et al. (2017) in the backward computation.
+
+4 Experiments
+
+We empirically evaluate our method with two sets
+of experiments: using syntactic tree structures in
+semantic dependency parsing, and using semantic
+dependency graphs in sentiment classification.
+
+4.1 Syntactic-then-Semantic Parsing
+In this experiment we consider an intermedi-
+ate syntactic parsing task, followed by seman-
+
+… became dismayed at
+
+poss arg1
+
+arg2
+
+’sG-2 connections arrested traffickersto drug
+
+arg2
+compound
+
+root
+
+arg2 arg1
+arg2
+
+Figure 2: A development instance annotated with
+both gold DM semantic dependency graph (red
+arcs on the top), and gold syntactic dependency
+tree (blue arcs at the bottom). A pretrained syn-
+tactic parser predicts the same tree as the gold; the
+semantic parser backpropagates into the interme-
+diate syntactic parser, and changes the dashed blue
+arcs into dashed red arcs (§5).
+
+tic dependency parsing as the end task. We first
+briefly review the neural network architectures for
+the two models (§4.1.1), and then introduce the
+datasets (§4.1.2) and baselines (§4.1.3).
+
+4.1.1 Architectures
+
+Syntactic dependency parser. For intermedi-
+ate syntactic dependencies, we use the unlabeled
+arc-factored parser of Kiperwasser and Goldberg
+(2016). It uses bidirectional LSTMs (BiLSTM)
+to encode the input, followed by a multilayer-
+perceptron (MLP) to score each potential depen-
+dency. One notable modification is that we replace
+their use of Chu-Liu/Edmonds’ algorithm (Chu
+and Liu, 1965; Edmonds, 1967) with the Eisner
+algorithm (Eisner, 1996, 2000), since our dataset
+is in English and mostly projective.
+
+Semantic dependency parser. We use the basic
+model of Peng et al. (2017) (denoted as NEUR-
+BOPARSER) as the end model. It is a first-order
+parser, and uses local factors for heads, unlabeled
+arcs, and labeled arcs. NEURBOPARSER does
+not use syntax. It first encodes an input sentence
+with a two-layer BiLSTM, and then computes part
+scores with two-layer tanh-MLPs. Inference is
+conducted with AD3 (Martins et al., 2015). To add
+syntactic features to NEURBOPARSER, we con-
+catenate a token’s contextualized representation
+to that of its syntactic head, predicted by the in-
+termediate parser. Formally, given length-n in-
+put sentence, we first run a BiLSTM. We use the
+concatenation of the two hidden representations
+hj = [
+
+−→
+h j ;
+←−
+h j ] at each position j as the contextu-
+
+alized token representations. We then concatenate
+
+
+
+1868
+
+hj with the representation of its head hHEAD(j) by
+
+h̃j = [hj ;hHEAD(j)] =
+
+hj ;∑
+i 6=j
+
+ẑσ(i→j) hi
+
+ ,
+(7)
+
+where ẑ ∈ Bn(n−1) is a binary encoding of the tree
+structure predicted by by the intermediate parser.
+We then use h̃j anywhere hj would have been
+used in NEURBOPARSER. In backpropagation, we
+compute ∇ẑL with an automatic differentiation
+toolkit (DyNet; Neubig et al., 2017).
+
+We note that this approach can be generalized to
+convolutional neural networks over graphs (Mou
+et al., 2015; Duvenaud et al., 2015; Kipf and
+Welling, 2017, inter alia), recurrent neural net-
+works along paths (Xu et al., 2015; Roth and La-
+pata, 2016, inter alia) or dependency trees (Tai
+et al., 2015). We choose to use concatenations to
+control the model’s complexity, and thus to better
+understand which parts of the model work.
+
+We refer the readers to Kiperwasser and Gold-
+berg (2016) and Peng et al. (2017) for further de-
+tails of the parsing models.
+
+Training procedure. Following previous work,
+we minimize structured hinge loss (Tsochantaridis
+et al., 2004) for both models. We jointly train both
+models from scratch, by randomly sampling an in-
+stance from the union of their training data at each
+step. In order to isolate the effect of backpropaga-
+tion, we do not share any parameters between the
+two models.5 Implementation details are summa-
+rized in the supplementary materials.
+
+4.1.2 Datasets
+• For semantic dependencies, we use the
+
+English dataset from SemEval 2015 Task
+18 (Oepen et al., 2015). Among the three for-
+malisms provided by the shared task, we con-
+sider DELPH-IN MRS-derived dependencies
+(DM) and Prague Semantic Dependencies
+(PSD).6 It includes §00–19 of the WSJ cor-
+pus as training data, §20 and §21 for devel-
+opment and in-domain test data, resulting in
+a 33,961/1,692/1,410 train/dev./test split, and
+
+5 Parameter sharing has proved successful in many related
+tasks (Collobert and Weston, 2008; Søgaard and Goldberg,
+2016; Ammar et al., 2016; Swayamdipta et al., 2016, 2017,
+inter alia), and could be easily combined with our approach.
+
+6We drop the third (PAS) because its structure is highly
+predictable from parts-of-speech, making it less interesting.
+
+DM PSD
+
+Model UF LF UF LF
+
+NEURBOPARSER – 89.4 – 77.6
+FREDA3 – 90.4 – 78.5
+
+PIPELINE 91.8 90.8 88.4 78.1
+SA 91.6 90.6 87.9 78.1
+STE 92.0 91.1 88.9 78.9
+
+SPIGOT 92.4 91.6 88.6 78.9
+
+(a) F1 on in-domain test set.
+
+DM PSD
+
+Model UF LF UF LF
+
+NEURBOPARSER – 84.5 – 75.3
+FREDA3 – 85.3 – 76.4
+
+PIPELINE 87.4 85.8 85.5 75.6
+SA 87.3 85.6 84.9 75.9
+STE 87.7 86.4 85.8 76.6
+
+SPIGOT 87.9 86.7 85.5 77.1
+
+(b) F1 on out-of-domain test set.
+
+Table 1: Semantic dependency parsing perfor-
+mance in both unlabeled (UF ) and labeled (LF )
+F1 scores. Bold font indicates the best perfor-
+mance. Peng et al. (2017) does not report UF .
+
+1,849 out-of-domain test instances from the
+Brown corpus.7
+
+• For syntactic dependencies, we use the Stan-
+ford Dependency (de Marneffe and Manning,
+2008) conversion of the the Penn Treebank
+WSJ portion (Marcus et al., 1993). To avoid
+data leak, we depart from standard split and
+use §20 and §21 as development and test data,
+and the remaining sections as training data.
+The number of training/dev./test instances is
+40,265/2,012/1,671.
+
+4.1.3 Baselines
+We compare to the following baselines:
+• A pipelined system (PIPELINE). The pre-
+
+trained parser achieves 92.9 test unlabeled at-
+tachment score (UAS).8
+
+7The organizers remove, e.g., instances with cyclic
+graphs, and thus only a subset of the WSJ corpus is included.
+See Oepen et al. (2015) for details.
+
+8 Note that this number is not comparable to the parsing
+literature due to the different split. As a sanity check, we
+found in preliminary experiments that the same parser archi-
+
+
+
+1869
+
+• Structured attention networks (SA; Kim et al.,
+2017). We use the inside-outside algo-
+rithm (Baker, 1979) to populate z with arcs’
+marginal probabilities, use log-loss as the ob-
+jective in training the intermediate parser.
+• The straight-through estimator (STE; Hinton,
+
+2012), introduced in §2.2.
+
+4.1.4 Empirical Results
+
+Table 1 compares the semantic dependency pars-
+ing performance of SPIGOT to all five baselines.
+FREDA3 (Peng et al., 2017) is a state-of-the-art
+variant of NEURBOPARSER that is trained using
+multitask learning to jointly predict three different
+semantic dependency graph formalisms. Like the
+basic NEURBOPARSER model that we build from,
+FREDA3 does not use any syntax. Strong DM per-
+formance is achieved in a more recent work by us-
+ing joint learning and an ensemble (Peng et al.,
+2018), which is beyond fair comparisons to the
+models discussed here.
+
+We found that using syntactic information
+improves semantic parsing performance: using
+pipelined syntactic head features brings 0.5–
+1.4% absolute labeled F1 improvement to NEUR-
+BOPARSER. Such improvements are smaller
+compared to previous works, where depen-
+dency path and syntactic relation features are in-
+cluded (Almeida and Martins, 2015; Ribeyre et al.,
+2015; Zhang et al., 2016), indicating the potential
+to get better performance by using more syntactic
+information, which we leave to future work.
+
+Both STE and SPIGOT use hard syntactic fea-
+tures. By allowing backpropation into the inter-
+mediate syntactic parser, they both consistently
+outperform PIPELINE. On the other hand, when
+marginal syntactic tree structures are used, SA
+outperforms PIPELINE only on the out-of-domain
+PSD test set, and improvements under other cases
+are not observed.
+
+Compared to STE, SPIGOT outperforms STE on
+DM by more than 0.3% absolute labeled F1, both
+in-domain and out-of-domain. For PSD, SPIGOT
+achieves similar performance to STE on in-domain
+test set, but has a 0.5% absolute labeled F1 im-
+provement on out-of-domain data, where syntactic
+parsing is less accurate.
+
+tecture achieves 93.5 UAS when trained and evaluated with
+the standard split, close to the results reported by Kiperwasser
+and Goldberg (2016).
+
+4.2 Semantic Dependencies for Sentiment
+Classification
+
+Our second experiment uses semantic dependency
+graphs to improve sentiment classification perfor-
+mance. We are not aware of any efficient algo-
+rithm that solves marginal inference for seman-
+tic dependency graphs under determinism con-
+straints, so we do not include a comparison to SA.
+
+4.2.1 Architectures
+Here we use NEURBOPARSER as the intermediate
+model, as described in §4.1.1, but with no syntac-
+tic enhancements.
+
+Sentiment classifier. We first introduce a base-
+line that does not use any structural information.
+It learns a one-layer BiLSTM to encode the in-
+put sentence, and then feeds the sum of all hidden
+states into a two-layer ReLU-MLP.
+
+To use semantic dependency features, we con-
+catenate a word’s BiLSTM-encoded representa-
+tion to the averaged representation of its heads, to-
+gether with the corresponding semantic roles, sim-
+ilarly to that in Equation 7.9 Then the concatena-
+tion is fed into an affine transformation followed
+by a ReLU activation. The rest of the model is
+kept the same as the BiLSTM baseline.
+
+Training procedure. We use structured hinge
+loss to train the semantic dependency parser, and
+log-loss for the sentiment classifier. Due to the dis-
+crepancy in the training data size of the two tasks
+(33K vs. 7K), we pre-train a semantic dependency
+parser, and then adopt joint training together with
+the classifier. In the joint training stage, we ran-
+domly sample 20% of the semantic dependency
+training instances each epoch. Implementations
+are detailed in the supplementary materials.
+
+4.2.2 Datasets
+For semantic dependencies, we use the DM
+dataset introduced in §4.1.2.
+
+We consider a binary classification task using
+the Stanford Sentiment Treebank (Socher et al.,
+2013). It consists of roughly 10K movie review
+sentences from Rotten Tomatoes. The full dataset
+includes a rating on a scale from 1 to 5 for each
+constituent (including the full sentences), resulting
+in more than 200K instances. Following previous
+work (Iyyer et al., 2015), we only use full-sentence
+
+9In a well-formed semantic dependency graph, a token
+may have multiple heads. Therefore we use average instead
+of the sum in Equation 7.
+
+
+
+1870
+
+Model Accuracy (%)
+
+BILSTM 84.8
+
+PIPELINE 85.7
+STE 85.4
+SPIGOT 86.3
+
+Table 2: Test accuracy of sentiment classification
+on Stanford Sentiment Treebank. Bold font indi-
+cates the best performance.
+
+instances, with neutral instances excluded (3s) and
+the remaining four rating levels converted to bi-
+nary “positive” or “negative” labels. This results
+in a 6,920/872/1,821 train/dev./test split.
+
+4.2.3 Empirical Results
+Table 2 compares our SPIGOT method to three
+baselines. Pipelined semantic dependency predic-
+tions brings 0.9% absolute improvement in clas-
+sification accuracy, and SPIGOT outperforms all
+baselines. In this task STE achieves slightly worse
+performance than a fixed pre-trained PIPELINE.
+
+5 Analysis
+
+We examine here how the intermediate model is
+affected by the end-task training signal. Is the end-
+task signal able to “overrule” intermediate predic-
+tions?
+
+We use the syntactic-then-semantic parsing
+model (§4.1) as a case study. Table 3 compares
+a pipelined system to one jointly trained using
+SPIGOT. We consider the development set in-
+stances where both syntactic and semantic an-
+notations are available, and partition them based
+on whether the two systems’ syntactic predic-
+tions agree (SAME), or not (DIFF). The second
+group includes sentences with much lower syn-
+tactic parsing accuracy (91.3 vs. 97.4 UAS), and
+SPIGOT further reduces this to 89.6. Even though
+these changes hurt syntactic parsing accuracy, they
+lead to a 1.1% absolute gain in labeled F1 for
+semantic parsing. Furthermore, SPIGOT has an
+overall less detrimental effect on the intermediate
+parser than STE: using SPIGOT, intermediate dev.
+parsing UAS drops to 92.5 from the 92.9 pipelined
+performance, while STE reduces it to 91.8.
+
+We then take a detailed look and categorize the
+changes in intermediate trees by their correlations
+with the semantic graphs. Specifically, when a
+modifier m’s head is changed from h to h′ in the
+
+Split # Sent. Model UAS DM
+
+SAME 1011
+PIPELINE 97.4 94.0
+SPIGOT 97.4 94.3
+
+DIFF 681
+PIPELINE 91.3 88.1
+SPIGOT 89.6 89.2
+
+Table 3: Syntactic parsing performance (in unla-
+beled attachment score, UAS) and DM semantic
+parsing performance (in labeled F1) on different
+groups of the development data. Both systems
+predict the same syntactic parses for instances
+from SAME, and they disagree on instances from
+DIFF (§5).
+
+tree, we consider three cases: (a) h′ is a head of
+m in the semantic graph; (b) h′ is a modifier of m
+in the semantic graph; (c) h is the modifier of m
+in the semantic graph. The first two reflect mod-
+ifications to the syntactic parse that rearrange se-
+mantically linked words to be neighbors. Under
+(c), the semantic parser removes a syntactic depen-
+dency that reverses the direction of a semantic de-
+pendency. These cases account for 17.6%, 10.9%,
+and 12.8%, respectively (41.2% combined) of the
+total changes. Making these changes, of course, is
+complicated, since they often require other modi-
+fications to maintain well-formedness of the tree.
+Figure 2 gives an example.
+
+6 Related Work
+
+Joint learning in NLP pipelines. To avoid cas-
+cading errors, much effort has been devoted to
+joint decoding in NLP pipelines (Habash and
+Rambow, 2005; Cohen and Smith, 2007; Gold-
+berg and Tsarfaty, 2008; Lewis et al., 2015; Zhang
+et al., 2015, inter alia). However, joint inference
+can sometimes be prohibitively expensive. Recent
+advances in representation learning facilitate ex-
+ploration in the joint learning of multiple tasks by
+sharing parameters (Collobert and Weston, 2008;
+Blitzer et al., 2006; Finkel and Manning, 2010;
+Zhang and Weiss, 2016; Hashimoto et al., 2017,
+inter alia).
+
+Differentiable optimization. Gould et al.
+(2016) review the generic approaches to differ-
+entiation in bi-level optimization (Bard, 2010;
+Kunisch and Pock, 2013). Amos and Kolter
+(2017) extend their efforts to a class of subdif-
+ferentiable quadratic programs. However, they
+both require that the intermediate objective has
+an invertible Hessian, limiting their application
+
+
+
+1871
+
+in NLP. In another line of work, the steps of a
+gradient-based optimization procedure are un-
+rolled into a single computation graph (Stoyanov
+et al., 2011; Domke, 2012; Goodfellow et al.,
+2013; Brakel et al., 2013). This comes at a
+high computational cost due to the second-order
+derivative computation during backpropagation.
+Moreover, constrained optimization problems
+(like many NLP problems) often require projec-
+tion steps within the procedure, which can be
+difficult to differentiate through (Belanger and
+McCallum, 2016; Belanger et al., 2017).
+
+7 Conclusion
+
+We presented SPIGOT, a novel approach to back-
+propagating through neural network architectures
+that include discrete structured decisions in in-
+termediate layers. SPIGOT devises a proxy for
+the gradients with respect to argmax’s inputs,
+employing a projection that aims to respect the
+constraints in the intermediate task. We empiri-
+cally evaluate our method with two architectures:
+a semantic parser with an intermediate syntactic
+parser, and a sentiment classifier with an inter-
+mediate semantic parser. Experiments show that
+SPIGOT achieves stronger performance than base-
+lines under both settings, and outperforms state-
+of-the-art systems on semantic dependency pars-
+ing. Our implementation is available at https:
+//github.com/Noahs-ARK/SPIGOT.
+
+Acknowledgments
+
+We thank the ARK, Julian Michael, Minjoon Seo,
+Eunsol Choi, and Maxwell Forbes for their helpful
+comments on an earlier version of this work, and
+the anonymous reviewers for their valuable feed-
+back. This work was supported in part by NSF
+grant IIS-1562364.
+
+References
+Mariana S. C. Almeida and André F. T. Martins. 2015.
+
+Lisbon: Evaluating TurboSemanticParser on multi-
+ple languages and out-of-domain data. In Proc. of
+SemEval.
+
+Waleed Ammar, George Mulcaire, Miguel Ballesteros,
+Chris Dyer, and Noah A. Smith. 2016. Many lan-
+guages, one parser. TACL 4:431–444.
+
+Brandon Amos and J. Zico Kolter. 2017. OptNet:
+Differentiable optimization as a layer in neural net-
+works. In Proc. of ICML.
+
+J. K. Baker. 1979. Trainable grammars for speech
+recognition. In Speech Communication Papers for
+the 97th Meeting of the Acoustical Society of Amer-
+ica.
+
+Jonathan F. Bard. 2010. Practical Bilevel Optimiza-
+tion: Algorithms and Applications. Springer.
+
+David Belanger and Andrew McCallum. 2016. Struc-
+tured prediction energy networks. In Proc. of ICML.
+
+David Belanger, Bishan Yang, and Andrew McCallum.
+2017. End-to-end learning for structured prediction
+energy networks. In Proc. of ICML.
+
+Yoshua Bengio, Nicholas Lonard, and Aaron
+Courville. 2013. Estimating or propagating
+gradients through stochastic neurons for conditional
+computation. arXiv:1308.3432.
+
+Dimitris Bertsimas and John Tsitsiklis. 1997. Introduc-
+tion to Linear Optimization. Athena Scientific.
+
+John Blitzer, Ryan McDonald, and Fernando Pereira.
+2006. Domain adaptation with structural correspon-
+dence learning. In Proc. of EMNLP.
+
+Philémon Brakel, Dirk Stroobandt, and Benjamin
+Schrauwen. 2013. Training energy-based models
+for time-series imputation. Journal of Machine
+Learning Research 14:2771–2797.
+
+Peter Brucker. 1984. An O(n) algorithm for quadratic
+knapsack problems. Operations Research Letters
+3(3):163 – 166.
+
+Jihun Choi, Kang Min Yoo, and Sang-goo Lee. 2017.
+Unsupervised learning of task-specific tree struc-
+tures with tree-LSTMs. arXiv:1707.02786.
+
+Yoeng-Jin Chu and Tseng-Hong Liu. 1965. On the
+shortest arborescence of a directed graph. Science
+Sinica 14:1396–1400.
+
+Shay B. Cohen and Noah A. Smith. 2007. Joint mor-
+phological and syntactic disambiguation. In Proc. of
+EMNLP.
+
+Ronan Collobert and Jason Weston. 2008. A unified
+architecture for natural language processing: Deep
+neural networks with multitask learning. In Proc. of
+ICML.
+
+Marie-Catherine de Marneffe and Christopher D. Man-
+ning. 2008. Stanford typed dependencies manual.
+Technical report, Stanford University.
+
+Justin Domke. 2012. Generic methods for
+optimization-based modeling. In Proc. of AIS-
+TATS.
+
+David K. Duvenaud, Dougal Maclaurin, Jorge Ipar-
+raguirre, Rafael Bombarell, Timothy Hirzel, Alan
+Aspuru-Guzik, and Ryan P. Adams. 2015. Convo-
+lutional networks on graphs for learning molecular
+fingerprints. In Proc. of NIPS.
+
+https://github.com/Noahs-ARK/SPIGOT
+https://github.com/Noahs-ARK/SPIGOT
+
+
+1872
+
+Jack Edmonds. 1967. Optimum branchings. Jour-
+nal of Research of the National Bureau of Standards
+71B:233–240.
+
+Jason Eisner. 2000. Bilexical grammars and their
+cubic-time parsing algorithms. In Advances in Prob-
+abilistic and Other Parsing Technologies, Springer
+Netherlands, pages 29–61.
+
+Jason Eisner. 2016. Inside-outside and forward-
+backward algorithms are just backprop. In Proceed-
+ings of the EMNLP Workshop on Structured Predic-
+tion for NLP.
+
+Jason M. Eisner. 1996. Three new probabilistic models
+for dependency parsing: An exploration. In Proc. of
+COLING.
+
+Jenny Rose Finkel and Christopher D. Manning. 2010.
+Hierarchical joint learning: Improving joint parsing
+and named entity recognition with non-jointly la-
+beled data. In Proc. of ACL.
+
+Abram L. Friesen and Pedro M. Domingos. 2016. The
+sum-product theorem: A foundation for learning
+tractable models. In Proc. of ICML.
+
+Abram L. Friesen and Pedro M. Domingos. 2018.
+Deep learning as a mixed convex-combinatorial op-
+timization problem. In Proc. of ICLR.
+
+Yoav Goldberg and Reut Tsarfaty. 2008. A single gen-
+erative model for joint morphological segmentation
+and syntactic parsing. In Proc. of ACL.
+
+Ian Goodfellow, Mehdi Mirza, Aaron Courville, and
+Yoshua Bengio. 2013. Multi-prediction deep Boltz-
+mann machines. In Proc. of NIPS.
+
+Stephen Gould, Basura Fernando, Anoop Cherian, Pe-
+ter Anderson, Rodrigo Santa Cruz, and Edison Guo.
+2016. On differentiating parameterized argmin and
+argmax problems with application to bi-level opti-
+mization. arXiv:1607.05447.
+
+Nizar Habash and Owen Rambow. 2005. Arabic tok-
+enization, part-of-speech tagging and morphological
+disambiguation in one fell swoop. In Proc. ACL.
+
+Kazuma Hashimoto, Caiming Xiong, Yoshimasa Tsu-
+ruoka, and Richard Socher. 2017. A joint many-task
+model: Growing a neural network for multiple NLP
+tasks. In Proc. of EMNLP.
+
+Luheng He, Kenton Lee, Mike Lewis, and Luke Zettle-
+moyer. 2017. Deep semantic role labeling: What
+works and whats next. In Proc. of ACL.
+
+Geoffrey Hinton. 2012. Neural networks for machine
+learning. Coursera video lectures.
+
+Mohit Iyyer, Varun Manjunatha, Jordan Boyd-Graber,
+and Hal Daumé III. 2015. Deep unordered compo-
+sition rivals syntactic methods for text classification.
+In Proc. of ACL.
+
+Eric Jang, Shixiang Gu, and Ben Poole. 2016. Cat-
+egorical reparameterization with Gumbel-Softmax.
+arXiv:1611.01144.
+
+Yangfeng Ji and Noah A. Smith. 2017. Neural dis-
+course structure for text categorization. In Proc. of
+ACL.
+
+Yoon Kim, Carl Denton, Luong Hoang, and Alexan-
+der M. Rush. 2017. Structured attention networks.
+In Proc. of ICLR.
+
+Eliyahu Kiperwasser and Yoav Goldberg. 2016. Sim-
+ple and accurate dependency parsing using bidirec-
+tional LSTM feature representations. TACL 4:313–
+327.
+
+Thomas N. Kipf and Max Welling. 2017. Semi-
+supervised classification with graph convolutional
+networks. In Proc. of ICLR.
+
+Karl Kunisch and Thomas Pock. 2013. A bilevel op-
+timization approach for parameter learning in varia-
+tional models. SIAM Journal on Imaging Sciences
+6(2):938–983.
+
+Mike Lewis, Luheng He, and Luke Zettlemoyer. 2015.
+Joint A* CCG parsing and semantic role labelling.
+In Proc. of EMNLP.
+
+Yang Liu and Mirella Lapata. 2018. Learning struc-
+tured text representations. TACL 6:63–75.
+
+David G. Luenberger and Yinyu Ye. 2015. Linear and
+Nonlinear Programming. Springer.
+
+Mitchell P. Marcus, Mary Ann Marcinkiewicz, and
+Beatrice Santorini. 1993. Building a large annotated
+corpus of english: The penn treebank. Computa-
+tional Linguistics 19(2):313–330.
+
+Andre Martins and Ramon Astudillo. 2016. From soft-
+max to sparsemax: A sparse model of attention and
+multi-label classification. In Proc. of ICML.
+
+André F. T. Martins, Miguel B. Almeida, and Noah A.
+Smith. 2013. Turning on the turbo: Fast third-order
+non-projective turbo parsers. In Proc. of ACL.
+
+André F. T. Martins, Mário A. T. Figueiredo, Pedro
+M. Q. Aguiar, Noah A. Smith, and Eric P. Xing.
+2015. AD3: Alternating directions dual decomposi-
+tion for map inference in graphical models. Journal
+of Machine Learning Research 16:495–545.
+
+André F. T. Martins, Noah A. Smith, and Eric P. Xing.
+2009. Polyhedral outer approximations with ap-
+plication to natural language parsing. In Proc. of
+ICML.
+
+Arthur Mensch and Mathieu Blondel. 2018. Differen-
+tiable dynamic programming for structured predic-
+tion and attention. arXiv:1802.03676 .
+
+Lili Mou, Hao Peng, Ge Li, Yan Xu, Lu Zhang, and Zhi
+Jin. 2015. Discriminative neural sentence modeling
+by tree-based convolution. In Proc. of EMNLP.
+
+
+
+1873
+
+Graham Neubig, Chris Dyer, Yoav Goldberg, Austin
+Matthews, Waleed Ammar, Antonios Anastasopou-
+los, Miguel Ballesteros, David Chiang, Daniel
+Clothiaux, Trevor Cohn, Kevin Duh, Manaal
+Faruqui, Cynthia Gan, Dan Garrette, Yangfeng
+Ji, Lingpeng Kong, Adhiguna Kuncoro, Gau-
+rav Kumar, Chaitanya Malaviya, Paul Michel,
+Yusuke Oda, Matthew Richardson, Naomi Saphra,
+Swabha Swayamdipta, and Pengcheng Yin. 2017.
+DyNet: The dynamic neural network toolkit.
+arXiv:1701.03980.
+
+Vlad Niculae and Mathieu Blondel. 2017. A regular-
+ized framework for sparse and structured neural at-
+tention. In Proc. of NIPS.
+
+Vlad Niculae, Andr F. T. Martins, Mathieu Blon-
+del, and Claire Cardie. 2018. SparseMAP:
+Differentiable sparse structured inference.
+arXiv:1802.04223.
+
+Stephan Oepen, Marco Kuhlmann, Yusuke Miyao,
+Daniel Zeman, Silvie Cinkova, Dan Flickinger, Jan
+Hajic, and Zdenka Uresova. 2015. SemEval 2015
+task 18: Broad-coverage semantic dependency pars-
+ing. In Proc. of SemEval.
+
+Stephan Oepen, Marco Kuhlmann, Yusuke Miyao,
+Daniel Zeman, Silvie Cinková, Dan Flickinger,
+Jan Hajič, Angelina Ivanova, and Zdeňka Urešová.
+2016. Towards comparability of linguistic graph
+banks for semantic parsing. In Proc. of LREC.
+
+Stephan Oepen, Marco Kuhlmann, Yusuke Miyao,
+Daniel Zeman, Dan Flickinger, Jan Hajic, Angelina
+Ivanova, and Yi Zhang. 2014. SemEval 2014 task
+8: Broad-coverage semantic dependency parsing. In
+Proc. of SemEval.
+
+Stephan Oepen, Lilja vrelid, Jari Bjrne, Richard Jo-
+hansson, Emanuele Lapponi, Filip Ginter, and Erik
+Velldal. 2017. The 2017 shared task on extrinsic
+parser evaluation. towards a reusable community in-
+frastructure. In Proc. of the 2017 Shared Task on
+Extrinsic Parser Evaluation.
+
+Hao Peng, Sam Thomson, and Noah A. Smith. 2017.
+Deep multitask learning for semantic dependency
+parsing. In Proc. of ACL.
+
+Hao Peng, Sam Thomson, Swabha Swayamdipta, and
+Noah A. Smith. 2018. Learning joint semantic
+parsers from disjoint data. In Proc. of NAACL.
+
+Corentin Ribeyre, Éric Villemonte De La Clergerie,
+and Djamé Seddah. 2015. Because syntax does mat-
+ter: Improving predicate-argument structures pars-
+ing using syntactic features. In Proc. of NAACL.
+
+Dan Roth and Wen-tau Yih. 2004. A linear program-
+ming formulation for global inference in natural lan-
+guage tasks. In Proc. of NAACL.
+
+Michael Roth and Mirella Lapata. 2016. Neural se-
+mantic role labeling with dependency path embed-
+dings. In Proc. of ACL.
+
+Richard Socher, Alex Perelygin, Jean Wu, Jason
+Chuang, Christopher D. Manning, Andrew Ng, and
+Christopher Potts. 2013. Recursive deep models
+for semantic compositionality over a sentiment tree-
+bank. In Proc. of EMNLP.
+
+Anders Søgaard and Yoav Goldberg. 2016. Deep
+multi-task learning with low level tasks supervised
+at lower layers. In Proc. of ACL.
+
+Veselin Stoyanov, Alexander Ropson, and Jason Eis-
+ner. 2011. Empirical risk minimization of graphical
+model parameters given approximate inference, de-
+coding, and model structure. In Proc. of AISTATS.
+
+Swabha Swayamdipta, Miguel Ballesteros, Chris Dyer,
+and Noah A. Smith. 2016. Greedy, joint syntactic-
+semantic parsing with stack LSTMs. In Proc. of
+CoNLL.
+
+Swabha Swayamdipta, Sam Thomson, Chris Dyer, and
+Noah A. Smith. 2017. Frame-semantic parsing with
+softmax-margin segmental RNNs and a syntactic
+scaffold. arXiv:1706.09528.
+
+Kai Sheng Tai, Richard Socher, and Christopher D.
+Manning. 2015. Improved semantic representations
+from tree-structured long short-term memory net-
+works. In Proc. of ACL.
+
+Ioannis Tsochantaridis, Thomas Hofmann, Thorsten
+Joachims, and Yasemin Altun. 2004. Support vector
+machine learning for interdependent and structured
+output spaces. In Proc. of ICML.
+
+Ronald J. Williams. 1992. Simple statistical gradient-
+following algorithms for connectionist reinforce-
+ment learning. Machine Learning 8(3-4):229–256.
+
+Yan Xu, Lili Mou, Ge Li, Yunchuan Chen, Hao Peng,
+and Zhi Jin. 2015. Classifying relations via long
+short term memory networks along shortest depen-
+dency paths. In Proc. of EMNLP.
+
+Dani Yogatama, Phil Blunsom, Chris Dyer, Edward
+Grefenstette, and Wang Ling. 2017. Learning to
+compose words into sentences with reinforcement
+learning. In Proc. of ICLR.
+
+Xun Zhang, Yantao Du, Weiwei Sun, and Xiaojun
+Wan. 2016. Transition-based parsing for deep de-
+pendency structures. Computational Linguistics
+42(3):353–389.
+
+Yuan Zhang, Chengtao Li, Regina Barzilay, and Ka-
+reem Darwish. 2015. Randomized greedy inference
+for joint segmentation, POS tagging and dependency
+parsing. In Proc. NAACL.
+
+Yuan Zhang and David Weiss. 2016. Stack-
+propagation: Improved representation learning for
+syntax. In Proc. of ACL.
+
+

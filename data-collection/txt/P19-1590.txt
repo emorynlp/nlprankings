@@ -1,0 +1,1899 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Variational Pretraining for Semi-supervised Text Classification
+
+
+Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 5880–5894
+Florence, Italy, July 28 - August 2, 2019. c©2019 Association for Computational Linguistics
+
+5880
+
+Variational Pretraining for Semi-supervised Text Classification
+
+Suchin Gururangan1 Tam Dang2 Dallas Card3 Noah A. Smith1,2
+1Allen Institute for Artificial Intelligence, Seattle, WA, USA
+
+2Paul G. Allen School of Computer Science & Engineering, University of Washington, Seattle, WA, USA
+3Machine Learning Department, Carnegie Mellon University, Pittsburgh, PA, USA
+
+suching@allenai.org {dangt7,nasmith}@cs.washington.edu dcard@cmu.edu
+
+Abstract
+
+We introduce VAMPIRE,1 a lightweight pre-
+training framework for effective text classi-
+fication when data and computing resources
+are limited. We pretrain a unigram docu-
+ment model as a variational autoencoder on
+in-domain, unlabeled data and use its inter-
+nal states as features in a downstream classi-
+fier. Empirically, we show the relative strength
+of VAMPIRE against computationally expen-
+sive contextual embeddings and other popular
+semi-supervised baselines under low resource
+settings. We also find that fine-tuning to in-
+domain data is crucial to achieving decent per-
+formance from contextual embeddings when
+working with limited supervision. We accom-
+pany this paper with code to pretrain and use
+VAMPIRE embeddings in downstream tasks.
+
+1 Introduction
+
+An effective approach to semi-supervised learning
+has long been a goal for the NLP community, as
+unlabeled data tends to be plentiful compared to
+labeled data. Early work emphasized using unla-
+beled data drawn from the same distribution as the
+labeled data (Nigam et al., 2000), but larger and
+more reliable gains have been obtained by using
+contextual embeddings trained with a language
+modeling (LM) objective on massive amounts of
+text from domains such as Wikipedia or news (Pe-
+ters et al., 2018a; Devlin et al., 2019; Radford
+et al., 2018; Howard and Ruder, 2018). The latter
+approaches play to the strengths of high-resource
+settings (e.g., access to web-scale corpora and
+powerful machines), but their computational and
+data requirements can make them less useful in
+resource-limited environments. In this paper, we
+instead focus on the low-resource setting (§2.1),
+
+1VAriational Methods for Pretraining In Resource-limited
+Environments
+
+and develop a lightweight approach to pretraining
+for semi-supervised text classification.
+
+Our model, which we call VAMPIRE, com-
+bines a variational autoencoder (VAE) approach to
+document modeling (Kingma and Welling, 2013;
+Miao et al., 2016; Srivastava and Sutton, 2017)
+with insights from LM pretraining (Peters et al.,
+2018a). By operating on a bag-of-words represen-
+tation, we avoid the time complexity and difficulty
+of training a sequence-to-sequence VAE (Bowman
+et al., 2016; Xu et al., 2017; Yang et al., 2017)
+while retaining the freedom to use a multi-layer
+encoder that can learn useful representations for
+downstream tasks. Because VAMPIRE ignores se-
+quential information, it leads to models that are
+much cheaper to train, and offers strong perfor-
+mance when the amount of labeled data is small.
+Finally, because VAMPIRE is a descendant of topic
+models, we are able to explore model selection
+by topic coherence, rather than validation-set per-
+plexity, which results in better downstream classi-
+fication performance (§6.1).
+
+In order to evaluate the effectiveness of our
+method, we experiment with four text classifica-
+tion datasets. We compare our approach to a tra-
+ditional semi-supervised baseline (self-training),
+alternative representation learning techniques that
+have access to the in-domain data, and the full-
+scale alternative of using large language models
+trained on out-of-domain data, optionally fine-
+tuned to the task domain.
+
+Our results demonstrate that effective semi-
+supervised learning is achievable for limited-
+resource settings, without the need for com-
+putationally demanding sequence-based models.
+While we observe that fine-tuning a pretrained
+BERT model to the domain provides the best
+results, this depends on the existence of such a
+model in the relevant language, as well as GPUs
+to fine-tune it. When this is not an option, our
+
+
+
+5881
+
+model offers equivalent or superior performance
+to the alternatives with minimal computational re-
+quirements, especially when working with limited
+amounts of labeled data.
+
+The major contributions of this paper are:
+
+• We adapt variational document models
+to modern pretraining methods for semi-
+supervised text classification (§3), and high-
+light the importance of appropriate criteria
+for model selection (§3.2).
+
+• We demonstrate experimentally that our
+method is an efficient and effective approach
+to semi-supervised text classification when
+data and computation are limited (§5).
+
+• We confirm that fine-tuning is essential when
+using contextual embeddings for document
+classification, and provide a summary of
+practical advice for researchers wishing to
+use unlabeled data in semi-supervised text
+classification (§8).
+
+• We release code to pretrain variational mod-
+els on unlabeled data and use learned repre-
+sentations in downstream tasks.2
+
+2 Background
+
+2.1 Resource-limited Environments
+In this paper, we are interested in the low-resource
+setting, which entails limited access to compu-
+tation, labels, and out-of-domain data. Labeled
+data can be obtained cheaply for some tasks, but
+for others, labels may require expensive and time-
+consuming human annotations, possibly from do-
+main experts, which will limit their availability.
+
+While there is a huge amount of unlabeled text
+available for some languages, such as English, this
+scale of data is not available for all languages. In-
+domain data availability, of course, varies by do-
+main. For many researchers, especially outside of
+STEM fields, computation may also be a scarce re-
+source, such that training contextual embeddings
+from scratch, or even incorporating them into a
+model could be prohibitively expensive.
+
+Moreover, even when such pretrained models
+are available, they inevitably come with poten-
+tially undesirable biases baked in, based on the
+data on which they were trained (Recasens et al.,
+2013; Bolukbasi et al., 2016; Zhao et al., 2019).
+
+2http://github.com/allenai/vampire
+
+Particularly for social science applications, it may
+be preferable to exclude such confounders by only
+working with in-domain or curated data.
+
+Given these constraints and limitations, we seek
+an approach to semi-supervised learning that can
+leverage in-domain unlabeled data, achieve high
+accuracy with only a handful of labeled instances,
+and can run efficiently on a CPU.
+
+2.2 Semi-supervised Learning
+Many approaches to semi-supervised learning
+have been developed for NLP, including vari-
+ants of bootstrapping (Charniak, 1997; Blum and
+Mitchell, 1998; Zhou and Li, 2005; McClosky
+et al., 2006), and representation learning using
+generative models or word vectors (Mikolov et al.,
+2013; Pennington et al., 2014). Contextualized
+embeddings have recently emerged as a power-
+ful way to use out-of-domain data (Peters et al.,
+2018a; Radford, 2018), but training these large
+models requires a massive amount of appropriate
+data (typically on the order of hundreds of mil-
+lions of words), and industry-scale computational
+resources (hundreds of hours on multiple GPUs).3
+
+There have also been attempts to leverage VAEs
+for semi-supervised learning in NLP, mostly in the
+form of sequence-to-sequence models (Xu et al.,
+2017; Yang et al., 2017), which use sequence-
+based encoders and decoders (see §3). These pa-
+pers report strong performance, but there are many
+open questions which necessitate further investi-
+gation. First, given the reported difficulty of train-
+ing sequence-to-sequence VAEs (Bowman et al.,
+2016), it is questionable whether such an approach
+is useful in practice. Moreover, it is unclear if such
+complex models (which are expensive to train) are
+actually required for good performance on tasks
+such as text classification.
+
+Here, we instead base our framework on neu-
+ral document models (Miao et al., 2016; Srivastava
+and Sutton, 2017; Card et al., 2018), which offer
+both faster training and an explicit interpretation
+in the form of topics, and explore their utility in
+the semi-supervised setting.
+
+3 Model
+
+In this work, we assume that we have L docu-
+ments, DL = {(xi, yi)}Li=1, with observed cat-
+
+3For example, ULMFIT was trained on 100 million
+words, and BERT used 3.3 billion. While many pretrained
+models have been made available, they are unlikely to cover
+every application, especially for rare languages.
+
+http://github.com/allenai/vampire
+
+
+5882
+
+egorical labels y ∈ Y . We also assume access
+to a larger set of U documents drawn from the
+same distribution, but for which the labels are un-
+observed, i.e,DU = {xi}U+Li=L+1. Our primary goal
+is to learn a probabilistic classifier, p(y | x).
+
+Our approach heavily borrows from past work
+on VAEs (Kingma and Welling, 2013; Miao et al.,
+2016; Srivastava and Sutton, 2017), which we
+adapt to semi-supervised text classification (see
+Figure 1). We do so by pretraining the document
+model on unlabeled data (§3.1), and then using
+learned representations in a downstream classifier
+(§3.3). The downstream classifier makes use of
+multiple internal states of the pretrained document
+model, as in Peters et al. (2018b). We also explore
+how to best do model selection in a way that ben-
+efits the downstream task (§3.2).
+
+3.1 Unsupervised Pretraining
+In order to learn useful representations, we ini-
+tially ignore labels, and assume each document is
+generated from a latent variable, z. The functions
+learned in estimating this model then provide rep-
+resentations which are used as features in super-
+vised learning.
+
+Using a variational autoencoder for approxi-
+mate Bayesian inference, we simultaneously learn
+an encoder, which maps from the observed text to
+an approximate posterior q(z | x), and a decoder,
+which reconstructs the text from the latent repre-
+sentation. In practice, we instantiate both the en-
+coder and decoder as neural networks and assume
+that the encoder maps to a normally distributed
+posterior, i.e., for document i,
+
+q(zi | xi) = N (zi | fµ(xi), diag(fσ(xi))) (1)
+xi ∼ p(xi | fd(zi)). (2)
+
+Using standard principles of variational in-
+ference, we derive a variational bound on the
+marginal log-likelihood of the observed data,
+
+log p(xi) ≥ B(xi) = Eq(zi|xi)[log p(xi | zi)]
+−KL[q(zi | xi) ‖ p(z)].
+
+(3)
+Intuitively, the first term in the bound can be
+
+thought of as a reconstruction loss, ensuring that
+generated words are similar to the original docu-
+ment. The second term, the KL divergence, en-
+courages the variational approximation to be close
+to the assumed prior, p(z), which we take to be a
+spherical normal distribution.
+
+Word Vectors
+
+Encoder
+
+MLP
+
+labeled textPretrained VAE
+
+VAMPIRE 
+embedding
+
+unlabeled text
+
+Word Frequencies
+
+σμ
+
+VAE
+
+Word Frequencies
+
+MLP
+
+MLP
+
+Label
+
+Figure 1: VAMPIRE involves pretraining a deep vari-
+ational autoencoder (VAE; displayed on left) on unla-
+beled text. The VAE, which consists entirely of feed-
+forward networks, learns to reconstruct a word fre-
+quency representation of the unlabeled text with a lo-
+gistic normal prior, parameterized by µ and σ. Down-
+stream, the pretrained VAE’s internal states are frozen
+and concatenated to task-specific word vectors to im-
+prove classification in the low-resource setting.
+
+Using the reparameterization trick (Kingma
+and Welling, 2013; Rezende et al., 2014), we re-
+place the expectation with a single-sample approx-
+imation,4 i.e.,
+
+B(xi) ≈ log p(xi | z(s)i )− KL[q(zi | xi) ‖ p(z)]
+(4)
+
+z
+(s)
+i = fµ(xi) + fσ(xi) · ε
+
+(s), (5)
+
+where ε(s) ∼ N (0, I) is sampled from an indepen-
+dent normal. All parameters can then be optimized
+simultaneously by performing stochastic gradient
+ascent on the variational bound.
+
+A powerful way of encoding and decoding text
+is to use sequence models. That is, fµ(x) and
+fσ(x) would map from a sequence of tokens to
+a pair of vectors, µ and σ, and fd(z) would simi-
+larly decode from z to a sequence of tokens, using
+recurrent, convolutional, or attention-based net-
+works. Some authors have adopted this approach
+(Bowman et al., 2016; Xu et al., 2017; Yang et al.,
+2017), but as discussed above (§2.2), it has a num-
+ber of disadvantages.
+
+In this paper, we adopt a more lightweight and
+directly interpretable approach, and work with
+word frequencies instead of word sequences. Us-
+ing the same basic structure as Miao et al. (2016)
+
+4We leave experimentation with multi-sample approxima-
+tion (e.g., importance sampling) to future work.
+
+
+
+5883
+
+but employing a softmax in the decoder, we en-
+code fµ(x) and fσ(x) with multi-layer feed for-
+ward neural networks operating on an input vector
+of word counts, ci:
+
+ci = counts(xi) (6)
+
+hi = MLP(ci) (7)
+
+µi = fµ(xi) =Wµhi + bµ (8)
+
+σi = fσ(xi) = exp(Wσhi + bσ) (9)
+
+z
+(s)
+i = µi + σi · ε
+
+(s). (10)
+
+For a decoder, we use the following form, which
+reconstructs the input in terms of topics (coherent
+distributions over the vocabulary):
+
+θi = softmax(z
+(s)
+i ) (11)
+
+ηi = softmax(b+Bθi) (12)
+
+log p(xi | z(s)i ) =
+V∑
+j=1
+
+cij · log ηij , (13)
+
+where j ranges over the vocabulary.
+By placing a softmax on z, we can interpret θ as
+
+a distribution over latent topics, as in a topic model
+(Blei et al., 2003), and B as representing positive
+and negative topical deviations from a background
+b. This form (essentially a unigram LM) allows
+for much more efficient inference on z, compared
+to sequence-based encoders and decoders.
+
+3.2 Model Selection via Topic Coherence
+
+Because our pretraining ignores document labels,
+it is not obvious that optimizing it to convergence
+will produce the best representations for down-
+stream classification. When pretraining using a
+LM objective, models are typically trained until
+model fit stops improving (i.e., perplexity on vali-
+dation data). In our case, however, θi has a natural
+interpretation as the distribution (for document i)
+over the latent “topics” learned by the model (B).
+As such, an alternative is to use the quality of the
+topics as a criterion for early stopping.
+
+It has repeatedly been observed that different
+types of topic models offer a trade-off between
+perplexity and topic quality (Chang et al., 2009;
+Srivastava and Sutton, 2017). Several methods
+for automatically evaluating topic coherence have
+been proposed (Newman et al., 2010; Mimno
+et al., 2011), such as normalized pointwise mu-
+tual information (NPMI), which Lau et al. (2014)
+found to be among the most strongly correlated
+
+with human judgement. As such, we consider us-
+ing either log likelihood or NPMI as a stopping
+criteria for VAMPIRE pretraining (§6.1), and eval-
+uate them in terms of which leads to the better
+downstream classifier.
+
+NPMI measures the probability that two words
+collocate in an external corpus (in our case, the
+validation data). For each topic t in B, we col-
+lect the top ten most probable words and compute
+NPMI between all pairs:
+
+NPMI(t) =
+∑
+
+i,j≤10; j 6=i
+
+log
+P (ti,tj)
+P (ti)P (tj)
+
+− logP (ti, tj)
+(14)
+
+We then arrive at a global NPMI for B by aver-
+aging the NPMIs across all topics. We evaluate
+NPMI at the end of each epoch during pretraining,
+and stop training when NPMI has stopped increas-
+ing for a pre-defined number of epochs.
+
+3.3 Using a Pretrained VAE for Text
+Classification
+
+Kingma et al. (2014) proposed using the latent
+variable of an unsupervised VAE as features in a
+downstream model for classifying images. How-
+ever, work on pretraining for NLP, such as Peters
+et al. (2018a), found that LMs encode different in-
+formation in different layers, each of which may
+be more or less useful for certain tasks. Here,
+for an n-layer MLP encoder on word counts ci,
+we build on that idea, and use as representations
+a weighted sum over θi and the internal states of
+the MLP, h(k)i , with weights to be learned by the
+downstream classifier.5
+
+That is, for any sequence-to-vector encoder,
+fs2v(x), we propose to augment the vector rep-
+resentations for each document by concatenating
+them with a weighted combination of the inter-
+nal states of our variational encoder (Peters et al.,
+2018a). We can then train a supervised classifier
+on the weighted combination,
+
+ri = λ0θi +
+n∑
+k=1
+
+λkh
+(k)
+i (15)
+
+p(yi | xi) = fc([ri; fs2v(xi)]), (16)
+
+where fc is a neural classifier and {λ0, . . . , λn}
+are softmax-normalized trainable parameters.
+
+5We also experimented with the joint training and com-
+bined approaches discussed in Kingma et al. (2014), but
+found that neither of these reliably improved performance
+over our pretraining approach.
+
+
+
+5884
+
+3.4 Optimization
+
+In all cases, we optimize models using Adam
+(Kingma and Ba, 2014). In order to prevent diver-
+gence during pretraining, we make use of a batch-
+norm layer on the reconstruction of x (Ioffe and
+Szegedy, 2015). We also use KL-annealing (Bow-
+man et al., 2016), placing a scalar weight on the
+KL divergence term in Eq. (3), which we gradu-
+ally increase from zero to one. Because our model
+consists entirely of feedforward neural networks,
+it is easily parallelized, and can run efficiently on
+either CPUs or GPUs.
+
+4 Experimental Setup
+
+We evaluate the performance of our approach
+on four text classification tasks, as we vary the
+amount of labeled data, from 200 to 10,000 in-
+stances. In all cases, we assume the existence of
+about 75,000 to 125,000 unlabeled in-domain ex-
+amples, which come from the union of the unused
+training data and any additional unlabeled data
+provided by the corpus. Because we are working
+with a small amount of labeled data, we run each
+experiment with five random seeds, each with a
+different sample of labeled training instances, and
+report the mean performance on test data.
+
+4.1 Datasets and Preprocessing
+
+We experiment with text classification datasets
+that span a variety of label types. The datasets we
+use are the familiar AG News (Zhang et al., 2015),
+IMDB (Maas et al., 2011), and YAHOO! Answers
+datasets (Chang et al., 2008), as well as a dataset of
+tweets labeled in terms of four HATESPEECH cat-
+egories (Founta et al., 2018). Summary statistics
+are presented in Table 1. In all cases, we either
+use the official test set, or take a random stratified
+sample of 25,000 documents as a test set. We also
+sample 5,000 instances as a validation set.
+
+We tokenize documents with spaCy, and use up
+to 400 tokens for sequence encoding (fs2v(x)).
+For VAMPIRE pretraining, we restrict the vocab-
+ulary to the 30,000 most common words in the
+dataset, after excluding tokens shorter than three
+characters, those with digits or punctuation, and
+stopwords.6 We leave the vocabulary for down-
+stream classification unrestricted.
+
+6http://snowball.tartarus.org/
+algorithms/english/stop.txt
+
+Dataset Label Type Classes Documents
+
+AG topic 4 127600
+HATESPEECH hatespeech 4 99996
+IMDB sentiment 2 100000
+YAHOO! topic 15 150015
+
+Table 1: Datasets used in our experiments.
+
+4.2 VAMPIRE Architecture
+In order to find reasonable hyperparameters for
+VAMPIRE, we utilize a random search strategy for
+pretraining. For each dataset, we take the model
+with the best NPMI for use in the downstream
+classifiers. We detail sampling bounds and final
+assignments for each hyperparameter in Table 5 in
+Appendix A.1.
+
+4.3 Downstream Classifiers
+For all experiments we make use of the Deep Av-
+eraging Network (DAN) architecture (Iyyer et al.,
+2015) as our baseline sequence-to-vector encoder,
+fs2v(x). That is, embeddings corresponding to
+each token are summed and passed through a
+multi-layer perceptron.
+
+p(yi | xi) = MLP
+(
+
+1
+
+|xi|
+∑|xi|
+
+j=1E(xi)j
+
+)
+, (17)
+
+where E(x) converts a sequence of tokens to a se-
+quence of vectors, using randomly initialized vec-
+tors, off-the-shelf GLOVE embeddings (Penning-
+ton et al., 2014), or contextual embeddings.
+
+To incorporate the document representations
+learned by VAMPIRE in a downstream classifier,
+we concatenate them with the average of randomly
+initialized trainable embeddings, i.e.,
+
+p(yi | xi) = MLP
+([
+ri;
+
+1
+
+|xi|
+∑|xi|
+
+j=1E(xi)j
+
+])
+.
+
+(18)
+
+Preliminary experiments found that DANs with
+one-layer MLPs and moderate dropout provide
+more reliable performance on validation data than
+more expressive models, such as CNNs or LSTMs,
+with less hyperparameter tuning, especially when
+working with few labeled instances (details in Ap-
+pendix A.2).
+
+4.4 Resources and Baselines
+In these experiments, we consider baselines for
+both low-resource and high-resource settings,
+where the high-resource baselines have access to
+
+http://snowball.tartarus.org/algorithms/english/stop.txt
+http://snowball.tartarus.org/algorithms/english/stop.txt
+
+
+5885
+
+70
+
+80
+
+AG News
+
+VAMPIRE
+Self-training
+GloVe (OD)
+
+70
+
+75
+
+Hatespeech
+
+200 500 2500 10000
+70
+
+75
+
+80
+
+85
+
+IMDB
+
+200 500 2500 10000
+
+55
+
+60
+
+65
+
+70
+
+75
+Yahoo!
+
+Number of labeled instances
+
+A
+cc
+
+ur
+ac
+
+y
+
+Figure 2: Learning curves for all datasets in the low-
+resource setting, showing the mean (line) and one
+standard deviation (bands) over five runs for VAM-
+PIRE, self-training, and 840B-token GLOVE embed-
+dings. Full results are in Table 2.
+
+greater computational resources and a either mas-
+sive amount of unlabeled data or a pretrained
+model, such as ELMO or BERT.7
+
+Low resource In the low-resource setting we as-
+sume that computational resources are at a pre-
+mium, so we are limited to lightweight approaches
+such as VAMPIRE, which can run efficiently on
+a CPU. As baselines, we consider a) a purely
+supervised model, with randomly initialized 50-
+dimensional embeddings and no access to unla-
+beled data; b) the same model initialized with 300-
+dimensional GLOVE vectors, pretrained on 840
+billion words;8 c) 300-dimensional GLOVE vec-
+tors trained on only in-domain data; and d) self-
+training, which has access to the in-domain unla-
+beled data. For self-training, we iterate over train-
+ing a model, predicting labels on all unlabeled in-
+stances, and adding to the training set all unlabeled
+instances whose label is predicted with high confi-
+dence, repeating this up to five times and using the
+model with highest validation accuracy. On each
+iteration, the threshold for a given label is equal
+to the 90th percentile of predicted probabilities for
+validation instances with the corresponding label.
+
+7As discussed above, we consider these models to be rep-
+resentative of the high-resource setting, both because they
+were computationally intensive to train, and because they
+were made possible by the huge amount of English text that
+is available online.
+
+8http://nlp.stanford.edu/projects/
+glove/
+
+High resource In the high-resource setting,
+we assume access to plentiful computational re-
+sources and massive amounts of out-of-domain
+data, which may be indirectly accessed through
+pretrained models. Specifically, we evaluate the
+performance of a Transformer-based ELMO (Pe-
+ters et al., 2018b) and BERT, both (a) off-the-
+shelf with frozen embeddings and (b) after semi-
+supervised fine-tuning to both unlabeled and la-
+beled in-domain data. To perform semi-supervised
+fine-tuning, we first use ELMO and BERT’s orig-
+inal objectives to fine-tune to the unlabeled data.
+To fine-tune ELMO to the labeled data, we aver-
+age over the LM states and add a softmax clas-
+sification layer. We obtain the best results ap-
+plying slanted triangular learning rates and grad-
+ual unfreezing (Howard and Ruder, 2018) to this
+fine-tuning step. To fine-tune BERT to labeled
+data, we feed the hidden state corresponding to the
+[CLS] token of each instance to a softmax clas-
+sification layer. We use AllenNLP9 to fine-tune
+ELMO, and Pytorch-pretrained-BERT10 to fine-
+tune BERT.
+
+We also experiment with ELMO trained only
+on in-domain data as an example of high-resource
+LM pretraining methods, such as Dai and Le
+(2015), when there is no out-of-domain data avail-
+able. Specifically, we generate contextual word
+representations with a Transformer-based ELMO.
+During downstream classification, the resulting
+vectors are frozen and concatenated to randomly
+initialized word vectors prior to the summation in
+Eq. (17).
+
+5 Results
+
+In the low-resource setting, we find that VAM-
+PIRE achieves the highest accuracy of all low-
+resource methods we consider, especially when
+the amount of labeled data is small. Table 2 shows
+the performance of all low-resource models on all
+datasets as we vary the amount of labeled data, and
+a subset of these are also shown in Figure 2 for
+easy comparison.
+
+In the high-resource setting, we find, not
+surprisingly, that fine-tuning the pretrained
+BERT model to in-domain data provides the best
+performance. For both BERT and ELMO, we
+find that using frozen off-the-shelf vectors results
+
+9https://allennlp.org/elmo
+10https://github.com/huggingface/
+
+pytorch-pretrained-BERT
+
+http://nlp.stanford.edu/projects/glove/
+http://nlp.stanford.edu/projects/glove/
+https://allennlp.org/elmo
+https://github.com/huggingface/pytorch-pretrained-BERT
+https://github.com/huggingface/pytorch-pretrained-BERT
+
+
+5886
+
+Dataset Model 200 500 2500 10000
+
+IMDB Baseline 68.5 (7.8) 79.0 (0.4) 84.4 (0.1) 87.1 (0.3)
+Self-training 73.8 (3.3) 80.0 (0.7) 84.6 (0.2) 87.0 (0.4)
+GLOVE (ID) 74.5 (0.8) 79.5 (0.4) 84.7 (0.2) 87.1 (0.4)
+
+GLOVE (OD) 74.1 (1.2) 80.0 (0.2) 84.6 (0.3) 87.0 (0.6)
+VAMPIRE 82.2 (2.0) 84.5 (0.4) 85.4 (0.4) 87.1 (0.4)
+
+AG Baseline 68.8 (2.0) 77.3 (1.0) 84.4 (0.1) 87.5 (0.2)
+Self-training 77.3 (1.7) 81.3 (0.8) 84.8 (0.2) 87.7 (0.1)
+GLOVE (ID) 70.4 (1.2) 78.0 (1.0) 84.1 (0.3) 87.1 (0.2)
+
+GLOVE (OD) 68.8 (5.7) 78.8 (1.1) 85.3 (0.3) 88.0 (0.3)
+VAMPIRE 83.9 (0.6) 84.5 (0.4) 85.8 (0.2) 87.7 (0.1)
+
+YAHOO! Baseline 54.5 (2.8) 63.0 (0.5) 69.5 (0.3) 73.6 (0.2)
+Self-training 57.5 (2.0) 63.2 (0.6) 69.8 (0.3) 73.6 (0.2)
+GLOVE (ID) 55.2 (2.3) 63.5 (0.3) 69.7 (0.3) 73.5 (0.3)
+
+GLOVE (OD) 55.4 (2.4) 63.9 (0.3) 70.1 (0.5) 73.8 (0.4)
+VAMPIRE 59.9 (0.9) 65.1 (0.3) 69.8 (0.3) 73.6 (0.2)
+
+HATESPEECH Baseline 67.7 (1.8) 71.3 (0.2) 75.6 (0.4) 77.8 (0.2)
+Self-training 68.5 (0.6) 71.3 (0.2) 75.5 (0.3) 78.1 (0.2)
+GLOVE (ID) 69.7 (1.2) 71.9 (0.5) 76.0 (0.3) 78.3 (0.2)
+
+GLOVE (OD) 69.7 (0.7) 72.2 (0.8) 76.1 (0.8) 77.6 (0.5)
+VAMPIRE 74.1 (0.8) 74.4 (0.5) 76.2 (0.6) 78.0 (0.3)
+
+Table 2: Test accuracies in the low-resource setting on four text classification datasets under varying levels of
+labeled training data (200, 500, 2500, and 10000 documents). Each score is reported as an average over five seeds,
+with standard deviation in parentheses, and the highest mean result in each setting shown in bold.
+
+85
+
+90
+
+AG News
+
+70
+
+75
+
+80
+
+Hatespeech
+
+200 500 2500 10000
+
+80
+
+90
+
+IMDB
+
+BERT (FT)
+ELMO (FT)
+
+VAMPIRE
+ELMO (ID)
+
+ELMO (FR)
+
+200 500 2500 10000
+40
+
+60
+
+80
+Yahoo!
+
+Number of labeled instances
+
+A
+cc
+
+ur
+ac
+
+y
+
+Figure 3: High-resource methods (plus VAMPIRE) on
+four datasets; ELMO performance benefits greatly
+from training on (ID), or fine-tuning (FT) to, the in-
+domain data (as does BERT; full results in Appendix
+B). Key: FT (fine-tuned), FR (frozen), ID (in-domain).
+
+in surprisingly poor performance, compared
+to fine-tuning to the task domain, especially
+for HATESPEECH and IMDB.11 For these two
+datasets, an ELMO model trained only on in-
+domain data offers far superior performance to
+frozen off-the-shelf ELMO (see Figure 3). This
+difference is smaller, however, for YAHOO! and
+
+11See also Howard and Ruder (2018).
+
+AG. (Please see Appendix B for full results).
+These results taken together demonstrate that
+
+although pretraining on massive amounts of web
+text offers large improvements over purely su-
+pervised models, access to unlabeled in-domain
+data is critical, either for fine-tuning a pretrained
+language model in the high-resource setting, or
+for training VAMPIRE in the low-resource setting.
+Similar findings have been reported by Yogatama
+et al. (2019) for tasks such as natural language in-
+ference and question answering.
+
+6 Analysis
+
+6.1 NPMI versus NLL as Stopping Criteria
+
+To analyze the effectiveness of different stopping
+criterion in VAMPIRE, we pretrain 200 VAMPIRE
+models on IMDB: 100 selected via NPMI, and 100
+selected via negative log likelihood (NLL) on val-
+idation data. Interestingly, we observe that VAM-
+PIRE NPMI and NLL values are negatively corre-
+lated (ρ = –0.72; Figure 4A), suggesting that upon
+convergence, trained models that better fit the data
+also tend to have more coherent topics. We then
+train 200 downstream classifiers with the same hy-
+perparameters, on a fixed 200 document random
+subset of the IMDB dataset, uniformly sampling
+over the NPMI- and NLL-selected VAMPIRE mod-
+els as additional features. In Figure 4B and Fig-
+
+
+
+5887
+
+0.06 0.14
+NPMI
+
+840
+
+860
+
+880
+N
+
+LL
+A
+
+0.06 0.14
+NPMI
+
+0.7
+
+0.8
+
+A
+cc
+
+ur
+ac
+
+y
+
+B
+
+840 860 880
+NLL
+
+0.6
+
+0.8
+
+A
+cc
+
+ur
+ac
+
+y
+
+C
+
+NPMI NLL
+Criterion
+
+0.6
+
+0.8
+
+A
+cc
+
+ur
+ac
+
+y
+
+D
+
+Figure 4: Comparing NPMI and NLL as early stop-
+ping criteria for VAMPIRE model selection. NPMI
+and NLL are correlated measures of model fit, but
+NPMI-selected VAMPIRE models have lower variance
+on downtream classification performance with 200 la-
+beled documents of IMDB. Accuracy is reported on the
+validation data. See §6.1 for more details.
+
+ure 4C, we observe that better pretrained VAMPIRE
+models (according to either criterion) tend to pro-
+duce better downstream performance. (ρ = 0.55
+and ρ = –0.53, for NPMI and NLL respectively).
+
+However, we also observe higher variance in ac-
+curacy among the VAMPIRE models obtained us-
+ing NLL as a stopping criterion (Figure 4D). Such
+models selected via NLL have poor topic coher-
+ence and downstream performance. As such, do-
+ing model selection using NPMI is the preferred
+alternative, and all VAMPIRE results in Table 2 are
+based on pretrained models selected using this cri-
+terion.
+
+The experiments in Ding et al. (2018) provide
+some insight into this behaviour. They find that
+when training neural topic models, model fit and
+NPMI initially tend to improve on each epoch. At
+some point, however, perplexity continues to im-
+prove, while NPMI starts to drop, sometimes dra-
+matically. We also observe this phenomenon when
+training VAMPIRE (see Appendix C). Using NPMI
+as a stopping criterion, as we propose to do, helps
+to avoid degenerate models that result from train-
+ing too long.
+
+In some preliminary experiments, we also ob-
+serve cases where NPMI is artificially high be-
+cause of redundancy in topics. Applying batch-
+norm to the reconstruction markedly improves di-
+versity of collocating words across topics, which
+has also been noted by Srivastava and Sutton
+
+IMDB YAHOO!
+
+Horror Classics Food Obstetrics
+
+giallo dunne cuisine obstetrics
+horror cary peruvian vitro
+gore abbott bengali endometriosis
+
+lugosi musicals cajun fertility
+zombie astaire potato contraceptive
+dracula broadway carne pregnancy
+
+bela irene idli birth
+cannibal costello pancake ovarian
+vampire sinatra tofu menstrual
+
+lucio stooges gumbo prenatal
+
+Table 3: Example topics learned by VAMPIRE in
+IMDB and YAHOO! datasets. See Appendix D for more
+examples.
+
+(2017). Future work may explore assigning a word
+diversity regularizer to the NPMI metric, so as to
+encourage models that have both stronger coher-
+ence and word diversity across topics.
+
+6.2 Learned Latent Topics
+
+In addition to being lightweight, one advantage of
+VAMPIRE is that it produces document representa-
+tions that can be explicitly interpreted in terms of
+topics. Although the input we feed into the down-
+stream classifier combines this representation with
+internal states of the encoder, the topical interpre-
+tation helps to summarize what the pretraining has
+learned. Examples of topics learned by VAMPIRE
+are provided in Table 3 and Appendix D.
+
+6.3 Learned Scalar Layer Weights
+
+Since the scalar weight parameters in ri are train-
+able, we are able to investigate which layers of the
+pretrained VAE the classifier tends to prefer. We
+consistently find that the model tends to upweight
+the first layer of the VAE encoder, h(1), and θ, and
+downweight the other layers of the encoder. To
+improve learning, especially under low resource
+settings, we initialize the scalar weights applied to
+the first encoder layer and θ with high values and
+downweighted the intermediate layers, which in-
+creases validation performance. However, we also
+have observed that using a multi-layer encoder in
+VAMPIRE leads to larger gains downstream.
+
+6.4 Computational Requirements
+
+An appealing aspect of VAMPIRE is its com-
+pactness. Table 4 shows the computational re-
+quirements involved in training VAMPIRE on a
+single GPU or CPU, compared to training an
+ELMO model from scratch on the same data on
+
+
+
+5888
+
+Model Parameters Time
+
+VAMPIRE (GPU) 3.8M 7 min
+VAMPIRE (CPU) 3.8M 22 min
+ELMO (GPU) 159.2M 12 hr 35 min
+
+Table 4: VAMPIRE is substantially more compact
+than Transformer-based ELMO but is still competi-
+tive under low-resource settings. Here, we display
+the computational requirements for pretraining VAM-
+PIRE and ELMO on in-domain unlabeled text from
+the IMDB dataset. We report results on training
+VAMPIRE (with hyperparameters listed in Appendix
+A.1) and ELMO (with its default configuration) on
+a GeForce GTX 1080 Ti GPU, and VAMPIRE on
+a 2.60GHz Intel Xeon CPU. VAMPIRE uses about
+750MB of memory on a GPU, while ELMO requires
+about 8.5GB.
+
+a GPU. It is possible to train VAMPIRE orders of
+magnitude faster than ELMO, even without ex-
+pensive hardware, making it especially suitable for
+obtaining fast results when resources are limited.
+
+7 Related Work
+
+In addition to references given throughout, many
+others have explored ways of enhancing perfor-
+mance when working with limited amounts of la-
+beled data. Early work on speech recognition
+demonstrated the importance of pretraining and
+fine-tuning deep models in the semi-supervised
+setting (Yu et al., 2010). Chang et al. (2008) con-
+sidered “dataless” classification, where the names
+of the categories provide the only supervision.
+Miyato et al. (2016) showed that adversarial pre-
+training can offer large gains, effectively augment-
+ing the amount of data available. A long line of
+work in active learning similarly tries to maximize
+performance when obtaining labels is costly (Set-
+tles, 2012). Xie et al. (2019) describe novel data
+augmentation techniques leveraging back transla-
+tion and tf-idf word replacement. All of these ap-
+proaches could be productively combined with the
+methods proposed in this paper.
+
+8 Recommendations
+
+Based on our findings in this paper, we offer the
+following practical advice to those who wish to do
+effective semi-supervised text classification.
+
+• When resources are unlimited, the best re-
+sults can currently be obtained by using a pre-
+trained model such as BERT, but fine-tuning
+
+to in-domain data is critically important (see
+also Howard and Ruder, 2018).
+
+• When computational resources and annota-
+tions are limited, but there is plentiful unla-
+beled data, VAMPIRE offers large gains over
+other low-resource approaches.
+
+• Training a language model such as ELMO on
+only in-domain data offers comparable or
+somewhat better performance to VAMPIRE,
+but may be prohibitively expensive, unless
+working with GPUs.
+
+• Alternatively, resources can be invested in
+getting more annotations; with sufficient la-
+beled data (tens of thousands of instances),
+the advantages offered by additional unla-
+beled data become negligible. Of course,
+other NLP tasks may involve different trade-
+offs between data, speed, and accuracy.
+
+9 Conclusions
+
+The emergence of models like ELMO and
+BERT has revived semi-supervised NLP, demon-
+strating that pretraining large models on massive
+amounts of data can provide representations that
+are beneficial for a wide range of NLP tasks. In
+this paper, we confirm that these models are useful
+for text classification when the number of labeled
+instances is small, but demonstrate that fine-tuning
+to in-domain data is also of critical importance. In
+settings where BERT cannot easily be used, either
+due to computational limitations, or because an
+appropriate pretrained model in the relevant lan-
+guage does not exist, VAMPIRE offers a compet-
+itive lightweight alternative for pretraining from
+unlabeled data in the low-resource setting. When
+working with limited amounts of labeled data, we
+achieve superior performance to baselines such
+as self-training, or using word vectors pretrained
+on out-of-domain data, and approach the perfor-
+mance of ELMO trained only on in-domain data
+at a fraction of the computational cost.
+
+Acknowledgments
+
+We thank the members of the AllenNLP and
+ARK teams for useful comments and discus-
+sions. We also thank the anonymous reviewers
+for their insightful feedback. Computations on
+beaker.org were supported in part by credits
+from Google Cloud.
+
+beaker.org
+
+
+5889
+
+References
+David M. Blei, Andrew Y. Ng, and Michael I. Jordan.
+
+2003. Latent Dirichlet allocation. JMLR, 3:993–
+1022.
+
+Avrim Blum and Tom Mitchell. 1998. Combining la-
+beled and unlabeled data with co-training. In Pro-
+ceedings of COLT.
+
+Tolga Bolukbasi, Kai-Wei Chang, James Y Zou,
+Venkatesh Saligrama, and Adam T Kalai. 2016.
+Man is to computer programmer as woman is to
+homemaker? debiasing word embeddings. In Ad-
+vances in Neural Information Processing Systems.
+
+Samuel R. Bowman, Luke Vilnis, Oriol Vinyals, An-
+drew M. Dai, Rafal Józefowicz, and Samy Ben-
+gio. 2016. Generating sentences from a continuous
+space. In CoNLL.
+
+Dallas Card, Chenhao Tan, and Noah A. Smith. 2018.
+Neural models for documents with metadata. In
+Proceedings of ACL.
+
+Jonathan Chang, Jordan Boyd-Graber, Sean Gerrish,
+Chong Wang, and David M. Blei. 2009. Reading tea
+leaves: How humans interpret topic models. In Ad-
+vances in Neural Information Processing Systems.
+
+Ming-Wei Chang, Lev-Arie Ratinov, Dan Roth, and
+Vivek Srikumar. 2008. Importance of semantic rep-
+resentation: Dataless classification. In Proceedings
+of AAAI.
+
+Eugene Charniak. 1997. Statistical parsing with a
+context-free grammar and word statistics. In Pro-
+ceedings AAAI.
+
+Andrew M. Dai and Quoc V. Le. 2015. Semi-
+supervised sequence learning. In Advances in Neu-
+ral Information Processing Systems.
+
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2019. BERT: Pre-training of
+deep bidirectional transformers for language under-
+standing. In Proceedings of NAACL.
+
+Ran Ding, Ramesh Nallapati, and Bing Xiang. 2018.
+Coherence-aware neural topic modeling. In Pro-
+ceedings of EMNLP.
+
+Antigoni Maria Founta, Constantinos Djouvas, De-
+spoina Chatzakou, Ilias Leontiadis, Jeremy Black-
+burn, Gianluca Stringhini, Athena Vakali, Michael
+Sirivianos, and Nicolas Kourtellis. 2018. Large
+scale crowdsourcing and characterization of Twitter
+abusive behavior. In Proceedings of AAAI.
+
+Jeremy Howard and Sebastian Ruder. 2018. Universal
+language model fine-tuning for text classification. In
+Proceedings of ACL.
+
+Sergey Ioffe and Christian Szegedy. 2015. Batch nor-
+malization: Accelerating deep network training by
+reducing internal covariate shift. In Proceedings
+ICML.
+
+Mohit Iyyer, Varun Manjunatha, Jordan Boyd-Graber,
+and Hal Daumé III. 2015. Deep unordered compo-
+sition rivals syntactic methods for text classification.
+In Proceedings of ACL.
+
+Diederik P. Kingma and Jimmy Ba. 2014. Adam:
+A method for stochastic optimization. CoRR,
+abs/1412.6980.
+
+Diederik P Kingma, Shakir Mohamed, Danilo
+Jimenez Rezende, and Max Welling. 2014. Semi-
+supervised learning with deep generative models.
+In Advances in Neural Information Processing Sys-
+tems.
+
+Diederik P. Kingma and Max Welling. 2013. Auto-
+encoding variational Bayes. CoRR, abs/1312.6114.
+
+Jey Han Lau, David Newman, and Timothy Baldwin.
+2014. Machine reading tea leaves: Automatically
+evaluating topic coherence and topic model quality.
+In Proceedings of EACL.
+
+Andrew L. Maas, Raymond E. Daly, Peter T. Pham,
+Dan Huang, Andrew Y. Ng, and Christopher Potts.
+2011. Learning word vectors for sentiment analysis.
+In Proceedings of ACL.
+
+David McClosky, Eugene Charniak, and Mark John-
+son. 2006. Effective self-training for parsing. In
+Proceedings NAACL.
+
+Yishu Miao, Lei Yu, and Phil Blunsom. 2016. Neu-
+ral variational inference for text processing. In Pro-
+ceedings of ICML.
+
+Tomas Mikolov, Ilya Sutskever, Kai Chen, Greg S. Cor-
+rado, and Jeff Dean. 2013. Distributed representa-
+tions of words and phrases and their compositional-
+ity. In Advances in Neural Information Processing
+Systems.
+
+David Mimno, Hanna M. Wallach, Edmund Talley,
+Miriam Leenders, and Andrew McCallum. 2011.
+Optimizing semantic coherence in topic models. In
+Proceedings of EMNLP.
+
+Takeru Miyato, Andrew M. Dai, and Ian J.
+Goodfellow. 2016. Virtual adversarial training
+for semi-supervised text classification. CoRR,
+abs/1605.07725.
+
+David Newman, Jey Han Lau, Karl Grieser, and Tim-
+othy Baldwin. 2010. Automatic evaluation of topic
+coherence. In Proceedings of NAACL.
+
+Kamal Nigam, Andrew Kachites McCallum, Sebastian
+Thrun, and Tom Mitchell. 2000. Text classification
+from labeled and unlabeled documents using em.
+Machine Learning, 39(2-3).
+
+Jeffrey Pennington, Richard Socher, and Christo-
+pher D. Manning. 2014. GloVe: Global vectors for
+word representation. In Proceedings of EMNLP.
+
+
+
+5890
+
+Matthew E. Peters, Mark Neumann, Mohit Iyyer,
+Matt Gardner, Christopher Clark, Kenton Lee, and
+Luke S. Zettlemoyer. 2018a. Deep contextualized
+word representations. In Proceedings of NAACL.
+
+Matthew E. Peters, Mark Neumann, Luke S. Zettle-
+moyer, and Wen tau Yih. 2018b. Dissecting contex-
+tual word embeddings: Architecture and representa-
+tion. In Proceedings of EMNLP.
+
+Jason Phang, Thibault Févry, and Samuel R. Bow-
+man. 2018. Sentence encoders on STILTs: Supple-
+mentary training on intermediate labeled-data tasks.
+CoRR, abs/1811.01088.
+
+Alec Radford. 2018. Improving language understand-
+ing by generative pre-training.
+
+Alec Radford, Rafal Józefowicz, and Ilya Sutskever.
+2018. Learning to generate reviews and discovering
+sentiment. CoRR, abs/1704.01444.
+
+Marta Recasens, Cristian Danescu-Niculescu-Mizil,
+and Dan Jurafsky. 2013. Linguistic models for an-
+alyzing and detecting biased language. In Proceed-
+ings of ACL.
+
+Danilo Jimenez Rezende, Shakir Mohamed, and Daan
+Wierstra. 2014. Stochastic backpropagation and ap-
+proximate inference in deep generative models. In
+Proceedings of ICML.
+
+Burr Settles. 2012. Active Learning. Morgan & Clay-
+pool.
+
+Akash Srivastava and Charles A. Sutton. 2017. Au-
+toencoding variational inference for topic models.
+In Proceedings of ICLR.
+
+Qizhe Xie, Zihang Dai, Eduard H. Hovy, Minh-Thang
+Luong, and Quoc V. Le. 2019. Unsupervised data
+augmentation. CoRR, abs/1904.12848.
+
+Weidi Xu, Haoze Sun, Chao Deng, and Ying Tan.
+2017. Variational autoencoder for semi-supervised
+text classification. In AAAI.
+
+Zichao Yang, Zhiting Hu, Ruslan Salakhutdinov, and
+Taylor Berg-Kirkpatrick. 2017. Improved varia-
+tional autoencoders for text modeling using dilated
+convolutions. In Proceedings of ICML.
+
+Dani Yogatama, Cyprien de Masson d’Autume, Jerome
+Connor, Tomás Kociský, Mike Chrzanowski, Ling-
+peng Kong, Angeliki Lazaridou, Wang Ling, Lei Yu,
+Chris Dyer, and Phil Blunsom. 2019. Learning and
+evaluating general linguistic intelligence. CoRR,
+abs/1901.11373.
+
+Dong Yu, Li Deng, and George E. Dahl. 2010. Roles
+of pre-training and fine-tuning in context-dependent
+DBN-HMMs for real-world speech recognition. In
+NeurIPS Workshop on Deep Learning and Unsuper-
+vised Feature Learning.
+
+Xiang Zhang, Junbo Zhao, and Yann LeCun. 2015.
+Character-level convolutional networks for text clas-
+sification. In Advances in Neural Information Pro-
+cessing Systems.
+
+Jieyu Zhao, Tianlu Wang, Mark Yatskar, Ryan Cot-
+terell, Vicente Ordonez, and Kai-Wei Chang. 2019.
+Gender bias in contextualized word embeddings. In
+Proceedings of NAACL.
+
+Zhi-Hua Zhou and Ming Li. 2005. Tri-training: ex-
+ploiting unlabeled data using three classifiers. IEEE
+Transactions on Knowledge and Data Engineering,
+17:1529–1541.
+
+
+
+5891
+
+A Hyperparameter Search
+
+In this section, we describe the hyperparameter
+search we used to choose model configurations,
+and include plots illustrating the range of valida-
+tion performance observed in each setting.
+
+A.1 VAMPIRE Search
+For the results presented in the paper, we varied
+the hyperparameters of VAMPIRE across a number
+of different dimensions, outlined in Table 5.
+
+A.2 Classifier Search
+To choose a baseline classifier for which we
+experiment with all pretrained models, we per-
+formed a mix of manual tuning and random search
+over four basic classifiers: CNN, LSTM, Bag-of-
+Embeddings (i.e., Deep Averaging Networks), and
+Logistic Regression.
+
+Figure 6 shows the distribution of validation
+accuracies using 200 and 10,000 labeled in-
+stances, respectively, for different classifiers on
+the IMDB and AG datasets. Under the low-
+resource setting, we observe that logistic regres-
+sion and DAN based classifiers tend to lead to
+more reliable validation accuracies. With enough
+compute, CNN-based classifiers tend to produce
+marginally higher validation accuracies, but the
+probability is mostly centered below those of the
+logistic regression and DAN classifiers. LSTM-
+based classifiers tend to have extremely high vari-
+ance under the low-resource setting. For this work,
+we choose to experiment with the DAN classi-
+fier, which comes with the richness of vector-
+based representations, along with the reliability
+that comes with having very few hyperparameters
+to tune.
+
+B Results in the High Resource Setting
+
+Table 6 shows the results of all high-resource
+methods (along with VAMPIRE) on all datasets,
+as we vary the amount of labeled data. As can
+be seen, training ELMO only on in-domain data
+results in similar or better performance to using
+an off-the-shelf ELMO or BERT model, without
+fine-tuning it to in-domain data.
+
+Except for one case in which it fails badly
+(YAHOO! with 200 labeled instances), fine-tuning
+BERT to the target domain achieves the best
+performance in every setting. Though we per-
+formed a substantial hyperparameter search under
+this regime, we attribute the failure of fine-tuning
+
+0 50
+Step
+
+850
+
+900
+
+950
+
+N
+LL
+
+0 50
+Epoch
+
+0.00
+
+0.05
+
+0.10
+
+N
+P
+
+M
+I
+
+Figure 5: An example learning curve when training
+VAMPIRE on the IMDB dataset. If trained for too long,
+we observe many cases in which NPMI (higher is bet-
+ter) degrades while NLL (lower is better) continues to
+decrease. To avoid selecting a model that has poor topic
+coherence, we recommend performing model selection
+with NPMI rather than NLL.
+
+BERT under this setting to potential hyperparam-
+eter decisions which could be improved with fur-
+ther tuning. Other work has suggest that random
+initializations have a significant effect on the fail-
+ure cases of BERT, pointing to the brittleness of
+fine-tuning (Phang et al., 2018).
+
+The performance gap between fine-tuned
+ELMO and frozen ELMO in AG News corpus is
+much smaller than that of the other datasets, per-
+haps because the ELMO model we used was pre-
+trained on the Billion Words Corpus, which is a
+news crawl. This dataset is also an example where
+frozen ELMO tends to out-perform using VAM-
+PIRE. We attribute the strength of frozen, pre-
+trained ELMO under this setting as further evi-
+dence of the importance of in-domain data for ef-
+fective semi-supervised text classification.
+
+C Further Details on NPMI vs. NLL as
+Stopping Criteria
+
+In the main paper, we note that we have observed
+cases in which training VAMPIRE for too long re-
+sults in NPMI degradation, while NLL continues
+to improve. In Figure 5, we display example learn-
+ing curves that point to this phenomenon.
+
+D Additional Learned Topics
+
+In Table 7 we display some additional topics
+learned by VAMPIRE on the YAHOO! dataset.
+
+
+
+5892
+
+Computing Infrastructure GeForce GTX 1080 GPU
+
+Number of search trials 60 trials per dataset
+
+Search strategy uniform sampling
+
+Model implementation http://github.com/allenai/vampire
+
+Hyperparameter Search space IMDB AG YAHOO! HATESPEECH
+
+number of epochs 50 50 50 50 50
+
+patience 5 5 5 5 5
+
+batch size 64 64 64 64 64
+
+KL divergence annealing choice[sigmoid, linear, constant] linear linear linear constant
+
+KL annealing sigmoid weight 1 0.25 N/A N/A N/A N/A
+
+KL annealing sigmoid weight 2 15 N/A N/A N/A N/A
+
+KL annealing linear scaling 1000 1000 1000 1000 N/A
+
+VAMPIRE hidden dimension uniform-integer[32, 128] 80 81 118 125
+
+Number of encoder layers choice[1, 2, 3] 2 2 3 3
+
+Encoder activation choice[relu, tanh, softplus] tanh relu tanh softplus
+
+Mean projection layers 1 1 1 1 1
+
+Mean projection activation linear linear linear linear linear
+
+Log variance projection layers 1 1 1 1 1
+
+Log variance projection activation linear linear linear linear linear
+
+Number of decoder layers 1 1 1 1 1
+
+Decoder activation linear linear linear linear linear
+
+z-dropout random-uniform[0, 0.5] 0.47 0.49 0.41 0.45
+
+learning rate optimizer Adam Adam Adam Adam Adam
+
+learning rate loguniform-float[1e-4, 1e-2] 0.00081 0.00021 0.00024 0.0040
+
+update background frequency choice[True, False] False False False False
+
+vocabulary size 30000 30000 30000 30000 30000
+
+Dataset VAMPIRE NPMI
+
+IMDB 0.131
+
+AG 0.224
+
+YAHOO! 0.475
+
+HATESPEECH 0.139
+
+Table 5: VAMPIRE search space, best assignments, and associated performance on the four datasets we consider in
+this work.
+
+http://github.com/allenai/vampire
+
+
+5893
+
+Dataset Model 200 500 2500 10000
+
+IMDB ELMO (FR) 75.1 (1.4) 80.3 (1.1) 85.3 (0.1) 87.3 (0.3)
+BERT (FR) 81.5 (1.0) 83.9 (0.4) 86.8 (0.3) 88.2 (0.3)
+ELMO (ID) 81.7 (1.3) 84.5 (0.2) 86.3 (0.4) 88.0 (0.4)
+
+VAMPIRE 82.2 (2.0) 84.5 (0.4) 85.4 (0.4) 87.1 (0.4)
+ELMO (FT) 86.4 (0.6) 87.9 (0.4) 90.0 (0.4) 91.6 (0.2)
+BERT (FT) 88.1 (0.7) 89.4 (0.7) 91.4 (0.1) 93.1 (0.1)
+
+AG ELMO (FR) 84.5 (0.5) 85.7 (0.5) 88.3 (0.2) 89.4 (0.3)
+BERT (FR) 84.6 (1.1) 85.7 (0.7) 88.0 (0.4) 89.0 (0.3)
+ELMO (ID) 84.5 (0.6) 85.8 (0.8) 87.9 (0.2) 89.2 (0.2)
+
+VAMPIRE 83.9 (0.6) 84.5 (0.4) 85.8 (0.2) 87.7 (0.1)
+ELMO (FT) 85.2 (0.5) 86.6 (0.4) 88.6 (0.2) 89.5 (0.1)
+BERT (FT) 87.1 (0.6) 88.0 (0.4) 90.1 (0.5) 91.9 (0.1)
+
+YAHOO! ELMO (FR) 54.3 (1.6) 64.2 (0.6) 71.2 (1.3) 74.1 (0.3)
+BERT (FR) 57.0 (1.3) 64.2 (0.5) 70.0 (0.3) 73.8 (0.2)
+ELMO (ID) 60.9 (1.7) 66.9 (0.9) 72.8 (0.5) 75.6 (0.1)
+
+VAMPIRE 59.9 (0.9) 65.1 (0.3) 69.8 (0.3) 73.6 (0.2)
+ELMO (FT) 60.5 (1.9) 66.1 (0.7) 71.7 (0.7) 75.8 (0.3)
+BERT (FT) 45.3 (7.5) 69.2 (1.6) 76.9 (0.6) 81.0 (0.1)
+
+HATESPEECH ELMO (FR) 70.5 (1.7) 72.4 (0.9) 76.0 (0.5) 78.3 (0.2)
+BERT (FR) 75.1 (0.6) 76.3 (0.3) 77.8 (0.4) 79.0 (0.2)
+ELMO (ID) 73.3 (0.8) 74.1 (0.8) 77.2 (0.3) 78.9 (0.2)
+
+VAMPIRE 74.1 (0.8) 74.4 (0.5) 76.2 (0.6) 78.0 (0.3)
+ELMO (FT) 73.9 (0.6) 75.4 (0.4) 78.1 (0.3) 78.7 (0.1)
+BERT (FT) 76.2 (1.8) 78.3 (1.0) 79.8 (0.4) 80.2 (0.3)
+
+Table 6: Results in the high-resources setting.
+
+YAHOO!
+
+Canine Care Networking Multiplayer Gaming Harry Potter
+
+training wireless multiplayer dumbledore
+obedience homepna massively longbottom
+
+schutzhund network rifle hogwarts
+housebreaking verizon cheating malfoy
+
+iliotibial phone quake weasley
+crate blackberry warcraft rubeus
+
+ligament lan runescape philosopher
+orthopedic telephone socom albus
+
+fracture bluetooth fortress hufflepuffs
+gait broadband duel trelawney
+
+Nutrition Baseball Sexuality Religion
+
+nutritional baseball homophobia islam
+obesity sox heterosexuality jesus
+weight yankees orientation isaiah
+
+bodybuilding rodriguez transsexuality semitism
+anorexia gehrig cultures christian
+
+diet cardinals transgender baptist
+malnutrition astros polyamory jewish
+
+nervosa babe gay prophet
+gastric hitter feminism commandments
+
+watchers sosa societal god
+
+Table 7: Example topics learned by VAMPIRE in the YAHOO! dataset.
+
+
+
+5894
+
+0 20 40 60 80 100
+0.000
+
+0.025
+
+0.050
+
+0.075
+
+0.100
+
+0.125
+
+0.150
+
+0.175
+
+0.200
+
+P
+ro
+
+ba
+bi
+
+lit
+y 
+
+D
+en
+
+si
+ty
+
+IMDB: 200 labeled instances
+
+Logistic Regression
+LSTM-based Classifier
+Deep Averaging Network
+CNN-based Classifier
+
+75.0 77.5 80.0 82.5 85.0 87.5 90.0 92.5 95.0
+0.0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1.0
+
+1.2
+
+1.4
+
+IMDB: 10K labeled instances
+
+0 20 40 60 80 100
+Validation accuracy (%)
+
+0.00
+
+0.05
+
+0.10
+
+0.15
+
+0.20
+
+0.25
+
+P
+ro
+
+ba
+bi
+
+lit
+y 
+
+D
+en
+
+si
+ty
+
+AG News: 200 labeled instances
+
+75.0 77.5 80.0 82.5 85.0 87.5 90.0 92.5 95.0
+Validation accuracy (%)
+
+0.0
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+1.0
+
+1.2
+
+AG News: 10K labeled instances
+
+Figure 6: Probability densities of supervised classification accuracy in low-resource (200 labeled instances; left)
+and high-resource (10K labeled instances; right) settings for IMDB and AG datasets using randomly initialized
+trainable embeddings. Each search consists of 300 trials over 5 seeds and varying hyperparameters. We experiment
+with four different classifiers: Logistic Regression, LSTM-based classifier, Deep Averaging Network, and a CNN-
+based Classifier. We choose to use the Deep Averaging Network for all classifier baselines, due to its reliability,
+expressiveness, and low-maintenance.
+
+

@@ -1,0 +1,1723 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Optimizing Statistical Machine Translation for Text Simplification
+
+Wei Xu1, Courtney Napoles2, Ellie Pavlick1, Quanze Chen1 and Chris Callison-Burch1
+1 Computer and Information Science Department
+
+University of Pennsylvania
+{xwe, epavlick, cquanze, ccb}@seas.upenn.edu
+
+2 Department of Computer Science
+Johns Hopkins University
+courtneyn@jhu.edu
+
+Abstract
+
+Most recent sentence simplification systems
+use basic machine translation models to learn
+lexical and syntactic paraphrases from a man-
+ually simplified parallel corpus. These meth-
+ods are limited by the quality and quantity of
+manually simplified corpora, which are expen-
+sive to build. In this paper, we conduct an in-
+depth adaptation of statistical machine trans-
+lation to perform text simplification, taking
+advantage of large-scale paraphrases learned
+from bilingual texts and a small amount of
+manual simplifications with multiple refer-
+ences. Our work is the first to design auto-
+matic metrics that are effective for tuning and
+evaluating simplification systems, which will
+facilitate iterative development for this task.
+
+1 Introduction
+
+The goal of text simplification is to rewrite an input
+text so that the output is more readable. Text sim-
+plification has applications for reducing input com-
+plexity for natural language processing (Siddharthan
+et al., 2004; Miwa et al., 2010; Chen et al., 2012b)
+and providing reading aids for people with lim-
+ited language skills (Petersen and Ostendorf, 2007;
+Watanabe et al., 2009; Allen, 2009; De Belder and
+Moens, 2010; Siddharthan and Katsos, 2010) or lan-
+guage impairments such as dyslexia (Rello et al.,
+2013), autism (Evans et al., 2014), and aphasia (Car-
+roll et al., 1999).
+
+It is widely accepted that sentence simplification
+can be implemented by three major types of oper-
+
+ations: splitting, deletion and paraphrasing (Feng,
+2008). The splitting operation decomposes a long
+sentence into a sequence of shorter sentences. Dele-
+tion removes less important parts of a sentence. The
+paraphrasing operation includes reordering, lexical
+substitutions and syntactic transformations. While
+sentence splitting (Siddharthan, 2006; Petersen and
+Ostendorf, 2007; Narayan and Gardent, 2014; An-
+grosh et al., 2014) and deletion (Knight and Marcu
+2002; Clarke and Lapata 2006; Filippova and Strube
+2008; Filippova et al. 2015; Rush et al. 2015; and
+others) have been intensively studied, there has been
+considerably less research on developing new para-
+phrasing models for text simplification — most pre-
+vious work has used off-the-shelf statistical machine
+translation (SMT) technology and achieved reason-
+able results (Coster and Kauchak, 2011a,b; Wubben
+et al., 2012; Štajner et al., 2015). However, they have
+either treated the judgment technology as a black
+(Coster and Kauchak, 2011a,b; Narayan and Gar-
+dent, 2014; Angrosh et al., 2014; Štajner et al., 2015)
+or they have been limited to modifying only one as-
+pect of it, such as the translation model (Zhu et al.,
+2010; Woodsend and Lapata, 2011) or the reranking
+component (Wubben et al., 2012).
+
+In this paper, we present a complete adaptation
+of a syntax-based machine translation framework to
+perform simplification. Our methodology poses text
+simplification as a paraphrasing problem: given an
+input text, rewrite it subject to the constraints that
+the output should be simpler than the input, while
+preserving as much meaning of the input as pos-
+sible, and maintaining the well-formedness of the
+text. Going beyond previous work, we make di-
+
+401
+
+Transactions of the Association for Computational Linguistics, vol. 4, pp. 401–415, 2016. Action Editor: Stefan Riezler.
+Submission batch: 10/2015; Revision batch: 2/2016; Published 7/2016.
+
+c©2016 Association for Computational Linguistics. Distributed under a CC-BY 4.0 license.
+
+
+
+rect modifications to four key components in the
+SMT pipeline:1 1) two novel simplification-specific
+tunable metrics; 2) large-scale paraphrase rules au-
+tomatically derived from bilingual parallel corpora,
+which are more naturally and abundantly available
+than manually simplified texts; 3) rich rule-level
+simplification features; and 4) multiple reference
+simplifications collected via crowdsourcing for tun-
+ing and evaluation. In particular, we report the
+first study that shows promising correlations of au-
+tomatic metrics with human evaluation. Our work
+answers the call made in a recent TACL paper (Xu
+et al., 2015) to address problems in current simplifi-
+cation research — we amend human evaluation cri-
+teria, develop automatic metrics, and generate an
+improved multiple reference dataset.
+
+Our work is primarily focused on lexical simplifi-
+cation (rewriting words or phrases with simpler ver-
+sions), and to a lesser extent on syntactic rewrite
+rules that simplify the input. It largely ignores the
+important subtasks of sentence splitting and dele-
+tion. Our focus on lexical simplification does not af-
+fect the generality of the presented work, since dele-
+tion or sentence splitting could be applied as pre- or
+post-processing steps.
+
+2 Background
+
+Xu et al. (2015) laid out a series of problems that
+are present in current text simplification research,
+and argued that we should deviate from the previous
+state-of-the-art benchmarking setup.
+
+First, the Simple English Wikipedia data has dom-
+inated simplification research since 2010 (Zhu et al.,
+2010; Siddharthan, 2014), and is used together with
+Standard English Wikipedia to create parallel text
+to train MT-based simplification systems. How-
+ever, recent studies (Xu et al., 2015; Amancio and
+Specia, 2014; Hwang et al., 2015; Štajner et al.,
+2015) showed that the parallel Wikipedia simplifi-
+cation corpus contains a large proportion of inade-
+quate (not much simpler) or inaccurate (not aligned
+or only partially aligned) simplifications. It is one of
+the leading reasons that existing simplification sys-
+tems struggle to generate simplifying paraphrases
+and leave the input sentences unchanged (Wubben
+
+1Our code and data are made available at: https://
+github.com/cocoxu/simplification/
+
+et al., 2012). Previously researchers attempted some
+quick fixes by adding phrasal deletion rules (Coster
+and Kauchak, 2011a) or reranking n-best outputs
+based on their dissimilarity to the input (Wubben
+et al., 2012). In contrast, we exploit data with im-
+proved quality and enlarged quantity, namely, large-
+scale paraphrase rules automatically derived from
+bilingual corpora and a small amount of manual
+simplification data with multiple references for tun-
+ing parameters. We then systematically design new
+tuning metrics and rich simplification-specific fea-
+tures into a syntactic machine translation model to
+enforce optimization towards simplicity. This ap-
+proach achieves better simplification performance
+without relying on a manually simplified corpus to
+learn paraphrase rules, which is important given the
+fact that Simple Wikipedia and the newly released
+Newsela simplification corpus (Xu et al., 2015) are
+only available for English.
+
+Second, previous evaluation used in the simplifi-
+cation literature is uninformative and not compara-
+ble across models due to the complications between
+the three different operations of paraphrasing, dele-
+tion, and splitting. This, combined with the unreli-
+able quality of Simple Wikipedia as a gold reference
+for evaluation, has been the bottleneck for develop-
+ing automatic metrics. There exist only a few stud-
+ies (Wubben et al., 2012; Štajner et al., 2014) on au-
+tomatic simplification evaluation using existing MT
+metrics which show limited correlation with human
+assessments. In this paper, we restrict ourselves to
+lexical simplification, where we believe MT-derived
+evaluation metrics can best be deployed. Our newly
+proposed metric is the first automatic metric that
+shows reasonable correlation with human evalua-
+tion on the text simplification task. We also intro-
+duce multiple references to make automatic evalua-
+tion feasible.
+
+The most related work to ours is that of Gan-
+itkevitch et al. (2013) on sentence compression, in
+which compression of word and sentence lengths
+can be more straightforwardly implemented in fea-
+tures and the objective function in the SMT frame-
+work. We want to stress that sentence simplifica-
+tion is not a simple extension of sentence compres-
+sion, but is a much more complicated task, primarily
+because high-quality data is much harder to obtain
+and the solution space is more constrained by word
+
+402
+
+
+
+choice and grammar. Our work is also related to
+other tunable metrics designed to be very simple and
+light-weight to ensure fast repeated computation for
+tuning bilingual translation models (Liu et al., 2010;
+Chen et al., 2012a). To the best of our knowledge,
+no tunable metric has been attempted for simplifica-
+tion, except for BLEU. Nor do any evaluation met-
+rics exist for simplification, although there are sev-
+eral designed for other text-to-text generation tasks:
+grammatical error correction (Napoles et al., 2015;
+Felice and Briscoe, 2015; Dahlmeier and Ng, 2012),
+paraphrase generation (Chen and Dolan, 2011; Xu
+et al., 2012; Sun and Zhou, 2012), and conversation
+generation (Galley et al., 2015). Another line of re-
+lated work is lexical simplification that focuses on
+finding simpler synonyms of a given complex word
+(Yatskar et al., 2010; Biran et al., 2011; Specia et al.,
+2012; Horn et al., 2014).
+
+3 Adapting Machine Translation for
+Simplification
+
+We adapt the machinery of statistical machine trans-
+lation to the task of text simplification by making
+changes in the following four key components:
+
+3.1 Simplification-specific Objective Functions
+
+In the statistical machine translation framework, one
+crucial element is to design automatic evaluation
+metrics to be used as training objectives. Train-
+ing algorithms, such as MERT (Och, 2003) or PRO
+(Hopkins and May, 2011), then directly optimize the
+model parameters such that the end-to-end simplifi-
+cation quality is optimal. Unfortunately, previous
+work on text simplification has only used BLEU for
+tuning, which is insufficient as we show empirically
+in Section 4. We propose two new light-weight met-
+rics instead: FKBLEU that explicitly measures read-
+ability and SARI that implicitly measures it by com-
+paring against the input and references.
+
+Unlike machine translation metrics which do not
+compare against the (foreign) input sentence, it is
+necessary to compare simplification system outputs
+against the inputs to assess readability changes. It
+is also important to keep tunable metrics as simple
+as possible, since they are repeatedly computed dur-
+ing the tuning process for hundreds of thousands of
+candidate outputs.
+
+FKBLEU
+Our first metric combines a previously proposed
+
+metric for paraphrase generation, iBLEU (Sun and
+Zhou, 2012), and the widely used readability metric,
+Flesch-Kincaid Index (Kincaid et al., 1975). iBLEU
+is an extension of the BLEU metric to measure di-
+versity as well as adequacy of the generated para-
+phrase output. Given a candidate sentenceO, human
+references R and input text I , iBLEU is defined as:
+
+iBLEU = α× BLEU(O,R) (1)
+−(1− α)× BLEU(O, I).
+
+where α is a parameter taking balance between ade-
+quacy and dissimilarity, and set to 0.9 empirically as
+suggested by Sun and Zhou (2012).
+
+Since the text simplification task aims at improv-
+ing readability, we include the Flesch-Kincaid Index
+(FK) which estimates the readability of text using
+cognitively motivated features (Kincaid et al., 1975):
+
+FK = 0.39×
+(
+
+#words
+#sentences
+
+)
+(2)
+
++11.8×
+(
+#syllables
+#words
+
+)
+− 15.59
+
+with a lower value indicating higher readability.2 We
+adapt FK to score individual sentences and change it
+so that it counts punctuation tokens as well as word,
+and counts each punctuation token as one syllable.
+This prevents it from arbitrarily deleting punctua-
+tion.
+
+FK measures readability assuming that the text is
+well-formed, and therefore is insufficient alone as
+a metric for generating or evaluating automatically
+generated sentences. Combining FK and iBLEU
+captures both a measure of readability and adequacy.
+The resulting objective function, FKBLEU, is de-
+fined as a geometric mean of the iBLEU and the FK
+difference between input and output sentences:
+
+FKBLEU = iBLEU(I,R,O)× FKdiff(I,O)
+FKdiff = sigmoid(FK(O)− FK(I)) (3)
+
+Sentences with higher FKBLEU values are better
+simplifications with higher readability.
+
+2The FK coefficients were derived via multiple regression
+applied to the reading compression test scores of 531 Navy per-
+sonnel reading training manuals. These values are typically
+used unmodified, as we do here.
+
+403
+
+
+
+SARI
+We design a second new metric SARI that prin-
+
+cipally compares system output against references
+and against the input sentence. It explicitly mea-
+sures the goodness of words that are added, deleted
+and kept by the systems (Figure 1).
+
+We reward addition operations, where system out-
+put O was not in the input I but occurred in any of
+the references R, i.e. O ∩ I ∩R. We define n-gram
+precision p(n) and recall r(n) for addition opera-
+tions as follows:3
+
+padd(n) =
+
+∑
+g∈O min
+
+(
+#g(O ∩ I),#g(R)
+
+)
+
+∑
+g∈O #g(O ∩ I)
+
+radd(n) =
+
+∑
+g∈O min
+
+(
+#g(O ∩ I),#g(R)
+
+)
+
+∑
+g∈O #g(R ∩ I)
+
+(4)
+
+where #g(·) is a binary indicator of occurrence of n-
+grams g in a given set (and is a fractional indicator
+in some later formulas) and
+
+#g(O ∩ I) = max(#g(O)−#g(I), 0)
+#g(R ∩ I) = max(#g(R)−#g(I), 0)
+
+Therefore, in the example below, the addition of un-
+igram now is rewarded in both padd(n) and radd(n),
+while the addition of you in OUTPUT-1 is penalized
+in padd(n):
+
+INPUT: About 95 species are currently accepted .
+REF-1: About 95 species are currently known .
+REF-2: About 95 species are now accepted .
+REF-3: 95 species are now accepted .
+OUTPUT-1: About 95 you now get in .
+OUTPUT-2: About 95 species are now agreed .
+OUTPUT-3: About 95 species are currently agreed.
+
+The corresponding SARI scores of these three toy
+outputs are 0.2683, 0.7594, 0.5890, which match
+with intuitions about their quality. To put it in
+perspective, the BLEU scores are 0.1562, 0.6435,
+0.6435 respectively. BLEU fails to distinguish be-
+tween OUTPUT-2 and OUTPUT-3 because match-
+ing any one of references is credited the same. Not
+all the references are necessarily complete simpli-
+fications, e.g. REF-1 doesn’t simplify the word
+
+3In the rare case when the denominator is 0 in calculating
+precision p or recall r, we simply set the value of p and r to 0.
+
+Input
+
+System
+outputHuman 
+
+references
+
+Input that is unchanged by 
+system and which is not in 
+
+the reference
+Input that is retained 
+
+in the references, 
+but was deleted by 
+
+the system Overlap 
+between all 3
+
+Input that was 
+correctly deleted by 
+
+the system, and 
+replaced by content 
+from the references
+
+Potentially 
+incorrect 
+
+system output
+
+Figure 1: Metrics that evaluate the output of monolingual
+text-to-text generation systems can compare system out-
+put against references and against the input sentence, un-
+like in MT metrics which do not compare against the (for-
+eign) input sentence. The different regions of this Venn
+diagram are treated differently with our SARI metric.
+
+currently, which gives BLEU too much latitude for
+matching the input.
+
+Words that are retained in both the system out-
+put and references should be rewarded. When mul-
+tiple references are used, the number of references
+in which an n-gram was retained matters. It takes
+into account that some words/phrases are considered
+simple and are unnecessary (but still encouraged) to
+be simplified. We use R′ to mark the n-gram counts
+over R with fractions, e.g. if a unigram (word about
+in above example) occurs in 2 out of the total r ref-
+erences, then its count is weighted by 2/r in compu-
+tation of precision and recall:
+
+pkeep(n) =
+
+∑
+g∈I min
+
+(
+#g(I ∩O),#g(I ∩R′)
+
+)
+
+∑
+g∈I #g(I ∩O)
+
+rkeep(n) =
+
+∑
+g∈I min
+
+(
+#g(I ∩O),#g(I ∩R′)
+
+)
+
+∑
+g∈I #g(I ∩R′)
+
+(5)
+
+where
+
+#g(I ∩O) = min
+(
+#g(I),#g(O)
+
+)
+
+#g(I ∩R′) = min
+(
+#g(I),#g(R)/r
+
+)
+
+For deletion, we only use precision because over-
+deleting hurts readability much more significantly
+than not deleting:
+
+pdel(n) =
+∑
+
+g∈I min
+(
+#g(I∩O),#g(I∩R′)
+
+)
+
+∑
+g∈I #g(I∩O)
+
+(6)
+
+where
+
+#g(I ∩O) = max
+(
+#g(I)−#g(O), 0
+
+)
+
+#g(I ∩R′) = max
+(
+#g(I)−#g(R)/r, 0
+
+)
+
+404
+
+
+
+[RB] solely → only
+Lexical [NN] objective → goal
+
+[JJ] undue → unnecessary
+[VP] accomplished → carried out
+
+Phrasal [VP/PP] make a significant contribution → contribute greatly
+[VP/S] is generally acknowledged that → is widely accepted that
+
+[NP/VP] the manner in which NN → the way NN
+Syntactic [NP] NNP ’s population → the people of NNP
+
+[NP] NNP ’s JJ legislation → the JJ law of NNP
+
+Table 1: Example paraphrase rules in the Paraphrase Database (PPDB) that result in simplifications of the input. The
+rules are synchronous context-free grammar (SCFG) rules where uppercase indicates non-terminal symbols. Non-
+terminals can be complex symbols like VP/S which indicates that the rule forms a verb phrase (VP) missing a sentence
+(S) to its right. The final syntactic rule both simplifies and reorders the input phrase.
+
+The precision of what is kept also reflects the suf-
+ficiency of deletions. The n-gram counts are also
+weighted in R′ to compensate n-grams, such as the
+word currently in the example, that are not consid-
+ered as required simplification by human editors.
+
+Together, in SARI, we use arithmetic average of
+n-gram precisions Poperation and recalls Roperation:
+
+SARI = d1Fadd + d2Fkeep + d3Pdel (7)
+
+where d1 = d2 = d3 = 1/3 and
+
+Poperation =
+1
+
+k
+
+∑
+
+n=[1,...,k]
+
+poperation(n)
+
+Roperation =
+1
+
+k
+
+∑
+
+n=[1,...,k]
+
+roperation(n)
+
+Foperation =
+2× Poperation ×Roperation
+Poperation +Roperation
+
+operation ∈ [del, keep, add]
+
+where k is the highest n-gram order and set to 4 in
+our experiments.
+
+3.2 Incorporating Large-Scale Paraphrase
+Rules
+
+Another challenge for text simplification is generat-
+ing an ample set of rewrite rules that potentially sim-
+plify an input sentence. Most early work has relied
+on either hand-crafted rules (Chandrasekar et al.,
+1996; Carroll et al., 1999; Siddharthan, 2006; Vick-
+rey and Koller, 2008) or dictionaries like WordNet
+(Devlin et al., 1999; Kaji et al., 2002; Inui et al.,
+2003). Other more recent studies have relied on
+
+the parallel Normal-Simple Wikipedia Corpus to au-
+tomatically extract rewrite rules (Zhu et al., 2010;
+Woodsend and Lapata, 2011; Coster and Kauchak,
+2011b; Wubben et al., 2012; Narayan and Gar-
+dent, 2014; Siddharthan and Angrosh, 2014; An-
+grosh et al., 2014). This technique does manage to
+learn a small number of transformations that sim-
+plify. However, we argue that because the size of the
+Normal-Simple Wikipedia parallel corpus is quite
+small (108k sentence pairs with 2 million words),
+the diversity and coverage of patterns that can be
+learned is actually quite limited.
+
+In this paper we will leverage the large-scale Para-
+phrase Database (PPDB)4 (Ganitkevitch et al., 2013;
+Pavlick et al., 2015) as a rich source of lexical,
+phrasal and syntactic simplification operations. It
+is created by extracting English paraphrases from
+bilingual parallel corpora using a technique called
+“bilingual pivoting” (Bannard and Callison-Burch,
+2005). The PPDB is represented as a synchronous
+context-free grammar (SCFG), which is commonly
+used as the formalism for syntax-based machine
+translation (Zollmann and Venugopal, 2006; Chiang,
+2007; Weese et al., 2011). Table 1 shows some ex-
+ample paraphrase rules in the PPDB.
+
+PPDB employs 1000 times more data (106 mil-
+lion sentence pairs with 2 billion words) than the
+Normal-Simple Wikipedia parallel corpus. The En-
+glish portion of PPDB contains over 220 million
+paraphrase rules, consisting of 8 million lexical,
+73 million phrasal and 140 million syntactic para-
+
+4http://paraphrase.org
+
+405
+
+
+
+phrase patterns. The key differences between the
+paraphrase rules from PPDB and the transforma-
+tions learned by the naive application of SMT to
+the Normal-Simple Wikipedia parallel corpus, are
+that the PPDB paraphrases are much more diverse.
+For example, PPDB contains 214 paraphrases for
+ancient including antique, ancestral, old, age-old,
+archeological, former, antiquated, longstanding, ar-
+chaic, centuries-old, and so on. However, there is
+nothing inherent in the rule extraction process to say
+which of the PPDB paraphrases are simplifications.
+
+In this paper, we model the task by incorporating
+rich features into each rule and let SMT advances
+in decoding and optimization determine how well a
+rule simplifies an input phrase. An alternative way
+of using PPDB for simplification would be to sim-
+ply discard any of its rules which did not result in
+a simplified output, possibly using a simple super-
+vised classifier (Pavlick and Callison-Burch, 2016).
+
+3.3 Simplification-specific Features for
+Paraphrase Rules
+
+Designing good features is an essential aspect of
+modeling. For each input sentence i and its candi-
+date output sentence j, a vector of feature functions
+~ϕ = {ϕ1...ϕN} are combined with a weight vector
+~w in a linear model to obtain a single score h~w:
+
+h~w(i, j) = ~w · ~ϕ(i, j) (8)
+
+In SMT, typical feature functions are phrase trans-
+lation probabilities, word-for-word lexical transla-
+tion probabilities, a rule application penalty (which
+governs whether the system prefers fewer longer
+phrases or a greater number of shorter phrases), and
+a language model probability. Together these fea-
+tures are what the model uses to distinguish between
+good and bad translations. For monolingual transla-
+tion tasks, previous research suggests that features
+like paraphrase probability and distributional sim-
+ilarity are potentially helpful in picking out good
+paraphrases (Chan et al., 2011) and for text-to-text
+generation (Ganitkevitch et al., 2012b). While these
+two features quantify how good a paraphrase rule is
+in general, they do not indicate how good the rule is
+for a specific task, like simplification.
+
+For each paraphrase rule, we use all the 33 fea-
+tures that were distributed with PPDB 1.0 and add
+
+9 new features for simplification purposes:5 length
+in characters, length in words, number of syllables,
+language model scores, and fraction of common En-
+glish words in each rule. These features are com-
+puted for both sides of a paraphrase pattern, the word
+with the maximum number of syllables on each side
+and the difference between the two sides, when it is
+applicable. We use language models built from the
+Gigaword corpus and the Simple Wikipedia corpus
+collected by Kauchak (2013). We also use a list of
+3000 most common US English words compiled by
+Paul and Bernice Noll.6
+
+3.4 Creating Multiple References
+Like with machine translation, where there are many
+equally good translations, in simplification there
+may be several ways of simplifying a sentence. Most
+previous work on text simplification only uses a sin-
+gle reference simplification, often from the Simple
+Wikipedia. This is undesirable since the Simple
+Wikipedia contains a large proportion of inadequate
+or inaccurate simplifications (Xu et al., 2015) .
+
+In this study, we collect multiple human reference
+simplifications that focus on simplification by para-
+phrasing rather than deletion or splitting. We first
+selected the Simple-Normal sentence pairs of simi-
+lar length (≤ 20% differences in number of tokens)
+from the Parallel Wikipedia Simplification (PWKP)
+corpus (Zhu et al., 2010) that are more likely to be
+paraphrase-only simplifications. We then asked 8
+workers on Amazon Mechanical Turk to rewrite a
+selected sentence from Normal Wikipedia (a subset
+of PWKP) into a simpler version while preserving
+its meaning, without losing any information or split-
+ting sentence. We removed bad workers by man-
+ual inspection on the worker’s first several submis-
+sions on the basis of a recent study (Gao et al., 2015)
+on crowdsourcing translation that suggests Turkers’
+performance stays consistent over time and can be
+reliably predicted by their first few translations.
+
+In total, we collected 8 reference simplifications
+for 2350 sentences, and randomly split them into
+2000 sentences for tuning, 350 for evaluation. Many
+crowdsourcing workers were able to provide simpli-
+fications of good quality and diversity (see Table 2
+
+5We release the data with details for each feature.
+6http://www.manythings.org/vocabulary/
+
+lists/l/noll-about.php
+
+406
+
+
+
+for an example and Table 4 for the manual quality
+evaluation). Having multiple references allows us to
+develop automatic metrics similar to BLEU to take
+advantage of the variation across many people’s sim-
+plifications. We leave more in-depth investigations
+on crowdsourcing simplification (Pellow and Eske-
+nazi, 2014a,b) for future work.
+
+3.5 Tuning Parameters
+
+Like in statistical machine translation, we set the
+weights of the linear model ~w in the Equation (8)
+so that the system’s output is optimized with re-
+spect to the automatic evaluation metric on the 2000
+sentence development set. We use the pairwise
+ranking optimization (PRO) algorithm (Hopkins and
+May, 2011) implemented in the open-source Joshua
+toolkit (Ganitkevitch et al., 2012a; Post et al., 2013)
+for tuning.
+
+Specifically, we train the system to distinguish a
+good candidate output j from a bad candidate j′,
+measured by an objective function o (Section 3.1),
+for an input sentence i:
+
+o(i, j) >o(i, j′) ⇐⇒ h~w(i, j) > h~w(i, j′)
+⇐⇒ h~w(i, j)− h~w(i, j′) > 0
+⇐⇒ ~w · ~ϕ(i, j)− ~w · ~ϕ(i, j′) > 0
+⇐⇒ ~w · (~ϕ(i, j)− ~ϕ(i, j′)) > 0
+
+(9)
+
+Thus, the optimization reduces to a binary classifi-
+cation problem. Each training instance is the dif-
+ference vector ~ϕ(i, j) − ~ϕ(i, j′)) of a pair of can-
+didates, and its training label is positive or negative
+depending on whether the value of o(i, j) − o(i, j′)
+is positive or negative. The candidates are generated
+according to h~w at each iteration, and sampled for
+making the training tractable. We use different met-
+rics: BLEU, FKBLEU and SARI as objectives.
+
+4 Experiments and Analyses
+
+We implemented all the proposed adaptations into
+the open source syntactic machine translation de-
+coder Joshua (Post et al., 2013),7 and conducted
+the experiments with PPDB and the dataset of 2350
+sentences collected in Section 3.4. Most recent
+
+7http://joshua-decoder.org/We augment its lat-
+est version to include the text-to-text generation functionality
+described in this paper.
+
+Paraphrase Rule Trans. Model Score
+principal→ key 4.515
+principal→ main 4.514
+principal→ major 4.358
+principal→ chief 3.205
+principal→ core 3.025
+principal→ principal 2.885
+principal→ top 2.600
+principal→ senior 2.480
+principal→ lead 2.377
+principal→ primary 2.171
+principal→ prime 1.432
+principal→ keynote -0.795
+able-bodied→ valid 6.435
+able-bodied→ sound 5.838
+able-bodied→ healthy 4.446
+able-bodied→ able-bodied 3.372
+able-bodied→ job-ready 1.611
+able-bodied→ employable -0.363
+able-bodied→ non-disabled -2.207
+
+Table 3: Qualitative analysis of candidate paraphrases
+ranked by the translation model in SBMT (PPDB +
+SARI), showing that the model is optimized towards sim-
+plicity in addition to the correctness of paraphrases. The
+final simplifications (in bold) are chosen in conjunction
+with the language model to fit the context and further bias
+towards more common n-grams.
+
+end-to-end sentence simplification systems use a
+basic phrase-based MT model trained on parallel
+Wikipedia data using the Moses decoder (Štajner
+et al., 2015, and others). One of the best systems
+is PBMT-R by Wubben et al. (2012), which reranks
+Moses’ n-best outputs based on their dissimilarity to
+the input to promote simplification. We also build a
+baseline by using BLEU as the tuning metric in our
+adapted MT framework. We conduct both human
+and automatic evaluation to demonstrate the advan-
+tage of the proposed simplification systems. We also
+show the effectiveness of the two new metrics in tun-
+ing and automatic evaluation.
+
+4.1 Qualitative Analysis
+
+Table 2 shows a representative example of the sim-
+plification results. The PBMT-R model failed to
+learn any good substitutions for the word able-
+bodied or the phrase are required to from the man-
+ually simplified corpora of limited size. In contrast,
+our proposed method can make use of more para-
+
+407
+
+
+
+Sentence
+
+Normal Wikipedia Jeddah is the principal gateway to Mecca, Islam’s holiest city, which able-bodied Muslims
+are required to visit at least once in their lifetime.
+
+Simple Wikipedia Jeddah is the main gateway to Mecca, the holiest city of Islam, where able-bodied Muslims
+must go to at least once in a lifetime.
+
+Mechanical Turk #1 Jeddah is the main entrance to Mecca, the holiest city in Islam, which all healthy Muslims
+need to visit at least once in their life.
+
+Mechanical Turk #2 Jeddah is the main entrance to Mecca, Islam’s holiest city, which pure Muslims are re-
+quired to visit at least once in their lifetime.
+
+PBMT-R (Wubben et al., 2012) Jeddah is the main gateway to Mecca, Islam’s holiest city, which able-bodied Muslims are
+required of Muslims at least once in their lifetime.
+
+SBMT (PPDB + BLEU) Jeddah is the main door to Mecca, Islam’s holiest city, which sound Muslims are to go to
+at least once in their life.
+
+SBMT (PPDB + FKBLEU) Jeddah is the main gateway to Mecca, Islam’s holiest city, which sound Muslims must
+visit at least once in their life.
+
+SBMT (PPDB + SARI) Jeddah is the main gateway to Mecca, Islam’s holiest city, which sound Muslims have to
+visit at least once in their life.
+
+Table 2: Example human reference simplifications and automatic simplification system outputs. The bold font high-
+lights the parts of the sentence that are different from the original version in the Normal Wikipedia, and strikethrough
+denotes deletions.
+
+phrases learned from the more abundant bilingual
+texts. It improves method applicability to languages
+other than English, for which no simpler version of
+Wikipedia is available.
+
+Our proposed approach also provides an intu-
+itive way to inspect the ranking of candidate para-
+phrases in the translation model. This is done by
+scoring each rule in PPDB by Equation 8 using the
+weights optimized in the tuning process, as in Ta-
+ble 3. It shows that our proposed method is capable
+of capturing the notion of simplicity using a small
+amount of parallel tuning data. It correctly ranks key
+and main as good simplifications for principal. Its
+choices are not always perfect as it prefers sound
+over healthy for able-bodied. The final simplifi-
+cation outputs are generated according to both the
+translation model and the language model trained
+on the Gigaword corpus to take into account context
+and further bias towards more common n-grams.
+
+4.2 Quantitative Evaluation of Simplification
+Systems
+
+For the human evaluation, participants were shown
+the original English Wikipedia sentence as a ref-
+erence and asked to judge a set of simplifications
+that were displayed in random order. They eval-
+uated a simplification from each system, the Sim-
+ple Wikipedia version, and a Turker simplification.
+Judges rated each simplification on two 5-point
+
+scales of meaning retention and grammaticality (0
+is the worst and 4 is the best). We also ask partici-
+pants to rate Simplicity Gain (Simplicity+) by count-
+ing how many successful lexical or syntactic para-
+phrases occurred in the simplification. We found this
+makes the judgment easier and that it is more infor-
+mative than rating the simplicity directly on 5-point
+scale, since the original sentences have very differ-
+ent readability levels to start with. More importantly,
+using simplicity gain avoids over-punishment of er-
+rors, which are already penalized for poor meaning
+retention and grammaticality, and thus reduces the
+bias towards very conservative models. We collect
+judgments on these three criteria from five different
+annotators and report the average scores.
+
+Table 4 shows that our best system, a syntactic-
+based MT system (SBMT) using PPDB as the
+source of paraphrase rules and tuning towards the
+SARI metric, achieves better performance in all
+three simplification measurements than the state-of-
+the-art system PBMT-R. The relatively small val-
+ues of simplicity gain, even for the two human ref-
+erences (Simple Wikipedia and Mechanical Turk),
+clearly show the major challenge of simplification,
+which is the need of not only generating paraphrases
+but also ensuring the generated paraphrases are sim-
+pler while fitting the contexts. Although many re-
+searchers have noticed this difficulty, PBMT-R is
+one of the few that tried to address it by promoting
+
+408
+
+
+
+Grammar Meaning Simplicity+ #tokens #chars Edit Dist.
+Normal Wikipedia 4.00 4.00 0.00 23 125 0.00
+Simple Wikipedia 3.72 3.24 1.03 22 116 6.69
+Mechanical Turk 3.70 3.36 1.35 19 104 8.25
+PBMT-R (Wubben et al., 2012) 3.18 2.83 0.47 20 108 5.96
+SBMT (PPDB + BLEU) 4.00 4.00 0.00 23 125 0.00
+SBMT (PPDB + FKBLEU) 3.30 3.05 0.48 21 107 4.03
+SBMT (PPDB + SARI) 3.50 3.16 0.65 23 118 3.98
+
+Table 4: Human evaluation (Grammar, Meaning, Simplicity+) and basic statistics of our proposed systems (SBMTs)
+and baselines. PBMT-R is an reimplementation of the state-of-the-art system by Wubben et al. (2012). Newly proposed
+metrics FKBLEU and SARI show advantages for tuning.
+
+FK BLEU iBLEU FKBLEU SARI
+Normal Wikipedia 12.88 99.05 78.41 62.48 26.05
+Simple Wikipedia 11.25 66.75 53.53 61.75 38.42
+Mechanical Turk 10.80 100.0 74.31 73.60 43.71
+PBMT-R (Wubben et al., 2012) 11.10 63.12 48.91 59.00 33.77
+SBMT (PPDB + BLEU) 12.88 99.05 78.41 62.48 26.05
+SBMT (PPDB + FKBLEU) 10.75 74.48 58.10 66.68 34.18
+SBMT (PPDB + SARI) 10.90 72.36 58.15 66.57 37.91
+
+Table 5: Automatic evaluation of different simplification systems. Most systems achieve similar FK readability scores
+as human. The SARI metric ranks all 5 different systems and 3 human references in the same order as human assess-
+ment. Tuning towards BLEU with all 8 references results in identical transformation (same as Normal Wikipedia),
+as this can get a near-perfect BLEU score of 99.05 (out of 100).
+
+outputs that are dissimilar to the input. Our best sys-
+tem is able to make more effective paraphrases (bet-
+ter Simplicity+) while introducing less errors (better
+Grammar and Meaning).
+
+Table 5 shows the automatic evaluation. An en-
+couraging fact is that SARI metric ranks all 5 dif-
+ferent systems and 3 human references in the same
+order as human assessment. Most systems achieve
+similar FK readability as human editors, using fewer
+words or words with fewer syllables. Tuning to-
+wards BLEU with all 8 references results in no trans-
+formation (same as input), as this can get a near-
+perfect BLEU score of 99.05 (out of 100).
+
+Table 6 shows the computation time for different
+metrics. SARI is only slightly slower than BLEU
+but achieves much better simplification quality.
+
+Time (milliseconds)
+BLEU 0.12540908
+
+FKBLEU 1.2527733
+SARI 0.15506646
+
+Table 6: Average computation time of different metrics
+per candidate sentence.
+
+4.3 Correlation of Automatic Metrics with
+Human Judgments
+
+Table 7 shows the correlation of automatic metrics
+with human judgment. There are several interesting
+observations.
+
+First, simplicity is essential in measuring the
+goodness of simplification. However, none of the
+existing metrics (i.e. FK, BLEU, iBLEU) demon-
+strate any significant correlation with the simplicity
+scores rated by humans, same as noted in previous
+work (Wubben et al., 2012; Štajner et al., 2014). In
+contrast, our two new metrics, FKBLEU and SARI,
+achieve a much better correlation with humans in
+simplicity judgment while still capturing the notion
+of grammaticality and meaning preservation. This
+explains why they are more suitable than BLEU to
+be used in training the simplification models. In
+particular, SARI provides a balanced and integrative
+measurement of system performance that can assist
+iterative development. To date, developing advanced
+simplification systems has been a difficult and time-
+consuming process, since it is impractical to run new
+
+409
+
+
+
+Spearman’s ρ ref. Grammar Meaning Simplicity+
+FK none - 0.002 (≈ .976) 0.136 (<.010) 0.147 (<.010)
+
+BLEU single 0.366 (<.001) 0.459 (<.001) 0.151 (<.005)
+BLEU multiple 0.589 (<.001) 0.701 (<.001) 0.111 (<.050)
+iBLEU single 0.313 (<.001) 0.397 (<.001) 0.149 (<.005)
+iBLEU multiple 0.492 (<.001) 0.609 (<.001) 0.141 (<.010)
+
+FKBLEU multiple 0.349 (<.001) 0.410 (<.001) 0.235 (<.001)
+SARI multiple 0.342 (<.001) 0.397 (<.001) 0.343 (<.001)
+
+Table 7: Correlations (and two-tailed p-values) of metrics against the human ratings at sentence-level (also see Figure
+3). In this work, we propose to use multiple (eight) references and two new metrics: FKBLEU and SARI. For all three
+criteria of simplification quality, SARI correlates reasonably with human judgments. In contrast, previous works use
+only a single reference. Existing metrics BLEU and iBLEU show higher correlations on grammaticality and meaning
+preservation using multiple references, but fail to measure the most important aspect of simplification – simplicity.
+
+human evaluation every time a new model is built or
+parameters are adjusted.
+
+Second, the correlation of automatic metrics with
+human judgment of grammaticality and meaning
+preservation is higher than any reported before
+(Wubben et al., 2012; Štajner et al., 2014). It val-
+idates our argument that constraining simplification
+to only paraphrasing reduces the complication from
+deletion and splitting, and thus makes automatic
+evaluation more feasible. Using multiple references
+further improves the correlations.
+
+4.4 Why Does BLEU Correlate Strongly with
+Meaning/Grammar, and SARI with
+Simplicity?
+
+Here we look more deeply at the correlations of
+BLEU and SARI with human judgments. Our SARI
+metric has highest correlation with human judg-
+ments of simplicity, but BLEU exhibits higher corre-
+lations on grammaticality and meaning preservation.
+
+BLEU was designed to evaluate bilingual transla-
+tion systems. It measures the n-gram precision of
+a system’s output against one or more references.
+BLEU ignores recall (and compensates for this with
+its brevity penalty). BLEU prefers an output that is
+not too short and contains only n-grams that appear
+in any reference. The role of multiple references
+in BLEU is to capture allowable variations in trans-
+lation quality. When applied to monolingual tasks
+like simplification, BLEU does not take into account
+anything about the differences between the input and
+the references. In contrast, SARI takes into account
+both precision and recall, by looking at the differ-
+ence between the references and the input sentence.
+
+Figure 2: A scatter plot of BLEU scores vs. SARI scores
+for the individual sentences in our test set. The metrics’
+scores for many sentences substantially diverge. Few of
+the sentences that scored perfectly in BLEU receive a
+high score from SARI.
+
+In this work, we use multiple references to capture
+many different ways of simplifying the input.
+
+Unlike bilingual translation, the more references
+created for the monolingual simplification task the
+more n-grams of the original input will be included
+in the references. That means, with more references,
+outputs that are close or identical to the input will get
+high BLEU. Outputs with few changes also receive
+high Grammar/Meaning scores from human judges;
+but these do not necessarily get high SARI score nor
+are they good simplifications. BLEU therefore tends
+to favor conservative systems that do not make many
+changes, while SARI penalizes them. This can be
+
+410
+
+
+
+0.1 0.2 0.3 0.4 0.5 0.6 0.7
+
+0
+
+1
+
+2
+
+3
+
+4
+H
+
+um
+an
+
+ S
+co
+
+re
+
+SARI vs. Grammar
+
+0.1 0.2 0.3 0.4 0.5 0.6 0.7
+
+SARI vs. Meaning
+
+0.1 0.2 0.3 0.4 0.5 0.6 0.7
+
+SARI vs. Simplicity
+
+0.0 0.2 0.4 0.6 0.8 1.0 1.2
+Automatic Score
+
+0
+
+1
+
+2
+
+3
+
+4
+
+H
+um
+
+an
+ S
+
+co
+re
+
+BLEU vs. Grammar
+
+0.0 0.2 0.4 0.6 0.8 1.0 1.2
+Automatic Score
+
+BLEU vs. Meaning
+
+0.0 0.2 0.4 0.6 0.8 1.0 1.2
+Automatic Score
+
+H
+um
+
+an
+ R
+
+at
+in
+
+g
+
+BLEU vs. Simplicity
+
+Figure 3: Scatter plots of automatic metrics against human scores for individual sentences.
+
+seen in Figure 2 where sentences with a BLEU score
+of 1.0 receive a range of scores from SARI.
+
+The scatter plots in Figure 3 further illustrate the
+above analysis. These plots emphasize the correla-
+tion of high human scores on meaning/grammar for
+systems that make few changes (which BLEU re-
+wards, but SARI does not). The tradeoff is that con-
+servative outputs with few or no changes do not re-
+sult in increased simplicity. SARI correctly rewards
+systems that make changes that simplify the input.
+
+5 Conclusions and Future Work
+
+In this paper, we presented an effective adaptation
+of statistical machine translation techniques. We
+find the approach promising in suggesting two new
+directions: designing tunable metrics that corre-
+late with human judgements and using simplicity-
+enriched paraphrase rules derived from larger data
+than the Normal-Simple Wikipedia dataset. For fu-
+ture work, we think it might be possible to design
+a universal metric that works for multiple text-to-
+text generation tasks (including sentence simplifica-
+tion, compression and error correction), at the same
+
+time using the same idea of comparing system out-
+put against multiple references and against the input.
+The metric could possibly include tunable parame-
+ters or weighted human judgments on references to
+accommodate different tasks. Finally, we are also
+interested in designing neural translation models for
+the simplification task.
+
+Acknowledgments
+
+The authors would like to thank Juri Ganitkevitch,
+Jonny Weese, Kristina Toutanova, Matt Post, and
+Shashi Narayan for valuable discussions. We also
+thank action editor Stefan Riezler and three anony-
+mous reviewers for their thoughtful comments. This
+material is based on research sponsored by the NSF
+under grant IIS-1430651 and the NSF GRFP under
+grant 1232825. The views and conclusions con-
+tained in this publication are those of the authors
+and should not be interpreted as representing offi-
+cial policies or endorsements of the NSF or the U.S.
+Government. This research is also supported by the
+Alfred P. Sloan Foundation, and by Facebook via a
+student fellowship and a faculty research award.
+
+411
+
+
+
+References
+
+Allen, D. (2009). A study of the role of relative
+clauses in the simplification of news texts for
+learners of English. System, 37(4):585–599.
+
+Amancio, M. A. and Specia, L. (2014). An analysis
+of crowdsourced text simplifications. In Proceed-
+ings of the 3rd Workshop on Predicting and Im-
+proving Text Readability for Target Reader Popu-
+lations (PITR).
+
+Angrosh, M., Nomoto, T., and Siddharthan, A.
+(2014). Lexico-syntactic text simplification and
+compression with typed dependencies. In Pro-
+ceedings of the 14th Conference of the Euro-
+pean Chapter of the Association for Computa-
+tional Linguistics (EACL).
+
+Bannard, C. and Callison-Burch, C. (2005). Para-
+phrasing with bilingual parallel corpora. In Pro-
+ceedings of the 43rd Annual Meeting of the Asso-
+ciation for Computational Linguistics (ACL).
+
+Biran, O., Brody, S., and Elhadad, N. (2011).
+Putting it simply: A context-aware approach to
+lexical simplification. In Proceedings of the 49th
+Annual Meeting of the Association for Computa-
+tional Linguistics: Human Language Technolo-
+gies (ACL-HLT).
+
+Carroll, J., Minnen, G., Pearce, D., Canning, Y., De-
+vlin, S., and Tait, J. (1999). Simplifying text for
+language-impaired readers. In Proceedings of the
+14th Conference of the 9th European Conference
+for Computational Linguistics (EACL).
+
+Chan, T. P., Callison-Burch, C., and Van Durme,
+B. (2011). Reranking bilingually extracted para-
+phrases using monolingual distributional similar-
+ity. In Proceedings of the Workshop on Geo-
+metrical Models of Natural Language Semantics
+(MTTG).
+
+Chandrasekar, R., Doran, C., and Srinivas, B.
+(1996). Motivations and methods for text simpli-
+fication. In Proceedings of the 16th Conference
+on Computational linguistics (COLING).
+
+Chen, B., Kuhn, R., and Larkin, S. (2012a). PORT:
+A precision-order-recall MT evaluation metric for
+tuning. In Proceedings of the 50th Annual Meet-
+ing of the Association for Computational Linguis-
+tics (ACL).
+
+Chen, D. L. and Dolan, W. B. (2011). Collecting
+highly parallel data for paraphrase evaluation. In
+Proceedings of the 49th Annual Meeting of the As-
+sociation for Computational Linguistics (ACL).
+
+Chen, H.-B., Huang, H.-H., Chen, H.-H., and
+Tan, C.-T. (2012b). A simplification-translation-
+restoration framework for cross-domain SMT ap-
+plications. In Proceedings of the 24th Interna-
+tional Conference on Computational Linguistics
+(COLING).
+
+Chiang, D. (2007). Hierarchical phrase-based trans-
+lation. Computational Linguistics, 33(2):201–
+228.
+
+Clarke, J. and Lapata, M. (2006). Models for
+sentence compression: A comparison across do-
+mains, training requirements and evaluation mea-
+sures. In Proceedings of the 21st International
+Conference on Computational Linguistics and
+44th Annual Meeting of the Association for Com-
+putational Linguistics (ACL-COLING).
+
+Coster, W. and Kauchak, D. (2011a). Learning to
+simplify sentences using Wikipedia. In Proceed-
+ings of the Workshop on Monolingual Text-To-Text
+Generation.
+
+Coster, W. and Kauchak, D. (2011b). Simple En-
+glish Wikipedia: A new text simplification task.
+In Proceedings of the 49th Annual Meeting of the
+Association for Computational Linguistics: Hu-
+man Language Technologies (ACL-HLT).
+
+Dahlmeier, D. and Ng, H. T. (2012). Better eval-
+uation for grammatical error correction. In Pro-
+ceedings of the 2012 Conference of the North
+American Chapter of the Association for Compu-
+tational Linguistics: Human Language Technolo-
+gies (NAACL-HLT).
+
+De Belder, J. and Moens, M.-F. (2010). Text simpli-
+fication for children. In Proceedings of the SIGIR
+Workshop on Accessible Search Systems.
+
+Devlin, S., Tail, J., Canning, Y., Carroll, J., Min-
+nen, G., and Pearce, D. (1999). The application
+of assistive technology in facilitating the compre-
+hension of newspaper text by aphasic people. As-
+sistive Technology on the Threshold of the New
+Millennium, page 160.
+
+Evans, R., Orasan, C., and Dornescu, I. (2014).
+An evaluation of syntactic simplification rules
+
+412
+
+
+
+for people with autism. In Proceedings of
+the 3rd Workshop on Predicting and Improving
+Text Readability for Target Reader Populations
+(PITR).
+
+Felice, M. and Briscoe, T. (2015). Towards a stan-
+dard evaluation method for grammatical error de-
+tection and correction. In Proceedings of the
+2015 Conference of the North American Chapter
+of the Association for Computational Linguistics
+(NAACL).
+
+Feng, L. (2008). Text simplification: A survey. The
+City University of New York, Technical Report.
+
+Filippova, K., Alfonseca, E., Colmenares, C. A.,
+Kaiser, L., and Vinyals, O. (2015). Sentence com-
+pression by deletion with LSTMs. In Proceedings
+of the 2015 Conference on Empirical Methods in
+Natural Language Processing (EMNLP).
+
+Filippova, K. and Strube, M. (2008). Dependency
+tree based sentence compression. In Proceedings
+of the Fifth International Natural Language Gen-
+eration Conference (INLG).
+
+Galley, M., Brockett, C., Sordoni, A., Ji, Y., Auli,
+M., Quirk, C., Mitchell, M., Gao, J., and Dolan,
+B. (2015). deltaBLEU: A discriminative metric
+for generation tasks with intrinsically diverse tar-
+gets. In Proceedings of the 53rd Annual Meeting
+of the Association for Computational Linguistics
+(ACL).
+
+Ganitkevitch, J., Cao, Y., Weese, J., Post, M., and
+Callison-Burch, C. (2012a). Joshua 4.0: Packing,
+PRO, and paraphrases. In Proceedings of the Sev-
+enth Workshop on Statistical Machine Translation
+(WMT).
+
+Ganitkevitch, J., Van Durme, B., and Callison-
+Burch, C. (2012b). Monolingual distributional
+similarity for text-to-text generation. In Proceed-
+ings of the First Joint Conference on Lexical and
+Computational Semantics (*SEM).
+
+Ganitkevitch, J., Van Durme, B., and Callison-
+Burch, C. (2013). PPDB: The paraphrase
+database. In Proceedings of the 2013 Conference
+of the North American Chapter of the Association
+for Computational Linguistics (NAACL).
+
+Gao, M., Xu, W., and Callison-Burch, C. (2015).
+Cost optimization in crowdsourcing translation.
+
+In Proceedings of the 2015 Conference of the
+North American Chapter of the Association for
+Computational Linguistics (NAACL).
+
+Hopkins, M. and May, J. (2011). Tuning as rank-
+ing. In Proceedings of the Conference on Em-
+pirical Methods in Natural Language Processing
+(EMNLP).
+
+Horn, C., Manduca, C., and Kauchak, D. (2014).
+Learning a lexical simplifier using Wikipedia. In
+Proceedings of the 52th Annual Meeting of the As-
+sociatioin for Computational Linguistics (ACL).
+
+Hwang, W., Hajishirzi, H., Ostendorf, M., and Wu,
+W. (2015). Aligning sentences from Standard
+Wikipedia to Simple Wikipedia. In Proceed-
+ings of the 2015 Conference of the North Ameri-
+can Chapter of the Association for Computational
+Linguistics (NAACL).
+
+Inui, K., Fujita, A., Takahashi, T., Iida, R., and
+Iwakura, T. (2003). Text simplification for read-
+ing assistance: A project note. In Proceedings of
+the 2nd International Workshop on Paraphrasing
+(IWP).
+
+Kaji, N., Kawahara, D., Kurohash, S., and Sato, S.
+(2002). Verb paraphrase based on case frame
+alignment. In Proceedings of the 40th Annual
+Meeting on Association for Computational Lin-
+guistics (ACL).
+
+Kauchak, D. (2013). Improving text simplification
+language modeling using unsimplified text data.
+In Proceedings of the 2013 Conference of the As-
+sociation for Computational Linguistics (ACL).
+
+Kincaid, J. P., Fishburne Jr, R. P., Rogers, R. L., and
+Chissom, B. S. (1975). Derivation of new read-
+ability formulas (automated readability index, fog
+count and Flesch reading ease formula) for Navy
+enlisted personnel. Technical report, Defence
+Technical Information Center (DTIC) Document.
+
+Knight, K. and Marcu, D. (2002). Summarization
+beyond sentence extraction: A probabilistic ap-
+proach to sentence compression. Artificial Intelli-
+gence.
+
+Liu, C., Dahlmeier, D., and Ng, H. T. (2010).
+TESLA: Translation evaluation of sentences with
+linear-programming-based analysis. In Proceed-
+ings of the Joint Fifth Workshop on Statistical Ma-
+chine Translation and Metrics (MATR).
+
+413
+
+
+
+Miwa, M., Saetre, R., Miyao, Y., and Tsujii, J.
+(2010). Entity-focused sentence simplification for
+relation extraction. In Proceedings of the 23rd
+International Conference on Computational Lin-
+guistics (COLING).
+
+Napoles, C., Sakaguchi, K., Post, M., and Tetreault,
+J. (2015). Ground truth for grammatical error
+correction metrics. In Proceedings of the 53rd
+Annual Meeting of the Association for Computa-
+tional Linguistics (ACL).
+
+Narayan, S. and Gardent, C. (2014). Hybrid simpli-
+fication using deep semantics and machine trans-
+lation. In Proceedings of the 52nd Annual Meet-
+ing of the Association for Computational Linguis-
+tics (ACL).
+
+Och, F. J. (2003). Minimum error rate training in
+statistical machine translation. In Proceedings of
+the 41st Annual Meeting on Association for Com-
+putational Linguistics (ACL).
+
+Pavlick, E., Bos, J., Nissim, M., Beller, C., Durme,
+B. V., and Callison-Burch, C. (2015). Adding se-
+mantics to data-driven paraphrasing. In Proceed-
+ings of the 53rd Annual Meeting of the Associa-
+tion for Computational Linguistics (ACL).
+
+Pavlick, E. and Callison-Burch, C. (2016). Simple
+PPDB: A paraphrase database for simplification.
+In The 54th Annual Meeting of the Association for
+Computational Linguistics (ACL).
+
+Pellow, D. and Eskenazi, M. (2014a). An open
+corpus of everyday documents for simplification
+tasks. In Proceedings of the 3rd Workshop on Pre-
+dicting and Improving Text Readability for Target
+Reader Populations (PITR).
+
+Pellow, D. and Eskenazi, M. (2014b). Tracking hu-
+man process using crowd collaboration to enrich
+data. In Proceedings of Second AAAI Confer-
+ence on Human Computation and Crowdsourcing
+(HCOMP).
+
+Petersen, S. E. and Ostendorf, M. (2007). Text sim-
+plification for language learners: A corpus anal-
+ysis. In Proceedings of Workshop on Speech and
+Language Technology for (SLaTE).
+
+Post, M., Ganitkevitch, J., Orland, L., Weese, J.,
+Cao, Y., and Callison-Burch, C. (2013). Joshua
+5.0: Sparser, better, faster, server. In Proceed-
+
+ings of the Eighth Workshop on Statistical Ma-
+chine Translation (WMT).
+
+Rello, L., Baeza-Yates, R. A., and Saggion, H.
+(2013). The impact of lexical simplification by
+verbal paraphrases for people with and without
+dyslexia. In Proceedings of the 14th Interna-
+tional Conference on Intelligent Text Processing
+and Computational Linguistics (CICLing).
+
+Rush, A. M., Chopra, S., and Weston, J. (2015).
+A neural attention model for abstractive sentence
+summarization. In Proceedings of the 2015 Con-
+ference on Empirical Methods in Natural Lan-
+guage Processing (EMNLP).
+
+Siddharthan, A. (2006). Syntactic simplification and
+text cohesion. Research on Language and Com-
+putation, 4(1):77–109.
+
+Siddharthan, A. (2014). A survey of research on
+text simplification. Special issue of International
+Journal of Applied Linguistics, 165(2).
+
+Siddharthan, A. and Angrosh, M. (2014). Hybrid
+text simplification using synchronous dependency
+grammars with hand-written and automatically
+harvested rules. In Proceedings of the 25th Inter-
+national Conference on Computational Linguis-
+tics (COLING).
+
+Siddharthan, A. and Katsos, N. (2010). Reformulat-
+ing discourse connectives for non-expert readers.
+In Proceedings of the 2010 Annual Conference of
+the North American Chapter of the Association
+for Computational Linguistics: Human Language
+Technologies (NAACL-HLT).
+
+Siddharthan, A., Nenkova, A., and McKeown, K.
+(2004). Syntactic simplification for improving
+content selection in multi-document summariza-
+tion. In Proceedings of the 20th International
+Conference on Computational Linguistics (COL-
+ING).
+
+Specia, L., Jauhar, S. K., and Mihalcea, R. (2012).
+SemEval-2012 task 1: English lexical simplifica-
+tion. In Proceedings of the Sixth International
+Workshop on Semantic Evaluation (SemEval).
+
+Štajner, S., Béchara, H., and Saggion, H. (2015). A
+deeper exploration of the standard PB-SMT ap-
+proach to text simplification and its evaluation. In
+Proceedings of the 53rd Annual Meeting of the
+Association for Computational Linguistics (ACL).
+
+414
+
+
+
+Štajner, S., Mitkov, R., and Saggion, H. (2014). One
+step closer to automatic evaluation of text simpli-
+fication systems. In Proceedings of the 3rd Work-
+shop on Predicting and Improving Text Readabil-
+ity for Target Reader Populations (PITR).
+
+Sun, H. and Zhou, M. (2012). Joint learning of a
+dual SMT system for paraphrase generation. In
+Proceedings of the 50th Annual Meeting of the As-
+sociation for Computational Linguistics (ACL).
+
+Vickrey, D. and Koller, D. (2008). Sentence sim-
+plication for semantic role labeling. In Proceed-
+ings of the 46th Annual Meeting of the Associa-
+tion for Computational Linguistics: Human Lan-
+guage Technologies (ACL-HLT).
+
+Watanabe, W. M., Junior, A. C., Uzêda, V. R.,
+Fortes, R. P. d. M., Pardo, T. A. S., and Aluı́sio,
+S. M. (2009). Facilita: Reading assistance
+for low-literacy readers. In Proceedings of the
+27th ACM International Conference on Design of
+Communication (SIGDOC).
+
+Weese, J., Ganitkevitch, J., Callison-Burch, C., Post,
+M., and Lopez, A. (2011). Joshua 3.0: Syntax-
+based machine translation with the thrax grammar
+extractor. In Proceedings of the Sixth Workshop
+on Statistical Machine Translation (WMT).
+
+Woodsend, K. and Lapata, M. (2011). Learning to
+simplify sentences with quasi-synchronous gram-
+mar and integer programming. In Proceedings of
+the Conference on Empirical Methods in Natural
+Language Processing (EMNLP).
+
+Wubben, S., van den Bosch, A., and Krahmer, E.
+(2012). Sentence simplification by monolingual
+machine translation. In Proceedings of the 50th
+Annual Meeting of the Association for Computa-
+tional Linguistics (ACL).
+
+Xu, W., Callison-Burch, C., and Napoles, C. (2015).
+Problems in current text simplification research:
+New data can help. Transactions of the As-
+sociation for Computational Linguistics (TACL),
+3:283–297.
+
+Xu, W., Ritter, A., Dolan, B., Grishman, R., and
+Cherry, C. (2012). Paraphrasing for style. In Pro-
+ceedings of the 24th International Conference on
+Computational Linguistics (COLING).
+
+Yatskar, M., Pang, B., Danescu-Niculescu-Mizil, C.,
+and Lee, L. (2010). For the sake of simplicity:
+
+Unsupervised extraction of lexical simplifications
+from Wikipedia. In Proceedings of the 2010 An-
+nual Conference of the North American Chapter
+of the Association for Computational Linguistics:
+Human Language Technologies (ACL-HLT).
+
+Zhu, Z., Bernhard, D., and Gurevych, I. (2010). A
+monolingual tree-based translation model for sen-
+tence simplification. In Proceedings of the 23rd
+International Conference on Computational Lin-
+guistics (COLING).
+
+Zollmann, A. and Venugopal, A. (2006). Syntax
+augmented machine translation via chart parsing.
+In Proceedings of the Workshop on Statistical Ma-
+chine Translation (WMT).
+
+415
+
+
+
+416
+
+
