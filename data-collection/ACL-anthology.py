@@ -65,7 +65,7 @@ def get_bibFiles(url):
 def filter_bib():
     bibmap = pd.read_csv('bib_map.csv')
 
-    hw3_bib = pd.read_csv('/Users/Chloe/PycharmProjects/qtm385/hw3/bib_map.tsv', sep='\t', names=['ID', 'Score', 'Type'])
+    hw3_bib = pd.read_csv('bib_map.tsv', sep='\t', names=['ID', 'Score', 'Type'])
 
     include = []
 
@@ -132,7 +132,7 @@ def filter_bib():
 def downloadPDF():
 
     bibmap = pd.read_json('bibmap.json')
-    dir = '/Users/Chloe/PycharmProjects/nlp_ranking/data-collection/bib/'
+    dir = './bib/'
     parser = bibtexparser.bparser.BibTexParser(common_strings=True)
 
     files = []
