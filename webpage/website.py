@@ -4,6 +4,8 @@ from collections import defaultdict
 import pandas as pd
 import boto3
 from dynamodb_json import json_util
+from datetime import datetime
+from decimal import Decimal
 
 
 app = Flask(__name__)
@@ -11,6 +13,8 @@ app = Flask(__name__)
 @app.route('/', methods=['GET', 'POST'])
 def home():
     if request.method == 'POST':
+        dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+        table = dynamodb.Table('nlp-ranking-logs')
 
         # journal
         CL = float(request.form['CL'])
@@ -34,6 +38,28 @@ def home():
 
         num_uni = int(request.form['num_uni'])
         num_author = int(request.form['num_author'])
+
+        table.put_item(
+            Item={
+                'UTCtime': str(datetime.utcnow()),
+                'startYear': startYear,
+                'endYear': endYear,
+                'num_uni': num_uni,
+                'num_author': num_author,
+                'CL': Decimal(CL),
+                'TACL': Decimal(TACL),
+                'ACL_C': Decimal(ACL_C),
+                'NAACL_C': Decimal(NAACL_C),
+                'EMNLP_C': Decimal(EMNLP_C),
+                'CoNLL_C': Decimal(CoNLL_C),
+                'EACL_C': Decimal(EACL_C),
+                'COLING': Decimal(COLING),
+                'IJCNLP': Decimal(IJCNLP),
+                'WKSPDEMO': Decimal(WKSPDEMO),
+            }
+        )
+
+
 
         authors,maxYear = get_author_dict(
             CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO
@@ -71,18 +97,6 @@ def methodology():
 
 
 def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,WKSPDEMO):
-    # dynamodb = boto3.resource('dynamodb', 'us-east-2')
-    #
-    # table_uni = dynamodb.Table('university')
-    # response_uni = table_uni.scan()
-    # data_uni = response_uni['Items']
-    # university = pd.DataFrame(json_util.loads(data_uni))
-
-    # table_bib = dynamodb.Table('bibmap')
-    # response_bib = table_bib.scan()
-    # data_bib = response_bib['Items']
-    # bibmap = pd.DataFrame(json_util.loads(data_bib))
-
 
     university = pd.read_json('../data-collection/university.json', orient='records')
     bibmap = json.load(open('../data-collection/bibmap.json'))
@@ -243,7 +257,7 @@ def find_venue(pub_id):
 
 if __name__ == '__main__':
     # authors,maxYear = get_author_dict(3,3,3,3,3,2,2,2,2,1)
-    # print(authors)
+    # print(authors['hal-daume-iii'])
     # rank1,rank2,list1 = ranking(authors, 2010, 2019, 100)
     # print(len(rank1.Institution.unique()))
     # print(len(rank1['Institution']))
