@@ -15,9 +15,10 @@ def get_bib(venues):
 
     tables = soup.find('div', class_ = 'col-12 col-xl-10 col-xl-width-auto').find_all('table')
 
-    years = [10 + x for x in range(10)]
+    years = [10 + x for x in range(10)] # 10-19
 
-    bib_map = pd.DataFrame(columns=['venue', 'ID', 'title'])
+    # bib_map = pd.DataFrame(columns=['venue', 'ID', 'title'])
+    bib_map = pd.read_csv('bib_map.csv')
 
 
     for table in tables:
@@ -70,7 +71,7 @@ def filter_bib():
     include = []
 
     for id in bibmap['ID']:
-        if id in list(hw3_bib['ID']):
+        if id in list(hw3_bib['ID']) or 'J' in id:
             include.append(1)
         else:
             include.append(0)
@@ -80,7 +81,7 @@ def filter_bib():
     # student research workshop, demonstration
 
     interested = ['P19-1', 'P18-1', 'P18-2', 'K18-1', 'D18-1', 'N19-1', 'N19-2', 'N18-1', 'N18-2', 'N18-3', 'S19-1',
-                'S19-2', 'S18-1', 'S18-2', 'C18-1']
+                'S19-2', 'S18-1', 'S18-2', 'C18-1', 'D19-1', 'D19-3', 'K19-1']
 
     for i, b in bibmap.iterrows():
         if 'student research workshop' in b['title'].lower() or 'demonstration' in b['title'].lower() \
@@ -136,14 +137,14 @@ def downloadPDF():
     parser = bibtexparser.bparser.BibTexParser(common_strings=True)
 
     files = []
-    for (dirpath, dirnames, filenames) in walk('./pdf/'):
+    for (dirpath, dirnames, filenames) in walk('./txt/'):
         for filename in filenames:
-            if '.pdf' in filename:
+            if '.txt' in filename:
                 files.append(filename.split('.')[0])
 
-    # print(bibmap['id'].tolist().index('C18-1'))
 
-    for ID in bibmap['id'].tolist()[737:]:
+
+    for ID in bibmap['id'].tolist():
 
         bibs = {}
         filepath = os.path.join(dir, ID + '.bib')
@@ -199,8 +200,8 @@ def pdf2txt():
 
 
 if __name__ == '__main__':
-    venues = ['ACL', 'CoNLL', 'EACL', 'EMNLP', 'NAACL', '*SEMEVAL', 'TACL', 'WS', 'COLING', 'IJCNLP']
+    # venues = ['ACL', 'CL', 'CoNLL', 'EACL', 'EMNLP', 'NAACL', '*SEMEVAL', 'TACL', 'WS', 'COLING', 'IJCNLP']
     # get_bib(venues)
-    filter_bib()
+    # filter_bib()
     # downloadPDF()
-    # pdf2txt()
+    pdf2txt()
