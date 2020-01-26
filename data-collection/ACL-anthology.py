@@ -66,12 +66,14 @@ def get_bibFiles(url):
 def filter_bib():
     bibmap = pd.read_csv('bib_map.csv')
 
-    hw3_bib = pd.read_csv('bib_map.tsv', sep='\t', names=['ID', 'Score', 'Type'])
+    i_bib = pd.read_csv('bib_map.tsv', sep='\t', names=['ID', 'Score', 'Type'])
+
+    for (dirpath, dirnames, filenames) in walk('./bib/'):
+        include_ws = [filename[:-4] for filename in filenames if 'W' in filename]
 
     include = []
-
     for id in bibmap['ID']:
-        if id in list(hw3_bib['ID']) or 'J' in id:
+        if id in list(i_bib['ID']) or 'J' in id:
             include.append(1)
         else:
             include.append(0)
@@ -88,7 +90,7 @@ def filter_bib():
                 or b['venue'] == 'TACL' or b['ID'] in interested:
             if b['include'] == 0:
                 bibmap.iloc[i,3] = 1
-        if b['venue'] == 'WS':
+        if b['venue'] == 'WS' and b['ID'] in include_ws:
             bibmap.iloc[i,3] = 1
         if 'tutorial' in b['title'].lower():
             bibmap.iloc[i,3] = 0
@@ -143,26 +145,28 @@ def downloadPDF():
                 files.append(filename.split('.')[0])
 
 
-
     for ID in bibmap['id'].tolist():
 
         bibs = {}
         filepath = os.path.join(dir, ID + '.bib')
         f = open(filepath)
         bib = bibtexparser.loads(f.read(), parser=parser)
+
         bibs.update(
             [(entry['url'].split('/')[-1], entry) for entry in bib.entries
              if ('author' in entry and 'pages' in entry and 'url' in entry)])
 
+        bib.entries = []
         print('Viewing files in ' + ID)
 
         for k, v in bibs.items():
             if k not in files:
-                pdf = requests.get(v['url'])
+                pdf = requests.get(v['url'] + '.pdf')
                 filepath = './pdf/' + k + '.pdf'
                 with open(filepath, 'wb') as pdf_file:
                     print('Saving PDF file ' + k)
                     pdf_file.write(pdf.content)
+
                     files.append(k)
 
 
@@ -182,19 +186,19 @@ def pdf2txt():
         for filename in filenames:
             if '.pdf' in filename:
                 filename = filename.split('.')[0]
-                if filename not in files:
-                    print(filename)
-                    raw = parser.from_file('./pdf/' + filename + '.pdf')
+                # if filename not in files:
+                print(filename)
+                raw = parser.from_file('./pdf/' + filename + '.pdf')
 
-                    filepath = './txt/' + filename + '.txt'
-                    txt_file =  open(filepath, 'w')
-                    print('Converting ' + filename + ' to txt file')
-                    try:
-                        txt_file.write(raw['content'])
-                        txt_file.close()
-                        files.append(filename)
-                    except:
-                        continue
+                filepath = './txt/' + filename + '.txt'
+                txt_file = open(filepath, 'w')
+                print('Converting ' + filename + ' to txt file')
+                try:
+                    txt_file.write(raw['content'])
+                    txt_file.close()
+                    files.append(filename)
+                except:
+                    continue
 
 
 
@@ -202,6 +206,6 @@ def pdf2txt():
 if __name__ == '__main__':
     # venues = ['ACL', 'CL', 'CoNLL', 'EACL', 'EMNLP', 'NAACL', '*SEMEVAL', 'TACL', 'WS', 'COLING', 'IJCNLP']
     # get_bib(venues)
-    # filter_bib()
+    filter_bib()
     # downloadPDF()
-    pdf2txt()
+    # pdf2txt()

@@ -93,42 +93,63 @@ def publication_json():
 
 
 
-    for ID in bibmap['id'].tolist():
+    for ID in bibmap['id'].tolist()[773:]:
         bibs = {}
         pub_data = []
 
         filepath = './bib/' + ID + '.bib'
         f = open(filepath)
         bib = bibtexparser.loads(f.read(), parser=parser)
-        bibs.update(
-            [(entry['url'].split('/')[-1], entry) for entry in bib.entries
-             if ('author' in entry and 'pages' in entry and 'url' in entry)])
+        try:
+            bibs.update(
+                [(entry['url'].split('/')[-1], entry) for entry in bib.entries
+                 if ('author' in entry and 'pages' in entry and 'url' in entry)])
 
-        # some workshops have different bib file format, use the following codes (109-111) instead of (103-105)
+            for k, v in bibs.items():
+                pub_dict = {}
+                pub_dict['id'] = k
+                pub_dict['title'] = v['title']
+                del v['title']
 
-        # bibs.update(
-        #     [(entry['ID'], entry) for entry in bib.entries
-        #      if ('author' in entry and 'pages' in entry and 'url' in entry)])
+                pub_dict['authors'] = v['author'].split('  and\n')
+                del v['author']
 
-        for k, v in bibs.items():
-            pub_dict = {}
-            pub_dict['id'] = k
-            pub_dict['title'] = v['title']
-            del v['title']
+                pub_dict['emails'] = get_emails(k, pub_dict['authors'])
+                pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
 
-            pub_dict['authors'] = v['author'].split('  and\n')
-            del v['author']
+                pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
 
-            pub_dict['emails'] = get_emails(k, pub_dict['authors'])
-            pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
+                del v['ENTRYTYPE']
+                del v['ID']
+                pub_dict.update(v)
 
-            pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
+                pub_data.append(pub_dict)
 
-            del v['ENTRYTYPE']
-            del v['ID']
-            pub_dict.update(v)
+        except: # some workshops have different bib file format
 
-            pub_data.append(pub_dict)
+            bibs.update(
+                [(entry['ID'], entry) for entry in bib.entries
+                 if ('author' in entry and 'pages' in entry and 'url' in entry)])
+
+            for k, v in bibs.items():
+                pub_dict = {}
+                pub_dict['id'] = k
+                pub_dict['title'] = v['title']
+                del v['title']
+
+                pub_dict['authors'] = v['author'].split('  and\n')
+                del v['author']
+
+                pub_dict['emails'] = get_emails(k, pub_dict['authors'])
+                pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
+
+                pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
+
+                del v['ENTRYTYPE']
+                del v['ID']
+                pub_dict.update(v)
+
+                pub_data.append(pub_dict)
 
         df = pd.DataFrame(pub_data)
         df.to_json('./pub_json/' + ID + '.json', orient='records')
