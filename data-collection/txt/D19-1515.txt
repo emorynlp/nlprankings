@@ -1,0 +1,1556 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Phrase Grounding by Soft-Label Chain Conditional Random Field
+
+
+Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natural Language Processing, pages 5112–5122,
+Hong Kong, China, November 3–7, 2019. c©2019 Association for Computational Linguistics
+
+5112
+
+Phrase Grounding by Soft-Label Chain Conditional Random Field
+
+Jiacheng Liu Julia Hockenmaier
+University of Illinois at Urbana-Champaign, Urbana, IL, USA 61801
+
+{jl25, juliahmr}@illinois.edu
+
+Abstract
+The phrase grounding task aims to ground
+each entity mention in a given caption of an
+image to a corresponding region in that im-
+age. Although there are clear dependencies
+between how different mentions of the same
+caption should be grounded, previous struc-
+tured prediction methods that aim to capture
+such dependencies need to resort to approxi-
+mate inference or non-differentiable losses. In
+this paper, we formulate phrase grounding as
+a sequence labeling task where we treat candi-
+date regions as potential labels, and use neu-
+ral chain Conditional Random Fields (CRFs)
+to model dependencies among regions for ad-
+jacent mentions. In contrast to standard se-
+quence labeling tasks, the phrase grounding
+task is defined such that there may be mul-
+tiple correct candidate regions. To address
+this multiplicity of gold labels, we define so-
+called Soft-Label Chain CRFs, and present
+an algorithm that enables convenient end-to-
+end training. Our method establishes a new
+state-of-the-art on phrase grounding on the
+Flickr30k Entities dataset. Analysis shows
+that our model benefits both from the entity
+dependencies captured by the CRF and from
+the soft-label training regime. Our code is
+available at github.com/liujch1998/
+SoftLabelCCRF
+
+1 Introduction
+
+Given an image and a corresponding caption, the
+phrase grounding task aims to ground each en-
+tity mentioned by a noun phrase in the caption to
+a region in the image. Phrase grounding has at-
+tracted much research interest due to its applica-
+tion in downstream tasks including image caption-
+ing (Karpathy et al., 2014; Fang et al., 2015; Don-
+ahue et al., 2017; Xu et al., 2015), image retrieval
+(Chen et al., 2017a; Radenovic et al., 2016), and
+visual question answering (Agrawal et al., 2017;
+Yu et al., 2017, 2018a).
+
+(a) Dependency between en-
+tities. The visual relation-
+ship between grounding re-
+gions for “cheerleaders” and
+“a girl” should agree with
+context “toss ... high up into
+the air”.
+
+(b) Gold label multiplicity.
+The green box is the an-
+notated gold grounding re-
+gion for entity phrase “Old
+man”, while the orange dash
+boxes are region proposals
+with IoU ≥ 0.5 with gold.
+
+Figure 1: Example image-caption pairs from Flickr30k
+Entities, illustrating entity dependencies and gold label
+multiplicity.
+
+Phrase grounding systems typically work by
+ranking a set of candidate regions (Chen et al.,
+2017b; Yu et al., 2018b). Region proposals are
+generated from the image by a vision backbone
+model, without conditioning on the caption. Fea-
+tures of the phrase to be grounded are extracted,
+and subsequently interact with features of candi-
+date regions, to determine phrase-region compat-
+ibility. Candidate regions are then ranked based
+on this compatibility metric, and the highest-
+scored candidate region is selected as the predicted
+grounding of the phrase.
+
+In Flickr30k Entities (Plummer et al., 2017b),
+each caption contains an average of 2.76 entity
+phrases to ground (Figure 2a; phrases with no cor-
+responding gold regions are not counted). It there-
+fore stands to reason that phrases in the same cap-
+tion should not be grounded independently (to op-
+
+github.com/liujch1998/SoftLabelCCRF
+github.com/liujch1998/SoftLabelCCRF
+
+
+5113
+
+(a) Distribution of number of
+entity phrases per caption.
+
+(b) Distribution of number of
+gold labels per entity phrase.
+
+Figure 2: Validation set statistics for Flickr30k Entities.
+
+timize each individual phrase-region assignment),
+but jointly (to optimize the global phrase-region
+assignment for the entire caption). Figure 1a il-
+lustrates this phenomenon. The caption contains a
+sequence of two entity phrases, “cheerleaders” and
+“a girl”, and the task is to label each phrase with a
+candidate region that best grounds it. Since there
+are several women present in the image, “a girl”
+has ambiguous grounding by itself, but it can be
+disambiguated by encouraging the visual relation-
+ship between “a girl” and “cheerleaders” to con-
+form with context provided in the caption.
+
+Some works are aware that dependencies be-
+tween entities in the same caption play an impor-
+tant role in building more accurate phrase ground-
+ing systems (Wang et al., 2016; Plummer et al.,
+2017a; Chen et al., 2017b). The success of these
+structured prediction methods shows the advan-
+tage of considering entity dependencies in learn-
+ing and prediction. However, these approaches
+capture certain relations in an ad hoc manner, and
+resort to approximate inference (Wang et al., 2016;
+Plummer et al., 2017a) or non-differentiable losses
+(Chen et al., 2017b).
+
+To obtain models and inference algorithms that
+facilitate more globally consistent phrase ground-
+ing predictions, we propose to formulate phrase
+grounding as a sequence labeling task where we
+treat candidate regions as potential labels for the
+phrases in the input sequence. This allows us
+to build phrase grounding models based on Con-
+ditional Random Fields (CRFs) (Lafferty et al.,
+2001) that capture entity dependencies in a uni-
+versal and differentiable manner. Our results in-
+dicate that systems that capture dependencies be-
+tween phrases in the same caption in a principled
+manner outperform systems that ignore these de-
+pendencies.
+
+A second problem lies in the use of region
+proposals, which distinguishes phrase grounding
+from other sequence labeling tasks where CRFs
+
+are directly applicable. Following the metrics of
+object detection, in phrase grounding the correct-
+ness of a predicted region is judged by its over-
+lap by Intersection-over-Union (IoU) with the gold
+region (Plummer et al., 2017b). To cover poten-
+tial regions with high enough IoU, it is common
+to generate a myriad of region proposals and for
+these candidate regions to contain or substantially
+overlap with each other. As a result, there could
+be more than one candidate region with high IoU
+with the gold region, and they should all be consid-
+ered as correct grounding for the phrase. This phe-
+nomenon of gold label multiplicity is illustrated
+in Figure 1b. We hypothesize that it is impor-
+tant to consider gold label multiplicity and iden-
+tify all correct region proposals during training,
+since the model would receive contradictory train-
+ing signals if some correct proposals were marked
+as incorrect. With region proposals generated by
+a Bottom-Up Attention (Anderson et al., 2018) vi-
+sual backbone, in Flickr30k Entities each phrase
+has an average of 4.75 gold labels, and detailed
+statistics are presented in Figure 2b. To address
+this problem, we adopt the soft-label target dis-
+tribution proposed by Yu et al. (2018b), and our
+experiments show that models trained with this
+regime significantly outperform those trained with
+one-hot target regime.
+
+To combine the benefits brought by structured
+prediction from CRFs and by soft-label training
+regime, we define Soft-Label Chain CRFs, a varia-
+tion of standard chain CRFs that allows us to work
+with gold label multiplicity. We adapt learning
+and inference algorithms from chain CRFs and de-
+velop an end-to-end training algorithm for our pro-
+posed model.
+
+We evaluate the effectiveness of Soft-Label
+Chain CRF on phrase grounding by conduct-
+ing experiments on the Flickr30k Entities dataset
+(Plummer et al., 2017b) and comparing ground-
+ing accuracy with strong baseline models, as well
+as with existing structured prediction methods and
+current state-of-the-art models. Experimental re-
+sults show that our Soft-Label Chain CRF model
+outperforms its hard-label CRF counterpart by
+2.43%, a vanilla non-CRF soft-label model by
+0.40%, and the previous best results by about
+1.4%, demonstrating that both of our contribu-
+tions, modeling phrase grounding as a sequence
+labeling task, and training with soft label targets,
+matter for this task.
+
+
+
+5114
+
+2 Related Work
+
+Phrase Grounding. The phrase grounding task
+was first postulated by Karpathy and Fei-Fei
+(2017) and Plummer et al. (2017b), both of which
+moved from the holistic image captioning to
+the finer-grained task of matching regions with
+phrases in the caption. Datasets for this task in-
+clude Flickr30k Entities (Plummer et al., 2017b),
+RefCOCO (Yu et al., 2016), and Visual Genome
+(Krishna et al., 2017). The general framework of
+proposal-generation-ranking has become adopted
+by most approaches to phrase grounding, and re-
+search in this area has focused on improving spe-
+cific components of this framework. Our work can
+be viewed as an improvement to the training and
+prediction aspects.
+Structured Prediction in Phrase Grounding.
+We summarize some works that consider entity
+dependencies by structured prediction. Structured
+Matching (Wang et al., 2016) formulates phrase
+grounding as a bipartite matching process be-
+tween phrases and candidate regions, and encour-
+ages the spatial relationship between two ground-
+ing regions to conform to an extracted partial
+coreference relation between their corresponding
+phrases. The resulting discrete optimization prob-
+lem is then relaxed into a linear program to enable
+end-to-end training. Phrase-Region CCA (Plum-
+mer et al., 2017a) mines frequent patterns of se-
+mantically related paired phrases and trains a sep-
+arate model for each pattern. The addition of this
+pairwise score makes the optimization a quadratic
+programming problem that requires approximate
+inference. QRC Net (Chen et al., 2017b) assumes
+that phrases in a caption refer to distinct entities,
+and thus predicted grounding regions are penal-
+ized for spatial overlapping. However, overlap-
+ping regions can be penalized only after predic-
+tion, so this loss is not differentiable, and one
+has to resort to reinforcement learning. In these
+works, partial coreference extraction, frequent pat-
+terns mining and spatial overlap penalties are ad
+hoc entity dependency capturing, while we aim to
+universally encompass the spectrum of such de-
+pendencies.
+Soft-Label Training Regime. Conventionally,
+region proposal ranking is done by predicting a
+probability distribution over all candidate regions
+for grounding a given entity phrase, which is
+learned to match a target distribution. Chen et al.
+(2017b) and Rohrbach et al. (2016) define the tar-
+
+get distribution as a one-hot vector which only
+gives credit to the candidate region with highest
+IoU with the gold region, and cross-entropy loss
+is used as training objective. Under this hard-label
+training regime, the model is trained to pick only
+the best candidate region while rejecting all the
+inferior-than-best candidate regions, which is intu-
+itively not a good behavior. Yu et al. (2018b) pro-
+poses a soft-label target distribution which gives
+weighted credit to all good candidate regions (i.e.
+those with above-threshold IoU with the gold re-
+gion), and uses Kullback-Leibler (KL) divergence
+loss as training objective.
+Conditional Random Fields. CRFs (Lafferty
+et al., 2001) are discriminative probabilistic mod-
+els that have been found useful in sequence label-
+ing tasks by capturing label dependencies (Ma and
+Hovy, 2016; Lample et al., 2016). We summa-
+rize some works relevant to CRFs learned in soft-
+label or multi-label settings. Multi-CRFs (Dredze
+et al., 2009) learn CRFs with noisy annotated data,
+where annotators may disagree on the label for in-
+put tokens. The assumption is that there is always
+only one gold label for each token, so the model
+favors single label while conforming to the prior
+distribution of labels set by annotators. To work
+with soft-label targets, it employs a mode-seeking,
+exclusive KL divergence definition, which does
+not imply moment-matching, a desired property of
+CRFs (and in general, exponential family models)
+that we show in Section 3.1 and 3.2 for the mean-
+seeking, inclusive KL divergence definition in our
+model. Rodrigues et al. (2014) models the latent
+reliability of individual annotators, and use this in-
+formation to guide the selection of trustworthy an-
+notation sources and estimation of real gold labels.
+Note that both works always assume one gold la-
+bel per input token, where the ambiguity comes
+from unreliability of annotations, while our work
+focuses on cases where there may be multiple gold
+labels per input token by the nature of the task.
+
+3 Soft-Label Chain CRF
+
+CRFs model the probability of a label sequence
+y = y1:T conditioned on an input sequence x =
+x1:T in terms of a score function s(x,y):
+
+p(y|x) = exp s(y,x)∑
+y′ exp s(y
+
+′,x)
+
+For a given training example {(x,y)}, the neg-
+ative log-likelihood loss (i.e. cross-entropy loss
+
+
+
+5115
+
+w.r.t. a one-hot target distribution that gives credit
+to the gold label only) is
+
+L = − log p(y|x) = −s(y,x) + logZ(x)
+
+where Z(x) =
+∑
+
+y′ exp s(y
+′,x). The gradient of
+
+this loss w.r.t. score function is
+∂L
+
+∂s(y′,x)
+= −I(y′ = y) + p(y′|x)
+
+which is known as moment-matching. This allows
+us to train CRFs with gradient methods and conve-
+niently connect to backpropagation when the score
+function is modeled by a neural architecture.
+
+3.1 Soft-Label CRF
+In the standard CRF above, each input xt corre-
+sponds to a single gold label yt. To account for
+gold label multiplicity in training stage, we replace
+the sequence of gold labels y with a sequence of
+distributions q = q1:T where qt ∈ RK is the gold
+label distribution over all K possible labels for in-
+put xt. Note that this distribution should not be
+interpreted as the confidence of each label being
+correct; rather, it should be understood as a proba-
+bilistic gold label model: if we randomly choose a
+gold label, how likely is each label to be selected.
+With independence assumption, the gold probabil-
+ity of an arbitrary label sequence y is
+
+q(y|x) =
+∏
+t
+
+q(yt|x) =
+∏
+t
+
+q(yt|xt) =
+∏
+t
+
+qtyt
+
+It is easy to see that q(y|x) is a distribution:∑
+y
+
+q(y|x) =
+∑
+y
+
+∏
+t
+
+qtyt =
+∏
+t
+
+∑
+yt
+
+qtyt = 1
+
+And our goal is to learn this target distribution.
+Since this target distribution is no longer degen-
+
+erate, we use Kullback-Leibler (KL) divergence to
+measure the discrepancy between the model and
+the target distribution. Our training objective is
+the KL divergence loss (in mean-seeking, inclu-
+sive form):
+
+L =
+∑
+y
+
+{
+q(y|x) log q(y|x)
+
+p(y|x)
+
+}
+which also gives gradients that demonstrate
+moment-matching:
+
+∂L
+
+∂s(y′,x)
+= −q(y′|x) + p(y′|x)
+
+Note that if we had defined the KL diver-
+gence loss in its mode-seeking, exclusive form∑
+
+y p(y|x) log
+p(y|x)
+q(y|x) , we would have lost this de-
+
+sired moment-matching property.
+
+3.2 Factorization of Soft-Label Chain CRF
+Learning CRFs of general graphs requires infer-
+ence in unit of cliques, which is usually computa-
+tionally intractable. By restricting to local, pair-
+wise potentials, we reduce the model to a first-
+order linear chain CRF, whose scoring function
+factorizes as
+
+s(y,x) =
+∑
+t
+
+s(yt, yt−1,x)
+
+=
+∑
+t
+
+{
+τ(yt, yt−1,x) + ε(yt,x)
+
+}
+where τ(·, ·, ·) is the transition score between la-
+bels at t−1 and t that captures the dependency be-
+tween labels for adjacent input tokens, and ε(·, ·)
+is the emission score between label and input at t.
+
+Combining this factorization with soft-label tar-
+gets gives the formal definition of Soft-Label
+Chain CRF. The loss can be written as
+
+L=
+∑
+y
+
+{
+q(y|x) log q(y|x)
+
+p(y|x)
+
+}
+=
+∑
+y
+
+{
+q(y|x)
+
+[
+log q(y|x)−s(y,x)+logZ(x)
+
+]}
+(Expand p(y|x) by CRF modeling)
+
+=
+∑
+y
+
+{
+q(y|x)
+
+[
+log q(y|x)−s(y,x)
+
+]}
++logZ(x)
+
+(Marginalize q(y|x))
+
+=
+∑
+t
+
+∑
+yt
+
+{
+q(yt|x) log q(yt|x)
+
+}
+−
+∑
+y
+
+{
+q(y|x)s(y,x)
+
+}
++logZ(x)
+
+(Independence of q(yt|x) across t)
+
+=
+∑
+t
+
+∑
+yt
+
+{
+q(yt|x) log q(yt|x)
+
+}
+−
+∑
+y
+
+{
+q(y|x)
+
+∑
+t
+
+s(yt,yt−1,x)
+}
++logZ(x)
+
+(Factorization of s(y,x))
+
+=
+∑
+t
+
+∑
+yt
+
+{
+q(yt|x) log q(yt|x)
+
+}
+−
+∑
+t
+
+∑
+yt,yt−1
+
+{
+s(yt,yt−1,x)
+
+∑
+y|yt,yt−1
+
+q(y|x)
+}
+
++logZ(x)
+
+(Reorganize sums by s(yt,yt−1,x))
+
+=
+∑
+t
+
+∑
+yt
+
+{
+q(yt|x) log q(yt|x)
+
+}
+
+
+
+5116
+
+Algorithm 1 Modified forward algorithm to compute the KL divergence loss for Soft-Label Chain CRFs
+
+procedure SOFTLABELCHAINCRFLOSS(q, ε(yt,x), τ(yt, yt−1,x))
+for all label y0 do
+
+α0y0 ← 0
+g0y0 ← 0
+
+for t = 1 . . . T do
+for all label yt do
+
+αtyt ←
+∑
+
+yt−1
+
+{
+αt−1
+yt−1
+
+exp
+[
+τ(yt, yt−1,x) + ε(yt,x)
+
+]}
+gtyt ←
+
+∑
+yt−1
+
+{[
+gt−1
+yt−1
+
++ τ(yt, yt−1,x)
+]
+qt−1
+yt−1
+
++
+[
+ε(yt,x)− log qtyt
+
+]}
+Z ←
+
+∑
+yT α
+
+T
+yT
+
+G←
+∑
+
+yT g
+T
+yT
+qT
+yT
+
+L← −G+ logZ
+return L
+
+−
+∑
+t
+
+∑
+yt,yt−1
+
+{
+q(yt,yt−1|x)s(yt,yt−1,x)
+
+}
++logZ(x)
+
+which gives moment-matching gradients
+
+∂L
+
+∂s(yt, yt−1,x)
+= −q(yt, yt−1|x) + p(yt, yt−1|x)
+
+∂L
+
+∂τ(yt, yt−1,x)
+= −q(yt, yt−1|x) + p(yt, yt−1|x)
+
+∂L
+
+∂ε(yt,x)
+= −q(yt|x) + p(yt|x)
+
+where
+
+q(yt|x) = qtyt
+q(yt, yt−1|x) = qtytq
+
+t−1
+yt−1
+
+are the probability of local label(s) marginalized
+over all possible non-local labels. Smoothing in-
+ference p(yt|x) and p(yt, yt−1|x) can be com-
+puted with forward-backward algorithm.
+
+3.3 As an Extension of Soft-Label Model
+Note that if we omit all transition terms in Soft-
+Label Chain CRF, the loss reduces to
+
+L′ =
+∑
+t
+
+∑
+yt
+
+{
+q(yt|x)
+
+[
+−ε(yt,x) + log q(yt|x)
+
+]}
++ logZ(x)
+
+=
+∑
+t
+
+∑
+yt
+
+{
+q(yt|x) log q(y
+
+t|x)
+p(yt|x)
+
+}
+which is a total factorization over time. This is
+as if each label is predicted independently us-
+ing a soft-label training regime, which is exactly
+
+the KL divergence loss proposed by Yu et al.
+(2018b). Therefore, our Soft-Label Chain CRF
+can be viewed as an extension of this soft-label
+discriminative model.
+
+3.4 Modified Forward Algorithm
+
+For chain CRFs, computing the loss only re-
+quires forward algorithm, while computing the
+gradients requires a full forward-backward algo-
+rithm. It can be proved that backpropagation on
+the loss gives the same result as running forward-
+backward. This is a commonly used trick in mod-
+ern deep learning frameworks to eliminate the
+need of implementing the backward pass. Al-
+gorithm 1 presents a modified forward algorithm
+that computes the loss for Soft-Label Chain CRF.
+In Section 1 and 2 of the Supplementary Mate-
+rials, we prove the correctness of this algorithm,
+and that its backpropagation is also equivalent to
+forward-backward.
+
+4 Phrase Grounding as Sequence
+Labeling
+
+4.1 Task Formulation
+
+We formulate phrase grounding as a sequence la-
+beling task. Given an image I , a caption sen-
+tence [c1 . . . cL] where cl is a word token, and a set
+of non-overlapping noun phrase spans [p1 . . . pT ]
+where pt = (st, et) denotes that the t’th phrase
+covers tokens cs
+
+t
+to ce
+
+t
+(inclusive), we generate
+
+a set of region proposals {r1 . . . rK}, label each
+phrase with a candidate region, and refine the re-
+gion by performing a bounding box regression.
+
+
+
+5117
+
+Figure 3: Our model for phrase grounding as a se-
+quence labeling task. TheK×K transition score matrix
+is derived from the features ofK region proposals. The
+T ×K emission score matrix is derived from a joint
+representation of phrase-region pairs, which is fused
+from features of region proposals and T entity phrases.
+Bounding box regression is applied to the sequence of
+regions predicted by the CRF. Cyan dashed line: con-
+textualized transition score prediction (Section 4.2).
+
+Figure 4: Text feature extraction for phrases in a cap-
+tion. Shaded regions are entity phrase spans; circles
+represent LSTM cells. For phrase t hidden states at its
+span boundaries are concatenated to form its text fea-
+tures pt, which is used in fusion with region features.
+For the contextualized transition score between phrases
+t−1 and t, hidden states at the boundaries of the context
+between them are concatenated into a context feature
+vector pt−1,t, which can be further extended by phrase
+features pt−1 and pt as well as global text features pG.
+
+4.2 Model Specification
+Figure 3 outlines our phrase grounding model. K
+region proposals and their visual and spatial fea-
+tures are extracted from an object detection vi-
+sion backbone. We feed the token embeddings of
+the caption into a bi-directional LSTM (Hochreiter
+and Schmidhuber, 1997), and then concatenate the
+forward hidden state at the ending boundary of the
+phrase with the backward hidden state at the start-
+ing boundary of the phrase (see Figure 4). This
+phrase representation captures context both pre-
+ceding and following the phrase in the caption.
+
+(
+−−→
+h1:L,
+
+←−−
+h1:L) = BiLSTM(Embed([c1 . . . cL]))
+
+pt = [
+−→
+he
+
+t ||
+←−
+hs
+
+t
+]
+
+We use low-rank bilinear pooling (LRBP) (Kim
+et al., 2017) to fuse text and region features.
+Compared to simple concatenation, LRBP sup-
+ports pairwise interaction between bimodal feature
+channels while keeping a reasonable computation
+overhead. Given a text feature vector pt ∈ Rdtext
+and a region feature vector rk ∈ Rdvis , LRBP fuses
+them into a joint representation f tk ∈ Rdjoint :
+
+f tk = P
+>(U>pt ◦ V >rk) + b
+
+where U ∈ Rdtext×r, V ∈ Rdvis×r, pooling ma-
+trix P ∈ Rr×djoint , bias b ∈ Rdjoint , and ◦ is the
+Hadamard (i.e. element-wise) product.
+
+As discussed in Section 3.2, the CRF score
+function consists of emission score and transition
+score. The emission score ε(rk, pt) models the
+compatibility between each phrase and each can-
+didate region. We feed the joint representation to
+a single-layer feed-forward neural network:
+
+ε(rk, p
+t) = FFN(f tk)
+
+The transition score τ(rk, rk′ , p1:T ) is modeled
+by a two-layer feed-forward neural network with
+ReLU activation for the hidden layer:
+
+τ(rk, rk′ , p
+1:T ) = FFN(σ(FFN([rk||rk′ ])))
+
+To condition the transition scores on local and
+global context from the caption, we can extend
+the input [rk||rk′ ] with the following text features:
+context in between the two phrases (feature vector
+pt−1,t), context from phrase features pt−1 and pt,
+and global context pG.
+
+One important difference between the standard
+use of CRFs for sequence labeling and our task
+is that our ”labels” do not correspond to a fixed
+set of classes that can be predicted for any in-
+put, but are as specific to the particular input ex-
+ample as the sequences to be labeled themselves.
+Hence, our transition and emission scores do not
+depend on the (arbitrary) indices of regions to be
+ground, but on their visual and spatial features (as
+well as on their corresponding linguistic contexts).
+Finally, although our approach could in princi-
+ple be extended to higher-order CRFs, we restrict
+our attention here to first-order CRFs for compu-
+tational efficiency. As a consequence, our mod-
+els can only capture dependencies between string-
+adjacent phrases.
+
+
+
+5118
+
+4.3 Training Objectives
+For each image-caption instance, the loss is a lin-
+ear combination of the labeling and bounding box
+regression loss:
+
+L = Llabel + γLreg
+
+Llabel is the CRF loss defined in Section 3.2. Lreg
+(Ren et al., 2017) is defined as
+
+Lreg = (β, β̂) =
+∑
+
+i∈{x,y,w,h}
+
+SmoothL1(β̂i − βi)
+
+with the ground truth regression parameterization
+
+β = [
+x− xa
+wa
+
+,
+y − ya
+ha
+
+, log
+w
+
+wa
+, log
+
+h
+
+ha
+]
+
+and
+
+SmoothL1(x) =
+
+{
+0.5x2 if |x| < 1
+|x| − 0.5 otherwise
+
+5 Experiments
+
+5.1 Experiment Setup
+Dataset. We train and evaluate our models on the
+Flickr30k Entities dataset (Plummer et al., 2017b),
+which contains 31, 783 images, each accompa-
+nied by 5 captions. In keeping with previous
+work on this dataset, we assume that entity phrase
+boundaries are given, so inferring which phrases
+to ground is not part of our task. Following Plum-
+mer et al. (2017b), we merge all regions that are
+ground to the same phrase into one larger bound-
+ing box, and split the dataset into 29, 783 training
+images, 1k validation images and 1k test images.
+
+We do not apply our method to RefCOCO
+(Yu et al., 2016) or Visual Genome (Krishna
+et al., 2017) because they consist of independently
+grounded entity phrases without any entity depen-
+dencies that CRFs could leverage.
+Implementation details. For text feature ex-
+traction, we use the 1024-d contextualized word
+embeddings from the last layer of ELMo (Peters
+et al., 2018), followed by a bi-directional LSTM
+(Hochreiter and Schmidhuber, 1997) encoder with
+hidden dimension dhidden=512 for each direction,
+so that the text feature vector has dimension
+dtext = 1024. We use the Bottom-Up Attention
+model (Anderson et al., 2018) to generate region
+proposals and extract visual features, as in the
+state-of-the-art BAN (Kim et al., 2018) and
+DDPN (Yu et al., 2018b) models. K=100 region
+
+proposals are generated for each image. Each
+candidate region with coordinates (xmin, ymin),
+(xmax, ymax) is represented by a dvis = 2053
+feature vector that consists of 2048-d visual
+features concatenated with 5-d spatial features
+[xmin/W, ymin/H, xmax/W, ymax/H,wh/WH].
+The low-rank bilinear pooling (LRBP) layer used
+for text-region bimodal feature fusion has rank
+r=1024 and output dimension djoint =1024. We
+train with a mini-batch size of 16 image-caption
+instances. Each instance contains all entity
+phrases to be grounded in the caption. Weights are
+initialized with Xavier (Glorot and Bengio, 2010).
+We apply a dropout rate of p=0.2 after the word
+embedding layer, LSTM layer, and LRBP fusion
+layer. The loss weighting parameter γ is 10.0.
+All gradients are clipped by ∞-norm of 10.0 to
+prevent gradient explosion. We do not fine-tune
+ELMo or the Bottom-Up Attention model. All
+models are trained for 50k iterations using Adam
+(Kingma and Ba, 2015) with learning rate 5e−5
+and β1 = 0.9, β2 = 0.98. Model snapshots are
+taken every 5k iterations and the model with the
+highest validation set accuracy is selected.
+Metrics. We predict one grounded region for each
+entity phrase. Following Plummer et al. (2017b), a
+prediction is deemed accurate if it has at least 0.5
+IoU overlap with the gold region. We report the
+percentage of accurately grounded phrases.
+
+5.2 Quantitative Results
+
+We compare our Soft-Label Chain CRF model
+against three baselines: a Hard-Label non-CRF
+model, a Hard-Label CRF, and a Soft-Label non-
+CRF model. The non-CRF models ground each
+phrase independently with a loglinear model. The
+Hard-Label models are trained with a standard
+one-hot training regime. The Soft-Label models
+use the soft-label training regime described above.
+The Soft-Label non-CRF model corresponds to
+the reduced form of the Soft-Label Chain CRF in
+Section 3.3.
+
+Table 1 shows the performance of previous
+structured prediction models, current state-of-the-
+art models, our baseline models and the Soft-
+Label Chain CRF model. For a fair comparison
+with BAN (Kim et al., 2018), we also report re-
+sult of the hard-label baseline with GloVe (Pen-
+nington et al., 2014) embeddings, while we ob-
+tain 0.33% higher result with ELMo. Training a
+non-CRF model on soft-label target distributions
+
+
+
+5119
+
+Method Vision Backbone Grounding Accuracy (%)
+Compared methods
+Structured Matching (Wang et al., 2016) Fast R-CNN (Girshick, 2015) 42.08
+Phrase-Region CCA (Plummer et al., 2017a) Fast R-CNN (Girshick, 2015) 55.85
+QRC Net (Chen et al., 2017b) Fast R-CNN (Girshick, 2015) 65.14
+BAN (Kim et al., 2018) Bottom-Up Attention (Anderson et al., 2018) 69.69
+DDPN (Yu et al., 2018b) Bottom-Up Attention (Anderson et al., 2018) 73.3
+Our methods
+Hard-Label (GloVe (Pennington et al., 2014)) Bottom-Up Attention (Anderson et al., 2018) 71.88
+Hard-Label (HL) Bottom-Up Attention (Anderson et al., 2018) 72.21
+Soft-Label (SL) Bottom-Up Attention (Anderson et al., 2018) 74.29
+Hard-Label Chain CRF (HL-CCRF) Bottom-Up Attention (Anderson et al., 2018) 72.26
+Soft-Label Chain CRF (SL-CCRF) Bottom-Up Attention (Anderson et al., 2018) 74.69
+
+Table 1: Performance of different phrase grounding methods on Flickr30k Entities (test set). Our CRF models has
+transition scores conditioned on features of context in between the two phrases (“M” in Table 2). Our methods,
+unless explicitly specified, uses ELMo (Peters et al., 2018) as word embeddings.
+
+Model Transition Context Accuracy (%)
+SL-CCRF – 74.28
+SL-CCRF M 74.69
+SL-CCRF M+LR 74.45
+SL-CCRF M+LR+G 74.48
+
+Table 2: Performance of Soft-Label Chain CRF mod-
+els by conditioning transition scores on different sets
+of context features. –: input to transition score pre-
+diction is [rk||rk′ ]. M: input extended by features of
+context pt−1,t in between the two phrases. M+LR: in-
+put further extended by features of LHS phrase pt−1
+
+and RHS phrase pt. M+LR+G: input further extended
+by features of global context pG.
+
+Decoding Algorithm HL-CCRF SL-CCRF
+Viterbi (MAP) 72.26 74.69
+
+Smoothing 72.30 74.73
+
+Table 3: Decoding algorithms’ impact on performance.
+
+improves accuracy by a further 2.08%. On top
+of that, Soft-Label Chain CRF improves accuracy
+by another 0.40%, which shows the effectiveness
+of treating phrase grounding as a sequence label-
+ing task and using CRFs to capture entity depen-
+dencies. We also observe that the Hard-Label
+Chain CRF outperforms the hard-label baseline by
+a mere margin of 0.05%, so our conjecture is that
+using chain CRFs works well only with a suitable
+choice of training regime. Soft-Label Chain CRF
+gives an overall improvement of 2.48% over the
+hard-label baseline; it significantly outperforms
+previous structured prediction models including
+Structured Matching (Wang et al., 2016), Phrase-
+Region CCA (Plummer et al., 2017a) and QRC
+Net (Chen et al., 2017b), and surpasses the state-
+
+of-the-art BAN (Kim et al., 2018) and DDPN (Yu
+et al., 2018b) models by a margin of 5.00% and
+about 1.4%, respectively.
+
+We conduct an ablation study to find the most
+appropriate combination of context features for
+the transition scores in the SL-CCRF model. Ta-
+ble 2 shows that we obtain the best results by in-
+cluding the context in between the two phrases,
+which gives an improvement of 0.41%. We did
+not see any benefit from adding further text fea-
+tures from the left and right side of the phrases, or
+from the entire caption.
+
+Besides the Viterbi decoding algorithm used
+in prediction in CRFs, we also experiment with
+a smoothing decoding algorithm. While Viterbi
+finds the MAP label sequence conditioned on the
+input sequence argmaxy p(y|x), smoothing de-
+coding finds the best label for each input xt:
+argmaxyt p(y
+
+t|x). This makes sense in some
+scenarios where we want to refine the predicted
+grounding of one entity by referring to the context
+instead of attempting to ground all entities men-
+tioned in the description. Table 3 shows that in
+both Hard-Label Chain CRF and Soft-Label Chain
+CRF, smoothing decoding gives a prediction accu-
+racy 0.04% higher than Viterbi decoding.
+
+Without bounding box regression, the Soft-
+Label Chain CRF model has an accuracy of
+69.85%, a 4.84% reduction compared to the set-
+ting with bounding box regression.
+
+5.3 Qualitative Results
+
+We visualize some phrase grounding results in the
+validation set of Flickr30k Entities in Figure 5. In
+(a), our CRF model avoids the error in grounding
+“a lounge chair” by constraining its relative posi-
+
+
+
+5120
+
+Figure 5: Selected visualization of phrase grounding results in the validation set of Flickr30k Entities. Solid boxes
+are correct predicted groundings, while dashed boxes are incorrect predicted groundings. Gold regions are not
+shown. Each entity phrase and its predicted grounding are marked with same color. Best viewed in color.
+
+tion to “a man”. In (b), although it may not have
+learned to distinguish “headband” and “hat”, the
+CRF constrains the spatial position of “headband”
+to agree with the ownership dependency provided
+in context. In (c), it avoids the error in ground-
+ing “skirt” by spatially discriminating it from “a
+blouse”. In (d), it avoids the error in ground-
+ing “a cleanser” by constraining its relative size
+w.r.t. “a child”. These examples indicate that the
+CRF model may avoid grounding errors made by
+non-CRF models by leveraging entity dependen-
+cies, including relative position, spatial overlap-
+ping, and relative size.
+
+6 Conclusion
+
+In this paper, we formulate phrase grounding as a
+sequence labeling task and propose the Soft-Label
+Chain CRF model that successfully combines the
+benefits brought by global structured prediction
+and soft-label training regime that addresses the
+gold label multiplicity problem. Experimental re-
+sults show that we achieve an overall improvement
+of 2.48% on grounding accuracy compared to a
+strong baseline, and that our model outperforms
+previous methods on phrase grounding.
+
+7 Acknowledgements
+
+This material is based upon work supported by
+the National Science Foundation under Grants No.
+1405883 and 1563727. Any opinions, findings,
+and conclusions or recommendations expressed in
+this material are those of the author(s) and do not
+
+necessarily reflect the views of the National Sci-
+ence Foundation.
+
+References
+Aishwarya Agrawal, Jiasen Lu, Stanislaw Antol, Mar-
+
+garet Mitchell, C. Lawrence Zitnick, Devi Parikh,
+and Dhruv Batra. 2017. VQA: visual question an-
+swering - www.visualqa.org. International Journal
+of Computer Vision, 123(1):4–31.
+
+Peter Anderson, Xiaodong He, Chris Buehler, Damien
+Teney, Mark Johnson, Stephen Gould, and Lei
+Zhang. 2018. Bottom-up and top-down attention for
+image captioning and visual question answering. In
+2018 IEEE Conference on Computer Vision and Pat-
+tern Recognition, CVPR 2018, Salt Lake City, UT,
+USA, June 18-22, 2018, pages 6077–6086.
+
+Kan Chen, Trung Bui, Chen Fang, Zhaowen Wang, and
+Ram Nevatia. 2017a. AMC: attention guided multi-
+modal correlation learning for image search. In
+2017 IEEE Conference on Computer Vision and Pat-
+tern Recognition, CVPR 2017, Honolulu, HI, USA,
+July 21-26, 2017, pages 6203–6211.
+
+Kan Chen, Rama Kovvuri, and Ram Nevatia. 2017b.
+Query-guided regression network with context pol-
+icy for phrase grounding. In IEEE Interna-
+tional Conference on Computer Vision, ICCV 2017,
+Venice, Italy, October 22-29, 2017, pages 824–832.
+
+Jeff Donahue, Lisa Anne Hendricks, Marcus Rohrbach,
+Subhashini Venugopalan, Sergio Guadarrama, Kate
+Saenko, and Trevor Darrell. 2017. Long-term recur-
+rent convolutional networks for visual recognition
+and description. IEEE Trans. Pattern Anal. Mach.
+Intell., 39(4):677–691.
+
+Mark Dredze, Partha Pratim Talukdar, and Koby Cram-
+mer. 2009. Sequence learning from data with mul-
+
+https://doi.org/10.1007/s11263-016-0966-6
+https://doi.org/10.1007/s11263-016-0966-6
+https://doi.org/10.1109/CVPR.2018.00636
+https://doi.org/10.1109/CVPR.2018.00636
+https://doi.org/10.1109/CVPR.2017.657
+https://doi.org/10.1109/CVPR.2017.657
+https://doi.org/10.1109/ICCV.2017.95
+https://doi.org/10.1109/ICCV.2017.95
+https://doi.org/10.1109/TPAMI.2016.2599174
+https://doi.org/10.1109/TPAMI.2016.2599174
+https://doi.org/10.1109/TPAMI.2016.2599174
+
+
+5121
+
+tiple labels. In ECMLPKDD 2009 workshop on
+learning from multi-label data, page 39.
+
+Hao Fang, Saurabh Gupta, Forrest N. Iandola, Ru-
+pesh Kumar Srivastava, Li Deng, Piotr Dollár, Jian-
+feng Gao, Xiaodong He, Margaret Mitchell, John C.
+Platt, C. Lawrence Zitnick, and Geoffrey Zweig.
+2015. From captions to visual concepts and back. In
+IEEE Conference on Computer Vision and Pattern
+Recognition, CVPR 2015, Boston, MA, USA, June
+7-12, 2015, pages 1473–1482.
+
+Ross B. Girshick. 2015. Fast R-CNN. In 2015
+IEEE International Conference on Computer Vision,
+ICCV 2015, Santiago, Chile, December 7-13, 2015,
+pages 1440–1448.
+
+Xavier Glorot and Yoshua Bengio. 2010. Understand-
+ing the difficulty of training deep feedforward neu-
+ral networks. In Proceedings of the Thirteenth In-
+ternational Conference on Artificial Intelligence and
+Statistics, AISTATS 2010, Chia Laguna Resort, Sar-
+dinia, Italy, May 13-15, 2010, pages 249–256.
+
+Sepp Hochreiter and Jürgen Schmidhuber. 1997.
+Long short-term memory. Neural Computation,
+9(8):1735–1780.
+
+Andrej Karpathy and Li Fei-Fei. 2017. Deep visual-
+semantic alignments for generating image descrip-
+tions. IEEE Trans. Pattern Anal. Mach. Intell.,
+39(4):664–676.
+
+Andrej Karpathy, Armand Joulin, and Fei-Fei Li. 2014.
+Deep fragment embeddings for bidirectional image
+sentence mapping. In Advances in Neural Infor-
+mation Processing Systems 27: Annual Conference
+on Neural Information Processing Systems 2014,
+December 8-13 2014, Montreal, Quebec, Canada,
+pages 1889–1897.
+
+Jin-Hwa Kim, Jaehyun Jun, and Byoung-Tak Zhang.
+2018. Bilinear attention networks. In Advances
+in Neural Information Processing Systems 31: An-
+nual Conference on Neural Information Processing
+Systems 2018, NeurIPS 2018, 3-8 December 2018,
+Montréal, Canada., pages 1571–1581.
+
+Jin-Hwa Kim, Kyoung Woon On, Woosang Lim,
+Jeonghee Kim, Jung-Woo Ha, and Byoung-Tak
+Zhang. 2017. Hadamard product for low-rank bi-
+linear pooling. In 5th International Conference
+on Learning Representations, ICLR 2017, Toulon,
+France, April 24-26, 2017, Conference Track Pro-
+ceedings.
+
+Diederik P. Kingma and Jimmy Ba. 2015. Adam: A
+method for stochastic optimization. In 3rd Inter-
+national Conference on Learning Representations,
+ICLR 2015, San Diego, CA, USA, May 7-9, 2015,
+Conference Track Proceedings.
+
+Ranjay Krishna, Yuke Zhu, Oliver Groth, Justin John-
+son, Kenji Hata, Joshua Kravitz, Stephanie Chen,
+Yannis Kalantidis, Li-Jia Li, David A. Shamma,
+
+Michael S. Bernstein, and Li Fei-Fei. 2017. Vi-
+sual genome: Connecting language and vision us-
+ing crowdsourced dense image annotations. Inter-
+national Journal of Computer Vision, 123(1):32–73.
+
+John D. Lafferty, Andrew McCallum, and Fernando
+C. N. Pereira. 2001. Conditional random fields:
+Probabilistic models for segmenting and labeling se-
+quence data. In Proceedings of the Eighteenth Inter-
+national Conference on Machine Learning (ICML
+2001), Williams College, Williamstown, MA, USA,
+June 28 - July 1, 2001, pages 282–289.
+
+Guillaume Lample, Miguel Ballesteros, Sandeep Sub-
+ramanian, Kazuya Kawakami, and Chris Dyer. 2016.
+Neural architectures for named entity recognition.
+In NAACL HLT 2016, The 2016 Conference of
+the North American Chapter of the Association for
+Computational Linguistics: Human Language Tech-
+nologies, San Diego California, USA, June 12-17,
+2016, pages 260–270.
+
+Xuezhe Ma and Eduard H. Hovy. 2016. End-to-end se-
+quence labeling via bi-directional lstm-cnns-crf. In
+Proceedings of the 54th Annual Meeting of the As-
+sociation for Computational Linguistics, ACL 2016,
+August 7-12, 2016, Berlin, Germany, Volume 1:
+Long Papers.
+
+Jeffrey Pennington, Richard Socher, and Christo-
+pher D. Manning. 2014. Glove: Global vectors for
+word representation. In Proceedings of the 2014
+Conference on Empirical Methods in Natural Lan-
+guage Processing, EMNLP 2014, October 25-29,
+2014, Doha, Qatar, A meeting of SIGDAT, a Special
+Interest Group of the ACL, pages 1532–1543.
+
+Matthew E. Peters, Mark Neumann, Mohit Iyyer, Matt
+Gardner, Christopher Clark, Kenton Lee, and Luke
+Zettlemoyer. 2018. Deep contextualized word rep-
+resentations. In Proceedings of the 2018 Confer-
+ence of the North American Chapter of the Associ-
+ation for Computational Linguistics: Human Lan-
+guage Technologies, NAACL-HLT 2018, New Or-
+leans, Louisiana, USA, June 1-6, 2018, Volume 1
+(Long Papers), pages 2227–2237.
+
+Bryan A. Plummer, Arun Mallya, Christopher M. Cer-
+vantes, Julia Hockenmaier, and Svetlana Lazebnik.
+2017a. Phrase localization and visual relationship
+detection with comprehensive image-language cues.
+In IEEE International Conference on Computer Vi-
+sion, ICCV 2017, Venice, Italy, October 22-29,
+2017, pages 1946–1955.
+
+Bryan A. Plummer, Liwei Wang, Chris M. Cervantes,
+Juan C. Caicedo, Julia Hockenmaier, and Svetlana
+Lazebnik. 2017b. Flickr30k entities: Collecting
+region-to-phrase correspondences for richer image-
+to-sentence models. International Journal of Com-
+puter Vision, 123(1):74–93.
+
+Filip Radenovic, Giorgos Tolias, and Ondrej Chum.
+2016. CNN image retrieval learns from bow: Un-
+supervised fine-tuning with hard examples. In Com-
+
+https://doi.org/10.1109/CVPR.2015.7298754
+https://doi.org/10.1109/ICCV.2015.169
+http://jmlr.org/proceedings/papers/v9/glorot10a.html
+http://jmlr.org/proceedings/papers/v9/glorot10a.html
+http://jmlr.org/proceedings/papers/v9/glorot10a.html
+https://doi.org/10.1162/neco.1997.9.8.1735
+https://doi.org/10.1109/TPAMI.2016.2598339
+https://doi.org/10.1109/TPAMI.2016.2598339
+https://doi.org/10.1109/TPAMI.2016.2598339
+http://papers.nips.cc/paper/5281-deep-fragment-embeddings-for-bidirectional-image-sentence-mapping
+http://papers.nips.cc/paper/5281-deep-fragment-embeddings-for-bidirectional-image-sentence-mapping
+http://papers.nips.cc/paper/7429-bilinear-attention-networks
+https://openreview.net/forum?id=r1rhWnZkg
+https://openreview.net/forum?id=r1rhWnZkg
+http://arxiv.org/abs/1412.6980
+http://arxiv.org/abs/1412.6980
+https://doi.org/10.1007/s11263-016-0981-7
+https://doi.org/10.1007/s11263-016-0981-7
+https://doi.org/10.1007/s11263-016-0981-7
+http://aclweb.org/anthology/N/N16/N16-1030.pdf
+http://aclweb.org/anthology/P/P16/P16-1101.pdf
+http://aclweb.org/anthology/P/P16/P16-1101.pdf
+http://aclweb.org/anthology/D/D14/D14-1162.pdf
+http://aclweb.org/anthology/D/D14/D14-1162.pdf
+https://aclanthology.info/papers/N18-1202/n18-1202
+https://aclanthology.info/papers/N18-1202/n18-1202
+https://doi.org/10.1109/ICCV.2017.213
+https://doi.org/10.1109/ICCV.2017.213
+https://doi.org/10.1007/s11263-016-0965-7
+https://doi.org/10.1007/s11263-016-0965-7
+https://doi.org/10.1007/s11263-016-0965-7
+https://doi.org/10.1007/978-3-319-46448-0_1
+https://doi.org/10.1007/978-3-319-46448-0_1
+
+
+5122
+
+puter Vision - ECCV 2016 - 14th European Confer-
+ence, Amsterdam, The Netherlands, October 11-14,
+2016, Proceedings, Part I, pages 3–20.
+
+Shaoqing Ren, Kaiming He, Ross B. Girshick, and Jian
+Sun. 2017. Faster R-CNN: towards real-time ob-
+ject detection with region proposal networks. IEEE
+Trans. Pattern Anal. Mach. Intell., 39(6):1137–
+1149.
+
+Filipe Rodrigues, Francisco C. Pereira, and Bernardete
+Ribeiro. 2014. Sequence labeling with multiple an-
+notators. Machine Learning, 95(2):165–181.
+
+Anna Rohrbach, Marcus Rohrbach, Ronghang Hu,
+Trevor Darrell, and Bernt Schiele. 2016. Ground-
+ing of textual phrases in images by reconstruction.
+In Computer Vision - ECCV 2016 - 14th European
+Conference, Amsterdam, The Netherlands, October
+11-14, 2016, Proceedings, Part I, pages 817–834.
+
+Mingzhe Wang, Mahmoud Azab, Noriyuki Kojima,
+Rada Mihalcea, and Jia Deng. 2016. Structured
+matching for phrase localization. In Computer Vi-
+sion - ECCV 2016 - 14th European Conference,
+Amsterdam, The Netherlands, October 11-14, 2016,
+Proceedings, Part VIII, pages 696–711.
+
+Kelvin Xu, Jimmy Ba, Ryan Kiros, Kyunghyun
+Cho, Aaron C. Courville, Ruslan Salakhutdinov,
+Richard S. Zemel, and Yoshua Bengio. 2015. Show,
+attend and tell: Neural image caption generation
+with visual attention. In Proceedings of the 32nd In-
+ternational Conference on Machine Learning, ICML
+2015, Lille, France, 6-11 July 2015, pages 2048–
+2057.
+
+Licheng Yu, Patrick Poirson, Shan Yang, Alexander C.
+Berg, and Tamara L. Berg. 2016. Modeling con-
+text in referring expressions. In Computer Vision -
+ECCV 2016 - 14th European Conference, Amster-
+dam, The Netherlands, October 11-14, 2016, Pro-
+ceedings, Part II, pages 69–85.
+
+Zhou Yu, Jun Yu, Jianping Fan, and Dacheng Tao.
+2017. Multi-modal factorized bilinear pooling with
+co-attention learning for visual question answer-
+ing. In IEEE International Conference on Computer
+Vision, ICCV 2017, Venice, Italy, October 22-29,
+2017, pages 1839–1848.
+
+Zhou Yu, Jun Yu, Chenchao Xiang, Jianping Fan, and
+Dacheng Tao. 2018a. Beyond bilinear: General-
+ized multimodal factorized high-order pooling for
+visual question answering. IEEE Trans. Neural
+Netw. Learning Syst., 29(12):5947–5959.
+
+Zhou Yu, Jun Yu, Chenchao Xiang, Zhou Zhao,
+Qi Tian, and Dacheng Tao. 2018b. Rethinking di-
+versified and discriminative proposal generation for
+visual grounding. In Proceedings of the Twenty-
+Seventh International Joint Conference on Artificial
+Intelligence, IJCAI 2018, July 13-19, 2018, Stock-
+holm, Sweden., pages 1114–1120.
+
+https://doi.org/10.1109/TPAMI.2016.2577031
+https://doi.org/10.1109/TPAMI.2016.2577031
+https://doi.org/10.1007/s10994-013-5411-2
+https://doi.org/10.1007/s10994-013-5411-2
+https://doi.org/10.1007/978-3-319-46448-0_49
+https://doi.org/10.1007/978-3-319-46448-0_49
+https://doi.org/10.1007/978-3-319-46484-8_42
+https://doi.org/10.1007/978-3-319-46484-8_42
+http://jmlr.org/proceedings/papers/v37/xuc15.html
+http://jmlr.org/proceedings/papers/v37/xuc15.html
+http://jmlr.org/proceedings/papers/v37/xuc15.html
+https://doi.org/10.1007/978-3-319-46475-6_5
+https://doi.org/10.1007/978-3-319-46475-6_5
+https://doi.org/10.1109/ICCV.2017.202
+https://doi.org/10.1109/ICCV.2017.202
+https://doi.org/10.1109/ICCV.2017.202
+https://doi.org/10.1109/TNNLS.2018.2817340
+https://doi.org/10.1109/TNNLS.2018.2817340
+https://doi.org/10.1109/TNNLS.2018.2817340
+https://doi.org/10.24963/ijcai.2018/155
+https://doi.org/10.24963/ijcai.2018/155
+https://doi.org/10.24963/ijcai.2018/155
+

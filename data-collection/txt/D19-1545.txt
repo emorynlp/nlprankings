@@ -1,0 +1,1338 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Learning Programmatic Idioms for Scalable Semantic Parsing
+
+
+Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natural Language Processing, pages 5426–5435,
+Hong Kong, China, November 3–7, 2019. c©2019 Association for Computational Linguistics
+
+5426
+
+Learning Programmatic Idioms for Scalable Semantic Parsing
+
+Srinivasan Iyer†, Alvin Cheung§ and Luke Zettlemoyer†‡
+†Paul G. Allen School of Computer Science and Engineering, Univ. of Washington, Seattle, WA
+
+{sviyer, lsz}@cs.washington.edu
+§Department of Electrical Engineering and Computer Sciences, UC Berkeley, Berkeley, CA
+
+akcheung@cs.berkeley.edu
+‡ Facebook AI Research, Seattle
+
+lsz@fb.com
+
+Abstract
+
+Programmers typically organize executable
+source code using high-level coding patterns
+or idiomatic structures such as nested loops,
+exception handlers and recursive blocks, rather
+than as individual code tokens. In contrast,
+state of the art (SOTA) semantic parsers still
+map natural language instructions to source
+code by building the code syntax tree one node
+at a time. In this paper, we introduce an it-
+erative method to extract code idioms from
+large source code corpora by repeatedly col-
+lapsing most-frequent depth-2 subtrees of their
+syntax trees, and train semantic parsers to ap-
+ply these idioms during decoding. Apply-
+ing idiom-based decoding on a recent context-
+dependent semantic parsing task improves the
+SOTA by 2.2% BLEU score while reducing
+training time by more than 50%. This im-
+proved speed enables us to scale up the model
+by training on an extended training set that
+is 5× larger, to further move up the SOTA
+by an additional 2.3% BLEU and 0.9% exact
+match. Finally, idioms also significantly im-
+prove accuracy of semantic parsing to SQL on
+the ATIS-SQL dataset, when training data is
+limited.
+
+1 Introduction
+
+When programmers translate Natural Language
+(NL) specifications into executable source code,
+they typically start with a high-level plan of the
+major structures required, such as nested loops,
+conditionals, etc. and then proceed to fill in spe-
+cific details into these components. We refer to
+these high-level structures (Figure 1 (b)) as code
+idioms (Allamanis and Sutton, 2014). In this pa-
+per, we demonstrate how learning to use code id-
+ioms leads to an improvement in model accuracy
+and training time for the task of semantic parsing,
+i.e., mapping intents in NL into general purpose
+source code (Iyer et al., 2017; Ling et al., 2016).
+
+( Expr )
+
+if    ParExpr        Statement           IfOrElse          
+
+Statement
+
+Block
+
+Statement
+
+ 
+Block
+
+Statement
+
+(b)
+
+(a)
+
+if ( Expr ) { Expr ; } else { Expr ; }  
+
+{ BlockStatement }
+
+{ BlockStatement }
+
+Expr ;
+
+Expr ;
+
+else   Statement
+
+Statement
+
+Figure 1: (a) Syntax tree based decoding for seman-
+tic parsing uses as many as 11 rules (steps) to pro-
+duce the outer structure of a very frequently used
+if-then-else code snippet. (b) Direct application of
+an if-then-else idiom during decoding leads to im-
+proved accuracy and training time.
+
+State-of-the-art semantic parsers are neural
+encoder-decoder models, where decoding is
+guided by the target programming language gram-
+mar (Yin and Neubig, 2017; Rabinovich et al.,
+2017; Iyer et al., 2018) to ensure syntactically
+valid programs. For general purpose program-
+ming languages with large formal grammars, this
+can easily lead to long decoding paths even for
+short snippets of code. For example, Figure 1
+shows an intermediate parse tree for a generic
+if-then-else code snippet, for which the de-
+coder requires as many as eleven decoding steps
+
+
+
+5427
+
+before ultimately filling in the slots for the if con-
+dition, the then expression and the else expres-
+sion. However, the if-then-else block can be
+seen as a higher level structure such as shown in
+Figure 1 (b) that can be applied in one decoding
+step and reused in many different programs. In
+this paper, we refer to frequently recurring sub-
+trees of programmatic parse trees as code idioms,
+and we equip semantic parsers with the ability to
+learn and directly generate idiomatic structures as
+in Figure 1 (b).
+
+We introduce a simple iterative method to ex-
+tract idioms from a dataset of programs by re-
+peatedly collapsing the most frequent depth-2 sub-
+trees of syntax parse trees. Analogous to the byte
+pair encoding (BPE) method (Gage, 1994; Sen-
+nrich et al., 2016) that creates new subtokens of
+words by repeatedly combining frequently occur-
+ring adjacent pairs of subtokens, our method takes
+a depth-2 syntax subtree and replaces it with a
+tree of depth-1 by removing all the internal nodes.
+This method is in contrast with the approach using
+probabilistic tree substitution grammars (pTSG)
+taken by Allamanis and Sutton (2014), who use
+the explanation quality of an idiom to prioritize id-
+ioms that are more interesting, with an end goal to
+suggest useful idioms to programmers using IDEs.
+Once idioms are extracted, we greedily apply them
+to semantic parsing training sets to provide super-
+vision for learning to apply idioms.
+
+We evaluate our approach on two semantic pars-
+ing tasks that map NL into 1) general-purpose
+source code, and 2) executable SQL queries, re-
+spectively. On the first task, i.e., context depen-
+dent semantic parsing (Iyer et al., 2018) using the
+CONCODE dataset, we improve the state of the
+art (SOTA) by 2.2% of BLEU score. Furthermore,
+generating source code using idioms results in a
+more than 50% reduction in the number of decod-
+ing steps, which cuts down training time to less
+than half, from 27 to 13 hours. Taking advan-
+tage of this reduced training time, we further push
+the SOTA on CONCODE to an EM of 13.4 and
+a BLEU score of 28.9 by training on an extended
+version of the training set (with 5× the number
+of training examples). On the second task, i.e.,
+mapping NL utterances into SQL queries for a
+flight information database (ATIS-SQL; Iyer et al.
+(2017)), using idioms significantly improves de-
+notational accuracy over SOTA models, when a
+limited amount of training data is used, and also
+
+marginally outperforms the SOTA when the full
+training set is used (more details in Section 7).
+
+2 Related Work
+
+Neural encoder-decoder models have proved ef-
+fective in mapping NL to logical forms (Dong
+and Lapata, 2016) and also for directly produc-
+ing general purpose programs (Iyer et al., 2017,
+2018). Ling et al. (2016) use a sequence-to-
+sequence model with attention and a copy mech-
+anism to generate source code. Instead of di-
+rectly generating a sequence of code tokens, recent
+methods focus on constrained decoding mecha-
+nisms to generate syntactically correct output us-
+ing a decoder that is either grammar-aware or has
+a dynamically determined modular structure par-
+alleling the structure of the abstract syntax tree
+(AST) of the code (Rabinovich et al., 2017; Kr-
+ishnamurthy et al., 2017; Yin and Neubig, 2017).
+Iyer et al. (2018) use a similar decoding approach
+but use a specialized context encoder for the task
+of context-dependent code generation. We aug-
+ment these neural encoder-decoder models with
+the ability to decode in terms of frequently oc-
+curring higher level idiomatic structures to achieve
+gains in accuracy and training time.
+
+Another different but related method to pro-
+duce source code is using sketches, which are code
+snippets containing slots in the place of low-level
+information such as variable names, method argu-
+ments, and literals. Dong and Lapata (2018) gen-
+erate such sketches using programming language-
+specific sketch creation rules and use them as
+intermediate representations to train token-based
+seq2seq models that convert NL to logical forms.
+Hayati et al. (2018) retrieve sketches from a large
+training corpus and modify them for the current
+input; Murali et al. (2018) use a combination
+of neural learning and type-guided combinatorial
+search to convert existing sketches into executable
+programs, whereas Nye et al. (2019) additionally
+also generate the sketches before synthesising pro-
+grams. Our idiom-based decoder learns to produce
+commonly used subtrees of programming syntax-
+trees in one decoding step, where the non-terminal
+leaves function as slots that can be subsequently
+expanded in a grammer-aware fashion. Code id-
+ioms can be roughly viewed as a tree-structured
+generalization of sketches, that can be automat-
+ically extracted from large code corpora for any
+programming language, and unlike sketches, can
+
+
+
+5428
+
+also be nested with other idioms or grammar rules.
+More closely related to the idioms that we
+
+use for decoding is Allamanis and Sutton (2014),
+who develop a system (HAGGIS) to automatically
+mine idioms from large code bases. They focus
+on finding interesting and explainable idioms, e.g.,
+those that can be included as preset code tem-
+plates in programming IDEs. Instead, we learn
+frequently used idioms that can be easily associ-
+ated with NL phrases in our dataset. The produc-
+tion of large subtrees in a single step directly trans-
+lates to a large speedup in training and inference.
+
+Concurrent with our research, Shin et al. (2019)
+also develop a system (PATOIS) for idiom-based
+semantic parsing and demonstrate its benefits on
+the Hearthstone (Ling et al., 2016) and Spider (Yu
+et al., 2018) datasets. While we extract idioms by
+collapsing frequently occurring depth-2 AST sub-
+trees and apply them greedily during training, they
+use non-parametric Bayesian inference for idiom
+extraction and train neural models to either apply
+entire idioms or generate its full body.
+
+3 Idiom Aware Encoder-Decoder Models
+
+We aim to train semantic parsers having the ability
+to use idioms during code generation. To do this,
+we first extract frequently used idioms from the
+training set, and then provide them as supervision
+to the semantic parser’s learning algorithm.
+
+Formally, if a semantic parser decoder is guided
+by a grammar G = (N,Σ, R), where N and Σ
+are the sets of non-terminals and terminals respec-
+tively, and R is the set of production rules of the
+form A → β,A ∈ N, β ∈ {N ∪ Σ}∗, we would
+like to construct an idiom set I with rules of the
+form B → γ,B ∈ N, γ ∈ {N ∪ Σ}∗, such that
+B
+
+≥2
+=⇒ γ under G , i.e., γ can be derived in two
+
+or more steps from B under G . For the example
+in Figure 1, R would contain rules for expanding
+each non-terminal, such as Statement → if Par-
+Expr Statement IfOrElse and ParExpr→{ Expr },
+whereas I would contain the idiomatic rule State-
+ment→ if ( Expr ) { Expr ; } else { Expr ; } .
+
+The decoder builds trees from Ĝ = (N,Σ, R ∪
+I). Although the set of valid programs under both
+G and Ĝ are exactly the same, this introduction
+of ambiguous rules into G in the form of idioms
+presents an opportunity to learn shorter deriva-
+tions. In the next two sections, we describe the
+idiom extraction process, i.e., how I is chosen,
+and the idiom application process, i.e., how the de-
+
+coder is trained to learn to apply idioms.
+
+1 Procedure Extract-Idioms(D , G , n)
+Input: D → Training Programs
+Input: G → Parsing Grammar
+Input: n→ Number of idioms
+
+2 T ← {} . Stores all parse trees
+3 for d ∈ D do
+4 T ← T ∪ Parse-Tree(d,G )
+5 end
+6 I ← {}
+7 for i← 1 to K do
+8 s←Most-frequent
+
+Depth-2-Subtree(T )
+9 for t ∈ T do
+
+10 t← Collapse-Subtree(t, s)
+11 end
+12 I ← I ∪ {s}
+13 end
+14 end
+15 Procedure Collapse-Subtree(t, s)
+
+Input: t→ parse-tree
+Input: s→ Depth 2 subtree
+
+16 while s subtree-of t do
+17 Replace s in t with Collapse(s)
+18 end
+19 end
+20 Procedure Collapse(s)
+
+Input: s→ Depth 2 subtree
+21 frontier← leaves(s)
+22 return Tree(root(s),frontier)
+23 end
+
+Algorithm 1: Idiom Extraction.
+
+4 Idiom Extraction
+
+Algorithm 1 describes the procedure to add id-
+iomatic rules, I , to the regular production rules,
+R. Our goal is to populate the set I by identi-
+fying frequently occurring idioms (subtrees) from
+the programs in training set D . Since enumer-
+ating all subtrees of every AST in the training
+set is infeasible, we observe that all subtrees s′
+
+of a frequently occurring subtree s are just as or
+more frequent than s, so we take a bottom-up ap-
+proach by repeatedly collapsing the most frequent
+depth-2 subtrees. Intuitively, this can be viewed
+as a particular kind of generalization of the BPE
+(Gage, 1994; Sennrich et al., 2016) algorithm for
+sequences, where new subtokens are created by re-
+peatedly combining frequently occurring adjacent
+pairs of subtokens. Note that subtrees of parse
+
+
+
+5429
+
+Statement Statement
+
+(a) (b)
+
+(c)
+
+Statement
+
+(d)
+
+New Idiom Rule:
+
+Statement if ( Expr ) { Statement }
+
+New Idiom Rule:
+
+Statement if ( Expr ) { return Expr ; }
+
+{ Statement }
+
+if   (   Expr   )   Statement if   (   Expr   )   { Statement }
+
+Statement
+
+if   (   Expr   )   { Statement }
+
+return   Expr   ;
+
+if   (   Expr   )   { return  Expr  ; }
+
+Figure 2: Two steps of the idiom extraction process
+described in Algorithm 1. (a) First, we find the most
+frequent depth-2 syntax subtree under Grammar G in
+dataset D , collapse it to produce a new production rule
+(b), and replace all occurrences in the dataset with the
+collapsed version. Next, (c) is the most frequent depth-
+2 subtree which now happens to contain (b) within it.
+(c) is collapsed to form an idiom (d), which is effec-
+tively a depth-3 idiom.
+
+trees have an additional constraint, i.e., either all
+or none of the children of non-terminal nodes are
+included, since a grammar rule has to be used en-
+tirely or not at all.
+
+We perform idiom extraction in an iterative
+fashion. We first populate T with all parse trees of
+programs in D using grammar G (Step 4). Each
+iteration then comprises retrieving the most fre-
+quent depth-2 subtree s from T (Step 8), followed
+by post-processing T to replace all occurrences of
+s in T with a collapsed (depth-1) version of s (Step
+10 and 17). The collapse function (Step 20) sim-
+ply takes a subtree, removes all its internal nodes
+and attaches its leaves directly to its root (Step 22).
+The collapsed version of s is a new idiomatic rule
+(a depth-1 subtree), which we add to our set of id-
+ioms, I (Step 12). We illustrate two iterations of
+this algorithm in Figure 2 ((a)-(b) and (c)-(d)). As-
+suming (a) is the most frequent depth-2 subtree in
+the dataset, it is transformed into the idiomatic rule
+in (b). Larger idiomatic trees are learned by com-
+bining several depth-2 subtrees as the algorithm
+progresses. This is shown in Figure 2 (c) which
+contains the idiom extracted in (b) within it owing
+to the post-processing of the dataset after idiom (b)
+is extracted (Step 10 of Algorithm 1) which effec-
+tively makes the idiom in (d), a depth-3 idiom. We
+perform idiom extraction for K iterations. In our
+experiments we vary the value of K based on the
+number of idioms we would like to extract.
+
+Statement
+
+{ Statement }
+
+if   (   Expr   )   Statement
+
+return   Expr   ;
+
+{ Statement }
+
+if   (   Expr   )   Statement
+
+Statement
+
+if   (   Expr   )   { Statement }
+
+return   Expr   ;
+
+if   (   Expr   )   { Statement }
+
+(i)
+
+(ii)
+
+Statement
+
+if   (   Expr   )   { Statement }
+
+if   (   Expr   )   { return  Expr  ; }
+
+(iii)
+
+Figure 3: (i) Application of the two idioms extracted
+in Figure 2 on a new training example. (ii) We first
+perform two applications of the idiom in Figure 2b, (iii)
+followed by an application of the idiom in Figure 2d.
+The resulting tree can be represented with just 2 parsing
+rules instead of 5.
+
+5 Model Training with Idioms
+
+Once a set of idioms I is obtained, we next train
+semantic parsing models to apply these idioms
+while decoding. We do this by supervising gram-
+mar rule generation in the decoder using a com-
+pressed set of rules for each example, using the id-
+iom set I (see Algorithm 2). More concretely, we
+first obtain the parse tree ti (or grammar rule set
+pi) for each training program yi under grammar
+G (Step 3) and then greedily collapse each depth-
+2 subtree in ti corresponding to every idiom in I
+(Step 5). Once ti cannot be further collapsed, we
+translate ti into production rules ri based on the
+collapsed tree, with |ri| ≤ |pi| (Step 7).
+
+1 Procedure Compress(D ,G , I)
+Input: D → Training Programs
+Input: G → Parsing Grammar
+Input: I → Idiom set
+
+2 for d ∈ D do
+3 t← Parse-Tree(d,G )
+4 for i ∈ I do
+5 t← Collapse-Subtree(t, i)
+6 end
+7 Train decoder using
+
+Production-Rules(t)
+8 end
+9 end
+Algorithm 2: Training Example Compression.
+
+This process is illustrated in Figure 3 where we
+
+
+
+5430
+
+Adds a scalar to this vector in placeNL query:
+
+Variables: [Type, Name]
+
+double[] vecElements
+double[] weights
+Methods: [Return Type, Name]
+
+void inc ( )
+float dotProduct ( )
+float multiply ( ) Context
+
+public void add(final double arg0) {
+
+    for (int i = 0; i < vecElements.length(); i++){
+
+  vecElements[i] += arg0;
+
+}
+
+ }
+
+MemberDeclaration       MethodDeclaration
+
+MethodDeclaration     
+
+    TypeTypeOrVoid IdentifierNT FormalParameters 
+
+     MethodBody
+
+TypeTypeOrVoid       void
+
+IdentifierNT       add
+
+FormalParameters       ( FormalParameterList )
+
+FormalParameterList       FormalParameter
+
+   … 
+
+Primary       IdentifierNT
+
+IdentifierNT       arg0
+
+Source code:
+
+AST Derivation:
+
+(a)
+
+(b)
+
+Figure 4: Context dependent code generation task of
+Iyer et al. (2018) that involves mapping an NL query to-
+gether with a set of context variables and methods (each
+having an identifier name and data type) (a) into source
+code, represented as a sequence of grammar rules (b).
+
+perform two applications of the first idiom from
+Figure 2 (b), followed by one application of the
+second idiom from Figure 2 (d), after which the
+tree cannot be further compressed using those two
+idioms. The final tree can be represented using
+|ri| = 2 rules instead of the original |pi| = 5
+rules. The decoder is then trained similar to pre-
+vious approaches (Yin and Neubig, 2017) using
+the compressed set of rules. We observe a rule set
+compression of more than 50% in our experiments
+(Section 7).
+
+6 Experimental Setup
+
+We apply our approach on 1) the context depen-
+dent encoder-decoder model of Iyer et al. (2018)
+on the CONCODE dataset, where we outperform
+an improved version of their best model, and 2)
+the task of mapping NL utterances to SQL queries
+on the ATIS-SQL dataset (Iyer et al., 2017) where
+an idiom-based model using the full training set
+outperforms the SOTA, also achieving significant
+
+List all flights from Denver to Seattle
+
+SELECT DISTINCT flight_1.flight_id FROM
+flight f1, airport_service as1 , city c1,
+airport_service as2 , city c2 WHERE
+f1.from_airport = as1.airport_code
+AND as1.city_code = c1.city_code
+AND c1.city_name = "Denver"
+AND f1.to_airport = as2.airport_code
+AND as2.city_code = c2.city_code
+AND c2.city_name = "Seattle";
+
+Figure 5: Example NL utterance with its corresponding
+executable SQL query from the ATIS-SQL dataset.
+
+gains when using a reduced training set.
+
+6.1 Context Dependent Semantic Parsing
+
+The CONCODE task involves mapping an NL
+query together with a class context comprising a
+list of variables (with types) and methods (with re-
+turn types), into the source code of a class mem-
+ber function. Figure 4 (a) shows an example where
+the context comprises variables and methods (with
+types) that would normally exist in a class that
+implements a vector, such as vecElements and
+dotProduct(). Conditioned on this context, the
+task involves mapping the NL query Adds a scalar
+to this vector in place into a sequence of parsing
+rules to generate the source code in Figure 4 (b).
+
+Formally, the task is: Given a NL utterance q, a
+set of context variables {vi} with types {ti}, and
+a set of context methods {mi} with return types
+{ri}, predict a set of parsing rules {ai} of the tar-
+get program. Their best performing model is a
+neural encoder-decoder with a context-aware en-
+coder and a decoder that produces a sequence of
+Java grammar rules.
+
+Baseline Model We follow the approach of Iyer
+et al. (2018) with three major modifications in
+their encoder, which yields improvements in both
+speed and accuracy (Iyer-Simp). First, in addi-
+tion to camel-case splitting of identifier tokens,
+we use byte-pair encoding (BPE) (Sennrich et al.,
+2016) on all NL tokens, identifier names and types
+and embed all these BPE tokens using a single
+embedding matrix. Next, we replace their RNN
+that contextualizes the subtokens of identifiers and
+types with an average of the subtoken embed-
+dings instead. Finally, we consolidate their three
+separate RNNs for contextualizing NL, variable
+names with types, and method names with types,
+into a single shared RNN, which greatly reduces
+the number of model parameters. Formally, let
+
+
+
+5431
+
+{qi} represent the set of BPE tokens of the NL,
+and {tij}, {vij}, {rij} and {mij} represent the
+jth BPE token of the ith variable type, variable
+name, method return type, and method name re-
+spectively. First, all these elements are embedded
+using a BPE token embedding matrix B to give us
+qi, tij, vij, rij and mij. Using Bi-LSTM f , the
+encoder then computes:
+
+h1, · · · , hz = f(q1, . . . ,qz) (1)
+vi = Avg(vi1, . . . ,vij) (2)
+
+Similarly, compute mi, ti, ri (3)
+
+t̂i, v̂i = f(ti,vi) (4)
+
+r̂i, m̂i = f(ri,mi) (5)
+
+Then, h1, . . . , hz , and t̂i, v̂i, r̂i, m̂i are passed to
+the attention mechanism in the decoder, exactly as
+in Iyer et al. (2018). The decoder remains the same
+as described in Iyer et al. (2018), and produces a
+probability distribution over grammar rules at each
+time step (full details in Supplementary Materi-
+als). This forms our baseline model (Iyer-Simp).
+
+Idiom Aware Training To utilize idioms, we
+augment this decoder by retrieving the top-K most
+frequent idioms from the training set (Algorithm
+1), followed by post-processing the training set
+by greedily applying these idioms (Algorithm 2;
+we denote this model as Iyer-Simp-K). We eval-
+uate all our models on the CONCODE dataset
+which was created using Java source files from
+github.com. It contains 100K tuples of (NL,
+code, context) for training, 2K tuples for develop-
+ment, and 2K tuples for testing. We use a BPE vo-
+cabulary of 10K tokens (for matrix B) and get the
+best validation set results using the original hyper-
+parameters used by Iyer et al. (2018). Since idiom
+aware training is significantly faster than without
+idioms, it enables us to train on an additional 400K
+training examples that Iyer et al. (2018) released as
+part of CONCODE. We report exact match accu-
+racy, corpus level BLEU score (which serves as a
+measure of partial credit) (Papineni et al., 2002),
+and training time for all these configurations.
+
+6.2 Semantic Parsing to SQL
+
+This task involves mapping NL utterances into
+executable SQL queries. We use the ATIS-SQL
+dataset (Iyer et al., 2017) that contains NL ques-
+tions posed to a flight database, together with
+their SQL queries and a database with 25 tables
+
+Model Exact BLEU
+
+Seq2Seq† 3.2 (2.9) 23.5 (21.0)
+Seq2Prod† 6.7 (5.6) 21.3 (20.6)
+Iyer et al. (2018)† 8.6 (7.1) 22.1 (21.3)
+
+Iyer-Simp 12.5 (9.8) 24.4 (23.2)
+Iyer-Simp + 200 idioms 12.2 (9.8) 26.6 (24.0)
+
+Table 1: Exact Match and BLEU scores for our simpli-
+fied model (Iyer-Simp) with and without idioms, com-
+pared with results from Iyer et al. (2018)† on the test
+(validation) set of CONCODE. Iyer-Simp achieves sig-
+nificantly better EM and BLEU score and reduces train-
+ing time from 40 hours to 27 hours. Augmenting the
+decoding process with 200 code idioms further pushes
+up BLEU and reduces training time to 13 hours.
+
+Model Exact BLEU Training
+Time (h)
+
+Seq2Seq† 2.9 21.0 12
+Seq2Prod† 5.6 20.6 36
+Iyer et al. (2018)† 7.1 21.3 40
+
+Iyer-Simp 9.8 23.2 27
++ 100 idioms 9.8 24.5 15
++ 200 idioms 9.8 24.0 13
++ 300 idioms 9.6 23.8 12
++ 400 idioms 9.7 23.8 11
++ 600 idioms 9.9 22.7 11
+
+Table 2: Variation in Exact Match, BLEU score, and
+training time on the validation set of CONCODE with
+number of idioms used. After top-200 idioms are used,
+accuracies start to reduce, since using more specialized
+idioms can hurt model generalization. Training time
+plateaus after considering top-600 idioms.
+
+to execute them against (Figure 5 shows an ex-
+ample). The dataset is split into 4,379 training,
+491 validation, and 448 testing examples follow-
+ing Kwiatkowski et al. (2011).
+
+The SOTA by Iyer et al. (2017) is a Seq2Seq
+model with attention and achieves a denotational
+accuracy of 82.5% on the test set. Since using our
+idiom-based approach requires a model that uses
+grammar-rule based decoding, we use a modified
+version of the Seq2Prod model described in Iyer
+et al. (2018) (based on Yin and Neubig (2017)) as
+a baseline model (Seq2Prod), and augment the de-
+coder with SQL idioms (Seq2Prod-K).
+
+Seq2Prod is an encoder-decoder model, where
+the encoder executes an n-layer bi-LSTM over
+NL embeddings and passes the final layer LSTM
+
+github.com
+
+
+5432
+
+Model Exact BLEU
+
+1× Train 12.0 (9.7) 26.3 (23.8)
+2× Train 13.0 (10.3) 28.4 (25.2)
+3× Train 13.3 (10.4) 28.6 (26.5)
+5× Train 13.4 (11.0) 28.9 (26.6)
+
+Table 3: Exact Match and BLEU scores on the test
+(validation) set of CONCODE by training Iyer-Simp-
+400 on the extended training set released by Iyer et al.
+(2018). Significant improvements in training speed
+after incorporating idioms makes training on large
+amounts of data possible.
+
+hidden states to an attention mechanism in the
+decoder. Note that the Seq2Prod encoder de-
+scribed in Iyer et al. (2018) encodes a concate-
+nated sequence of NL and context, but ATIS-SQL
+instances do not include contextual information.
+Thus, if qi represents each lemmatized token of
+the NL, they are first embedded using a token em-
+bedding matrix B to give us qi. Using Bi-LSTM
+f , the encoder then computes:
+
+h1, · · · , hz = f(q1, . . . ,qz) (6)
+
+Then, h1, . . . , hz are passed to the attention mech-
+anism in the decoder.
+
+The sequential LSTM-decoder uses attention
+and produces a sequence of grammar rules {at}.
+The decoder hidden state at time t, st, is com-
+puted based on an embedding of the current non-
+terminal nt to be expanded, an embedding of the
+previous production rule at−1, an embedding of
+the parent production rule, par(nt), that produced
+nt, the previous decoder state st−1, and the de-
+coder state of the LSTM cell that produced nt, de-
+noted as snt .
+
+st = LSTMf (nt, at−1, par(nt), st−1, snt) (7)
+
+st is then used for attention and finally, produces a
+distribution over grammar rules.
+
+We make two modifications in this decoder.
+First, we remove the dependence of LSTMf on the
+parent LSTM cell state snt . Second, instead of us-
+ing direct embeddings of rules at−1 and par(nt) in
+LSTMf , we use another Bi-LSTM across the left
+and right sides of the rule (using separator sym-
+bol SEP) and use the final hidden state as inputs
+to LSTMf instead. More concretely, if a grammar
+
+Model Accuracy
+
+Iyer et al. (2017)† 82.5
+Seq2Prod 79.1
+Seq2Prod + 400 idioms 83.2
+
+Table 4: Denotational Accuracy for Seq2Prod with and
+without idioms, compared with results from Iyer et al.
+(2017)† on the test set of ATIS using SQL queries. Re-
+sults averaged over 3 runs.
+
+Figure 6: Accuracy of the Seq2Seq baseline (Iyer et al.,
+2017) compared with Seq2Prod-K, on the test set of
+ATIS-SQL for varying fractions of training data. Id-
+ioms significantly boost accuracy when training data is
+scarce. (Mean and Std. Dev. computed across 3 runs).
+20-40% use 100 idioms and the rest use 400 idioms.
+
+rule is represented as A→ B1 . . . Bn, then:
+
+Emb(A→ B1 . . . Bn) =
+LSTMg({A, SEP, B1, . . . , Bn})
+
+st = LSTMf (nt,Emb(at−1),Emb(par(nt)),
+
+st−1) (8)
+
+This modification can help the LSTMf cell
+locate the position of nt within rules at−1 and
+par(nt), especially for lengthy idiomatic rules. We
+present a full description of this model with all hy-
+perparameters in the supplementary materials.
+
+Idiom Aware Training As before, we augment
+the set of decoder grammar rules with top-K id-
+ioms extracted from ATIS-SQL. To represent SQL
+queries as grammar rules, we use the python
+sqlparse package.
+
+7 Results and Discussion
+
+Table 1 presents exact match and BLEU scores on
+the original CONCODE train/validation/test split.
+
+
+
+5433
+
+System.out.println ( StringLiteral ) ;
+
+Statement
+
+QualifiedName
+
+Identifier
+
+Expr
+
+ArgumentsIdentifier
+
+Statement
+
+Expr
+LocalVariable
+Declaration
+
+PrimitiveType
+
+int
+
+(b)
+
+(c) (d)
+
+Statement
+
+Block
+
+Statement
+
+Expr
+
+String Literal
+
+“String”
+
+(a)
+
+(e)
+
+try   Block   CatchClause
+
+CreatedName        ClassCreatorRest               
+
+(   ExprList   )
+
+new Creator
+
+catch   (  CatchType Identifier   )   Block
+
+if   ParExpr   Statement
+
+(   ParExpr   )
+
+{   BlockStatement   }
+
+ArgumentsIdentifier
+
+CreatedName        ClassCreatorRest               
+
+(   ExprList   )
+
+new Creator
+
+throw   Expr   ;
+
+ForInit   ;       Expr      ;   ExprList
+
+for   (   ForControl   )   Statement
+
+TypeType   VariableDeclarators
+Expr ++
+
+Expr < Expr
+
+Statement
+
+Expr   ;
+
+Expr ( ExprList )
+
+Expr
+
+Primary
+
+LIteral
+
+StringLiteral
+
+Expr   .  ExprCont
+
+Expr   .  ExprCont Identifier
+
+Identifier
+println
+
+out
+
+Primary
+
+Identifier
+
+System
+
+Expr new Identifier 
+     ( ExprList )
+
+Idiom:
+
+Statement
+
+try Block 
+catch ( Identifier Identifier ) 
+Block
+
+Idiom:
+
+Statement
+for ( int VariableDeclarators ; 
+     Expr < Expr ; Expr ++ )  Statement
+
+Idiom:
+
+Statement
+Idiom:
+
+Statement
+if ( ParExpr ) 
+{ throw new 
+      Identifier (“String“) ; }
+
+Idiom:
+
+Figure 7: Examples of idioms learned from CONCODE. (a)-(c) represent idioms for instantiation of a new object,
+exception handling and integer-based looping respectively. (d) represents an idiom for applying a very commonly
+used library method (System.out.println). (e) is a combination of various idioms viz. an if-then idiom, an
+idiom for throwing exceptions and finally, reusing idiom (a) for creating new objects.
+
+Iyer-Simp yields a large improvement of 3.9 EM
+and 2.2 BLEU over the best model of Iyer et al.
+(2018), while also being significantly faster (27
+hours for 30 training epochs as compared to 40
+hours). Using a reduced BPE vocabulary makes
+the model memory efficient, which allows us to
+use a larger batch size that in turn speeds up train-
+ing. Furthermore, using 200 code idioms further
+improves BLEU by 2.2% while maintaining com-
+parable EM accuracy. Using the top-200 idioms
+results in a target AST compression of more than
+50%, which results in fewer decoder RNN steps
+being performed. This reduces training time fur-
+ther by more than 50%, from 27 hours to 13 hours.
+
+In Table 2, we illustrate the variations in EM,
+BLEU and training time with the number of id-
+ioms. We find that 200 idioms performs best over-
+all in terms of balancing accuracy and training
+time. Adding more idioms continues to reduce
+training time, but accuracy also suffers. Since we
+permit idioms to contain identifier names to cap-
+ture frequently used library methods, having too
+many idioms hurts generalization, especially since
+the test set is built using repositories disjoint from
+
+the training set. Finally, the amount of compres-
+sion, and therefore the training time, plateaus after
+the top-600 idioms are incorporated.
+
+Compared to the model of Iyer et al. (2018), our
+significantly reduced training time enables us to
+train on their extended training set. We run Iyer-
+Simp using 400 idioms (taking advantage of even
+lower training time) on up to 5 times the amount
+of data, while making sure that we do not include
+in training any NL from the validation or the test
+sets. Since the original set of idioms learned from
+the original training set are quite general, we di-
+rectly use them rather than relearn the idioms from
+scratch. We report EM and BLEU scores for dif-
+ferent amounts of training data on the same valida-
+tion and test sets as CONCODE in Table 3. In gen-
+eral, accuracies increase with the amount of data
+with the best model achieving a BLEU score of
+28.9 and EM of 13.4.
+
+Figure 7 shows example idioms extracted from
+CONCODE: (a) is an idiom to construct a new ob-
+ject with arguments, (b) represents a try-catch
+block, and, (c) is an integer-based for loop. In
+(e), we show how small idioms are combined to
+
+
+
+5434
+
+form larger ones; it combines an if-then idiom
+with a throw-exception idiom, which throws an
+object instantiated using idiom (a). The decoder
+also learns idioms to directly generate common
+library methods such as System.out.println(
+StringLiteral ) in one decoding step (d).
+
+For the NL to SQL task, we report denotational
+accuracy in Table 4. We observe that Seq2Prod
+underperforms the Seq2Seq model of Iyer et al.
+(2017), most likely because a SQL query parse
+is much longer than the original query. This is
+remedied by using top-400 idioms, which com-
+presses the decoded sequence size, marginally out-
+performing the SOTA (83.2%). Finegan-Dollak
+et al. (2018) observed that the SQL structures in
+ATIS-SQL are repeated numerous times in both
+train and test sets, thus facilitating Seq2seq mod-
+els to memorize these structures without explicit
+idiom supervision. To test a scenario with limited
+repetition of structures, we compare Seq2Seq with
+Seq2Prod-K for limited training data (increments
+of 20%) and observe that (Figure 6) idioms are ad-
+ditionally helpful with lesser training data, consis-
+tent with our intuition.
+
+8 Conclusions
+
+We presented a general approach to make seman-
+tic parsers aware of target idiomatic structures,
+by first identifying frequently used idioms, fol-
+lowed by providing models with supervision to
+apply these idioms. We demonstrated this ap-
+proach on the task of context dependent code gen-
+eration where we achieved a new SOTA in EM ac-
+curacy and BLEU score. We also found that de-
+coding using idioms significantly reduces training
+time and allows us to train on significantly larger
+datasets. Finally, our approach also outperformed
+the SOTA for a semantic parsing to SQL task on
+ATIS-SQL, with significant improvements under a
+limited training data regime.
+
+Acknowledgements
+
+University of Washington’s efforts in this research
+was supported in part by DARPA (FA8750-16-2-
+0032), the ARO (ARO-W911NF-16-1-0121), the
+NSF (IIS-1252835, IIS-1562364, IIS-1546083,
+IIS-1651489, OAC-1739419), the DOE (DE-
+SC0016260), the Intel-NSF CAPA center, and
+gifts from Adobe, Amazon, Google, Huawei, and
+NVIDIA. The authors thank the anonymous re-
+viewers for their helpful comments.
+
+References
+Miltiadis Allamanis and Charles Sutton. 2014. Min-
+
+ing idioms from source code. In Proceedings of the
+22nd ACM SIGSOFT International Symposium on
+Foundations of Software Engineering, pages 472–
+483. ACM.
+
+Li Dong and Mirella Lapata. 2016. Language to logi-
+cal form with neural attention. In Proceedings of the
+54th Annual Meeting of the Association for Compu-
+tational Linguistics (Volume 1: Long Papers), pages
+33–43. Association for Computational Linguistics.
+
+Li Dong and Mirella Lapata. 2018. Coarse-to-fine de-
+coding for neural semantic parsing. In Proceed-
+ings of the 56th Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers), volume 1, pages 731–742.
+
+Catherine Finegan-Dollak, Jonathan K Kummerfeld,
+Li Zhang, Karthik Ramanathan, Sesh Sadasivam,
+Rui Zhang, and Dragomir Radev. 2018. Improv-
+ing text-to-sql evaluation methodology. In Proceed-
+ings of the 56th Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers), pages 351–360.
+
+Philip Gage. 1994. A new algorithm for data compres-
+sion. The C Users Journal, 12(2):23–38.
+
+Shirley Anugrah Hayati, Raphael Olivier, Pravalika
+Avvaru, Pengcheng Yin, Anthony Tomasic, and Gra-
+ham Neubig. 2018. Retrieval-based neural code
+generation. In Proceedings of the 2018 Conference
+on Empirical Methods in Natural Language Pro-
+cessing, pages 925–930. Association for Computa-
+tional Linguistics.
+
+Srinivasan Iyer, Ioannis Konstas, Alvin Cheung,
+Jayant Krishnamurthy, and Luke Zettlemoyer. 2017.
+Learning a neural semantic parser from user feed-
+back. In Proceedings of the 55th Annual Meeting of
+the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), pages 963–973, Vancouver,
+Canada. Association for Computational Linguistics.
+
+Srinivasan Iyer, Ioannis Konstas, Alvin Cheung, and
+Luke Zettlemoyer. 2018. Mapping language to code
+in programmatic context. In Proceedings of the
+2018 Conference on Empirical Methods in Natural
+Language Processing, pages 1643–1652. Associa-
+tion for Computational Linguistics.
+
+Jayant Krishnamurthy, Pradeep Dasigi, and Matt Gard-
+ner. 2017. Neural semantic parsing with type con-
+straints for semi-structured tables. In Proceedings
+of the 2017 Conference on Empirical Methods in
+Natural Language Processing, pages 1516–1526,
+Copenhagen, Denmark. Association for Computa-
+tional Linguistics.
+
+Tom Kwiatkowski, Luke Zettlemoyer, Sharon Gold-
+water, and Mark Steedman. 2011. Lexical gener-
+alization in CCG grammar induction for semantic
+parsing. In Proceedings of the 2011 Conference on
+
+https://doi.org/10.18653/v1/P16-1004
+https://doi.org/10.18653/v1/P16-1004
+http://aclweb.org/anthology/D18-1111
+http://aclweb.org/anthology/D18-1111
+http://aclweb.org/anthology/P17-1089
+http://aclweb.org/anthology/P17-1089
+http://aclweb.org/anthology/D18-1192
+http://aclweb.org/anthology/D18-1192
+https://www.aclweb.org/anthology/D17-1160
+https://www.aclweb.org/anthology/D17-1160
+http://aclweb.org/anthology/D11-1140
+http://aclweb.org/anthology/D11-1140
+http://aclweb.org/anthology/D11-1140
+
+
+5435
+
+Empirical Methods in Natural Language Process-
+ing, pages 1512–1523. Association for Computa-
+tional Linguistics.
+
+Wang Ling, Phil Blunsom, Edward Grefenstette,
+Moritz Karl Hermann, Tomáš Kočiský, Fumin
+Wang, and Andrew Senior. 2016. Latent predictor
+networks for code generation. In Proceedings of the
+54th Annual Meeting of the Association for Compu-
+tational Linguistics (Volume 1: Long Papers), pages
+599–609. Association for Computational Linguis-
+tics.
+
+Vijayaraghavan Murali, Letao Qi, Swarat Chaudhuri,
+and Chris Jermaine. 2018. Neural sketch learning
+for conditional program generation.
+
+Maxwell Nye, Luke Hewitt, Joshua Tenenbaum,
+and Armando Solar-Lezama. 2019. Learn-
+ing to infer program sketches. arXiv preprint
+arXiv:1902.06349.
+
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic eval-
+uation of machine translation. In Proceedings of
+the 40th annual meeting on association for compu-
+tational linguistics, pages 311–318.
+
+Maxim Rabinovich, Mitchell Stern, and Dan Klein.
+2017. Abstract syntax networks for code genera-
+tion and semantic parsing. In Proceedings of the
+55th Annual Meeting of the Association for Com-
+putational Linguistics (Volume 1: Long Papers),
+pages 1139–1149, Vancouver, Canada. Association
+for Computational Linguistics.
+
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016. Neural machine translation of rare words
+with subword units. In Proceedings of the 54th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1715–
+1725, Berlin, Germany. Association for Computa-
+tional Linguistics.
+
+Richard Shin, Miltiadis Allamanis, Marc
+Brockschmidt, and Oleksandr Polozov. 2019. Pro-
+gram synthesis and semantic parsing with learned
+code idioms. arXiv preprint arXiv:1906.10816.
+
+Pengcheng Yin and Graham Neubig. 2017. A syntactic
+neural model for general-purpose code generation.
+In Proceedings of the 55th Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers), pages 440–450, Vancouver, Canada.
+Association for Computational Linguistics.
+
+Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga,
+Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingn-
+ing Yao, Shanelle Roman, et al. 2018. Spider: A
+large-scale human-labeled dataset for complex and
+cross-domain semantic parsing and text-to-sql task.
+In Proceedings of the 2018 Conference on Empiri-
+cal Methods in Natural Language Processing, pages
+3911–3921.
+
+https://doi.org/10.18653/v1/P16-1057
+https://doi.org/10.18653/v1/P16-1057
+http://aclweb.org/anthology/P17-1105
+http://aclweb.org/anthology/P17-1105
+http://www.aclweb.org/anthology/P16-1162
+http://www.aclweb.org/anthology/P16-1162
+http://aclweb.org/anthology/P17-1041
+http://aclweb.org/anthology/P17-1041
+

@@ -1,0 +1,1009 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PaLM: A Hybrid Parser and Language Model
+
+
+Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natural Language Processing, pages 3644–3651,
+Hong Kong, China, November 3–7, 2019. c©2019 Association for Computational Linguistics
+
+3644
+
+PaLM: A Hybrid Parser and Language Model
+
+Hao Peng♠ Roy Schwartz♠♦ Noah A. Smith♠♦
+♠Paul G. Allen School of Computer Science & Engineering, University of Washington
+
+♦Allen Institute for Artificial Intelligence
+{hapeng,roysch,nasmith}@cs.washington.edu
+
+Abstract
+
+We present PaLM, a hybrid parser and neu-
+ral language model. Building on an RNN lan-
+guage model, PaLM adds an attention layer
+over text spans in the left context. An unsuper-
+vised constituency parser can be derived from
+its attention weights, using a greedy decoding
+algorithm. We evaluate PaLM on language
+modeling, and empirically show that it out-
+performs strong baselines. If syntactic anno-
+tations are available, the attention component
+can be trained in a supervised manner, pro-
+viding syntactically-informed representations
+of the context, and further improving language
+modeling performance.
+
+1 Introduction
+
+Recent language models have shown very strong
+data-fitting performance (Jozefowicz et al., 2016;
+Merity et al., 2018). They offer useful products in-
+cluding, most notably, contextual embeddings (Pe-
+ters et al., 2018; Radford et al., 2019), which
+benefit many NLP tasks such as text classifica-
+tion (Howard and Ruder, 2018) and dataset cre-
+ation (Zellers et al., 2018).
+
+Language models are typically trained on large
+amounts of raw text, and therefore do not ex-
+plicitly encode any notion of structural informa-
+tion. Structures in the form of syntactic trees
+have been shown to benefit both classical NLP
+models (Gildea and Palmer, 2002; Punyakanok
+et al., 2008; Das et al., 2012, inter alia) and recent
+state-of-the-art neural models (Dyer et al., 2016;
+Swayamdipta et al., 2018; Peng et al., 2018b;
+Strubell et al., 2018, inter alia). In this paper
+we show that LMs can benefit from syntactically-
+inspired encoding of the context.
+
+We introduce PaLM (parser and language
+model; Fig. 1), a novel hybrid model combin-
+ing an RNN language model with a constituency
+parser. The LM in PaLM attends over spans of
+
+EMNLP IJCNLP 2019 will be held in xt+1?
+
+[EMNLP IJCNLP 2019] [will be held] in
+
+[[EMNLP IJCNLP] [2019]] [[will be] [held]] in
+
+[[[EMNLP][IJCNLP]] [2019]][[[will] [be]] [held]] in
+
+LM attends
+over spans
+
+Parser
+recursively
+splits spans
+by attention
+weights
+
+Figure 1: An illustration of PaLM. The LM (first line)
+predicts the next word (xt+1, double blue arrow) by
+attending over previous spans ending in time t − 1
+(dashed lines). The parser (lines 2–4) splits the pre-
+fix into two spans (line 2) by the taking the top scoring
+attended span (red solid line) and the prefix leading to
+it. It then recursively splits the two sub-spans using the
+same procedure (line 3). Finally, spans of length two
+are trivially split into terminal nodes (line 4).
+
+tokens, implicitly learning which syntactic con-
+stituents are likely. A span-based parser is then de-
+rived from the attention information (Stern et al.,
+2017).
+
+PaLM has several benefits. First, it is an intu-
+itive and lightweight way of incorporating struc-
+tural information (§2.1), requiring no marginal
+inference, which can be computationally expen-
+sive (Jelinek and Lafferty, 1991; Chelba and Je-
+linek, 1998; Roark, 2001; Dyer et al., 2016; Buys
+and Blunsom, 2018; Kim et al., 2019, inter alia).
+Second, the attention can be syntactically in-
+formed, in the sense that the attention component
+can optionally be supervised using syntactic an-
+notations, either through pretraining or by joint
+training with the LM (§2.2). Last, PaLM can de-
+rive an unsupervised constituency parser (§2.2),
+whose parameters are estimated purely using the
+language modeling objective.
+
+To demonstrate the empirical benefits of PaLM,
+we experiment with language modeling (§3).
+PaLM outperforms the AWD-LSTM model (Mer-
+ity et al., 2018) on both the Penn Treebank
+
+
+
+3645
+
+(PTB; Marcus et al., 1993) and WikiText-2 (Mer-
+ity et al., 2017) datasets by small but consistent
+margins in the unsupervised setup. When the
+parser is trained jointly with the language model,
+we see additional perplexity reductions in both
+cases. Our implementation is available at https:
+//github.com/Noahs-ARK/PaLM.
+
+2 PaLM—Parser and Language Model
+
+We describe PaLM in detail. At its core is an at-
+tention component, gathering the representations
+of preceding spans at each time step. Similar to
+self-attention, PaLM can be implemented on top
+of RNN encoders (Parikh et al., 2016), or as it
+is (Vaswani et al., 2017). Here we encode the to-
+kens using a left-to-right RNN, denoted with vec-
+tors ht.1
+
+Below we describe the span-attention compo-
+nent and the parsing algorithm. We use [i, j], i ≤ j
+to denote text span xi . . . xj , i.e., inclusive on both
+sides. When i = j, it consists of a single token.
+
+2.1 Span Attention
+We want the language model attention to gather
+context information aware of syntactic structures.
+A constituency parse can be seen as a collection of
+syntactic constituents, i.e., token spans. Therefore
+we attend over preceding spans.2
+
+At step t, PaLM attends over the spans end-
+ing at t − 1, up to a maximum length m, i.e.,
+{[i, t− 1]}t−1i=t−m.3 Essentially, this can be seen as
+splitting the prefix span [t−m, t−1] into two, and
+attending over the one on the right. Such a span
+attention mechanism is inspired by the top-down
+greedy span parser of Stern et al. (2017), which
+recursively divides phrases. In §2.2, we will use
+a similar algorithm to derive a constituency parser
+from the span attention weights.
+
+Bidirectional span representation with rational
+RNNs. Meaningful span representations are cru-
+cial in span-based tasks (Lee et al., 2017; Peng
+et al., 2018c; Swayamdipta et al., 2018, inter
+
+1We experiment with a strong LSTM implementation for
+language modeling (Merity et al., 2018), see §3.
+
+2Standard token-based self-attention naturally relates to
+dependency structures through head selection (Strubell et al.,
+2018). In a left-to-right factored language model, dependen-
+cies are less natural if we want to allow a child to precede its
+parent.
+
+3m is set to 20. This reduces the number of considered
+spans from O(n2) to O(mn). Besides practical concerns, it
+makes less sense if a phrase goes beyond one single sentence
+(the average sentence length of WSJ training sentences is 21).
+
+alia). Typical design choices are based on start
+and end token vectors contextualized by bidirec-
+tional RNNs. However, a language model does
+not have access to future words, and hence run-
+ning a backward RNN from right to left is less
+straightforward: one will have to start an RNN
+running at each token, which is computation-
+ally daunting (Kong et al., 2016). To compute
+span representations efficiently, we use rational
+RNNs (RRNNs; Peng et al., 2018a).
+
+RRNNs are a family of RNN models, where the
+recurrent function can be computed with weighted
+finite-state automata (WFSAs). We use the uni-
+gram WFSA–inspired RRNN (Peng et al., 2018a),
+where the cell state update is
+
+ft = σ (Wfht) , (1a)
+
+ut = (1− ft)� tanh (Wuht) , (1b)
+ct = ft � ct−1 + ut. (1c)
+
+ft is a forget gate implemented with the element-
+wise sigmoid function σ, and � denotes element-
+wise multiplication. Wu and Wf are learned ma-
+trices. Bias terms are suppressed for clarity.4
+
+Slightly overloading the notation, let −→c i,j de-
+note the encoding of span [i, j] by running a for-
+ward RRNN in Eq. 1, from left to right. It can
+be efficiently computed by subtracting −→c i−1 from−→c j , weighted by a product of forget gates:
+
+−→c i,j = −→c j −−→c i−1
+j⊙
+
+k=i
+
+−→
+f k. (2)
+
+−→
+f k vectors are the forget gates. See §B for a de-
+
+tailed derivation.
+Using this observation, we now derive an effi-
+
+cient algorithm to calculate the span representa-
+tions based on bidirectional RRNNs. In the inter-
+est of space, Alg. 1 describes the forward span rep-
+resentations. It takes advantage of the distributiv-
+ity property of rational RNNs (Peng et al., 2018a),
+and the number of RNN function calls is linear
+in the input length.5 Although overall asymptotic
+time complexity is still quadratic, Alg. 1 only in-
+volves elementwise operations, which can be eas-
+
+4Unlike other RNNs such as LSTM (Hochreiter and
+Schmidhuber, 1997) or GRU (Cho et al., 2014), RRNNs do
+not apply an affine transformation or a nonlinear dependency
+of ct on ct−1.
+
+5In contrast, the dynamic program of Kong et al. (2016)
+for segmental (span-scoring) RNNs requires a quadratic num-
+ber of recurrent function calls, since they use LSTMs, where
+distributivity does not hold.
+
+https://github.com/Noahs-ARK/PaLM
+https://github.com/Noahs-ARK/PaLM
+
+
+3646
+
+Algorithm 1 RRNN-based span representation.6
+
+1: procedure SPANREPR({−→c t,
+−→
+f t})
+
+2: . Accumulate forward forget gates
+3: for i = 1, . . . , n do
+4:
+
+−→
+f 1,i =
+
+−→
+f 1,i−1 �
+
+−→
+f i
+
+5: end for
+6: for j = 1, . . . , n do
+7: for i = 1, . . . , j do
+8: −→c i,j=−→c j −−→c i−1 �
+
+−→
+f 1,j/
+
+−→
+f 1,i−1
+
+9: end for
+10: end for
+11: return −→c i,j vectors
+12: end procedure
+
+ily parallelized on modern GPUs. The backward
+one (right to left) is analogous.
+
+Computing attention. As in standard attention,
+we use a normalized weighted sum of the span rep-
+resentations. Let g([i, j]) = [−→c i,j ;←−c i,j ] denote
+the representation of span [i, j], which concate-
+nates the forward and backward representations
+calculated using Alg. 1. The context vector at is
+
+at+1 =
+m−1∑
+i=0
+
+ωt,i g([t− i, t]), (3a)
+
+ωt,i =
+exp st,i∑m−1
+
+j=0 exp st,j
+. (3b)
+
+Here st,i is implemented as an MLP, taking as in-
+put the concatenation of ht+1 and g([t− i, t]) and
+outputs the attention score. The context vector is
+then concatenated with the hidden state h̄t+1 =
+[ht+1;at+1], and fed into onward computation.
+
+In summary, given an input sequence, PaLM:
+1. First uses a standard left-to-right RNN to cal-
+
+culate the hidden states ht.
+2. Feed ht vectors into a one-layer bidirectional
+
+rational RNN (Eq. 1), using Alg. 1 to com-
+pute the span representations.
+
+3. Attends over spans (Eq. 3b) to predict the
+next word.
+
+2.2 Attention-Based Constituency Parsing
+
+We next describe the other facet or PaLM: the con-
+stituency parser. Our parsing algorithm is sim-
+ilar to the greedy top-down algorithm proposed
+by Stern et al. (2017). It recursively divides a span
+into two smaller ones, until a single-token span,
+i.e., a leaf, is reached. The order of the partition
+
+6/ denotes elementwise division. Both elementwise prod-
+uct and division are implemented in log-space.
+
+specifies the tree structure.7 Formally, for a max-
+imum span length m, at each time step j + 1, we
+split the span [j −m+ 1, j] into two smaller parts
+[j − m + 1, k0] and [k0 + 1, j]. The partitioning
+point is greedily selected, maximizing the atten-
+tion scores of spans ending at j:8
+
+k0 = argmax
+k∈{0,...,m−1}
+
+sj,k. (4)
+
+The span is directly returned as a leaf if it contains
+a single token. A full parse is derived by running
+the algorithm recursively, starting with the input as
+a single span (with a special end-of-sentence mark
+at the end). The runtime is O(n2), with n − 1
+partitioning points. See Fig. 1 for an illustration.
+
+Supervising the attention. Now that we are
+able to derive phrase structures from attention
+weights, we can further inform the attention if syn-
+tactic annotations are available, using oracle span
+selections. For each token, the gold selection is
+a m-dimensional binary vector, and then normal-
+ized to sum to one, denoted yt.9 We add a cross-
+entropy loss (averaged across the training data) to
+the language modeling objective, with λ trading
+off between the two:
+
+L = LLM +
+λ
+
+N
+
+N∑
+t=1
+
+H(yt,ωt), (5)
+
+with ω being the attention distribution at step t,
+andN the length of the training corpus. As we will
+see in §3, providing syntactically guided span at-
+tention improves language modeling performance.
+
+Discussion. PaLM provides an intuitive way to
+inject structural inductive bias into the language
+model—by supervising the attention distribution.
+This setting can be seen as a very lightweight mul-
+titask learning, where no actual syntactic tree is
+predicted during language modeling training or
+evaluation. The attention weight predictor (i.e.,
+the s scores in Eq. 3b) can be replaced with an
+off-the-shelf parser, or deterministically set (e.g.,
+to simulate left/right-branching).
+
+7It is only able to produce binarized unlabeled trees.
+8Another natural choice is to maximize the sum of the
+
+scores of [i, k0] and [k0+1, j]. The attention score of [i, k0] is
+computed at time step k0, and hence does not know anything
+about the other span on the right. Therefore we consider only
+the score of the right span.
+
+9Not necessarily one-hot: multiple spans can end at the
+same token.
+
+
+
+3647
+
+3 Experiments
+
+We evaluate PaLM on language modeling. We ex-
+periment with the Penn Treebank corpus (PTB)
+and WikiText-2 (WT2). We follow the preprocess-
+ing of Mikolov et al. (2010) for PTB and Mer-
+ity et al. (2018) for WT2. More implementation
+details are described in Appendix A. We compare
+two configurations of PaLM:
+• PaLM-U builds on top of AWD-LSTM (Merity
+
+et al., 2018), a state-of-the-art of LSTM imple-
+mentation for language modeling. The span at-
+tention is included before the last layer.10
+
+• PaLM-S is the same model as PaLM-U, but uses
+phrase syntax annotation to provide additional
+supervision to the attention component (§2.2).11
+We compare against the AWD-LSTM baseline.
+
+On PTB, we also compare to two models us-
+ing structural information in language modeling:
+parsing-reading-predict networks (PRPN; Shen
+et al., 2018a) predicts syntactic distance as struc-
+tural features for language modeling; ordered-
+neuron LSTM (ON-LSTM; Shen et al., 2018b)
+posits a novel ordering on LSTM gates, simulat-
+ing the covering of phrases at different levels in a
+constituency parse. On PTB we also compare to
+PaLM-RB, a baseline deterministically setting the
+attention scores (Eq. 3b) in decreasing order, such
+that the derived trees will be right-branching.12
+
+Tables 1 and 2 summarize the language mod-
+eling results. On both datasets, the unsuper-
+vised configuration (PaLM-U) outperforms AWD-
+LSTM. On PTB, PaLM-U achieves similar per-
+formance to ON-LSTM and much better perfor-
+mance than PRPN. PaLM-S further reduces the
+perplexity by 1.6–3.4% (relative), showing that in-
+corporating structural information with supervised
+span attention helps language modeling. Naively
+promoting right-branching attention (PaLM-RB)
+yields no improvement over the baseline.
+
+Unsupervised constituency parsing. We eval-
+uate the parser component of PaLM-U on WSJ-
+40. It uses the same data as in language modeling,
+but filters out sentences longer than 40 tokens after
+
+10Preliminary experiments show that including the span at-
+tention after the last layer yields similar empirical results, but
+is more sensitive to hyperparameters.
+
+11We use the WSJ portion of PTB for parsing annotations.
+12We set scores to m,m− 1, . . . , 1, before the softmax.
+13Several recent works report better language modeling
+
+perplexity (Yang et al., 2019; Takase et al., 2018; Dai et al.,
+2019, inter alia). Their contribution is orthogonal to ours and
+not head-to-head comparable to the models in the table.
+
+Model # Params. Dev. Test
+
+AWD-LSTM 24M 60.0 57.3
+
+PRPN - - 62.0
+ON-LSTM 25M 58.3 56.2
+
+PaLM-U 24M 58.6 56.4
+PaLM-RB 24M 60.1 57.5
+PaLM-S 24M 57.9 55.5
+
+Table 1: PTB language modeling perplexity (lower is
+better). Bold fonts indicate best performance.13
+
+Model # Params. Dev. Test
+
+AWD-LSTM 33M 68.6 65.8
+
+PaLM-U 36M 68.4 65.4
+PaLM-S 36M 65.5 63.2
+
+Table 2: WikiText-2 language modeling perplexity
+(lower is better). Bold fonts indicate best performance.
+
+punctuation removal. The model is selected based
+on language modeling validation perplexity.
+
+In addition to PRPN, we compare to
+DIORA (Drozdov et al., 2019), which uses
+an inside-outside dynamic program in an au-
+toencoder. Table 3 shows the F1 results. PaLM
+outperforms the right branching baseline, but
+is not as accurate as the other models.14 This
+indicates that the type of syntactic trees learned
+by it, albeit useful to the LM component, do not
+correspond well to PTB-like syntactic trees.
+
+Discussion. Despite its strong performance, the
+parsing algorithm used by Shen et al. (2018a) and
+Shen et al. (2018b) suffers from an incomplete
+support issue (Dyer et al., 2019). More precisely,
+it fails to produce “close-open-open,” i.e., )((
+structures. As a result, the parser is intrinsically
+biased toward right-branching structures. PaLM,
+on the other hand, scores all the spans, and there-
+fore can produce any binary tree spanning a given
+sentence: the algorithm recovers any given binary
+tree by letting sj,j−i = 1 if the tree contains non-
+terminal [i, j], and 0 otherwise.15
+
+Is PaLM empirically biased toward any branch-
+ing direction? In greedily selected trees, we mea-
+sure the percentage of left-branching splits (divid-
+ing [i, j] into [i, j − 1] and j) and right-branching
+
+14 Evaluation on WSJ-10, which contains sentences with
+10 or less tokens, shows a similar trend.
+
+15 The maximum span length m is only forced in language
+modeling training and evaluation.
+
+
+
+3648
+
+Model Unlabeled F1
+Right Branching 40.7
+†DIORA 60.6
+‡PRPN 52.4
+‡PaLM-U 42.0
+
+Table 3: Unlabeled unsupervised parsing F1 on WSJ-
+40. ‡ trains on the training split of WSJ, while † trains
+on AllNLI (Htut et al., 2018). The PRPN result is taken
+from Drozdov et al. (2019).
+
+% Left Splits % Right Splits
+
+Random 39.3 ±10.5 41.2 ±8.8
+PaLM-U 1.1 85.6
+
+Gold 6.5 52.7
+
+Table 4: Percentage of left and right splits. The first
+row shows the numbers averaging over 25 differently
+randomly initialized PaLM models, without training.
+± indicates standard deviation.
+
+splits (dividing [i, j] into i and [i+1, j]).16 Table 4
+summarizes the results on WSJ-40 test set. The
+first row shows the results for randomly initialized
+models without training. We observe no signifi-
+cant trend of favoring one branching direction over
+the other. However, after training with the lan-
+guage modeling objective, PaLM-U shows a clear
+right-skewness more than it should: it produces
+much more right-branching structures than the
+gold annotation. This means that the span atten-
+tion mechanism has learned to emphasize longer
+prefixes, rather than make strong Markov assump-
+tions. More exploration of this effect is left to fu-
+ture work.
+
+4 Conclusion
+
+We present PaLM, a hybrid parser and language
+model. PaLM attends over the preceding text
+spans. From its attention weights phrase struc-
+tures can be derived. The attention component
+can be separately trained to provide syntactically-
+informed context gathering. PaLM outperforms
+strong baselines on language modeling. In-
+corporating syntactic supervision during train-
+ing leads to further language modeling improve-
+ments. Training our unsupervised model on large-
+scale corpora could result in both stronger lan-
+
+16We exclude trivial splits dividing a length-2 span into
+two tokens.
+
+guage models and, potentially, stronger parsers.
+Our code is publicly available at https://
+github.com/Noahs-ARK/PaLM.
+
+Acknowledgments
+
+We thank members of the ARK at the University
+of Washington, and researchers at the Allen In-
+stitute for Artificial Intelligence for their helpful
+comments on an earlier version of this work, and
+the anonymous reviewers for their insightful feed-
+back. This work was supported in part by NSF
+grant 1562364.
+
+References
+Jan Buys and Phil Blunsom. 2018. Neural syntactic
+
+generative models with exact marginalization. In
+Proc. of NAACL.
+
+Ciprian Chelba and Frederick Jelinek. 1998. Exploit-
+ing syntactic structure for language modeling. In
+Proc. of COLING.
+
+Kyunghyun Cho, Bart Van Merriënboer, Caglar Gul-
+cehre, Dzmitry Bahdanau, Fethi Bougares, Holger
+Schwenk, and Yoshua Bengio. 2014. Learning
+phrase representations using RNN encoder-decoder
+for statistical machine translation. In Proc. of
+EMNLP.
+
+Zihang Dai, Zhilin Yang, Yiming Yang, Jaime G.
+Carbonell, Quoc V. Le, and Ruslan Salakhutdinov.
+2019. Transformer-XL: Attentive language models
+beyond a fixed-length context. In Proc. of ACL.
+
+Dipanjan Das, André F. T. Martins, and Noah A. Smith.
+2012. An exact dual decomposition algorithm for
+shallow semantic parsing with constraints. In Proc.
+of *SEM.
+
+Andrew Drozdov, Pat Verga, Mohit Yadav, Mohit
+Iyyer, and Andrew McCallum. 2019. Unsupervised
+latent tree induction with deep inside-outside recur-
+sive autoencoders. In Proc. of NAACL.
+
+Chris Dyer, Adhiguna Kuncoro, Miguel Ballesteros,
+and Noah A. Smith. 2016. Recurrent neural network
+grammars. In Proc. of NAACL.
+
+Chris Dyer, Gbor Melis, and Phil Blunsom. 2019. A
+critical analysis of biased parsers in unsupervised
+parsing. arXiv:1909.09428.
+
+Daniel Gildea and Martha Palmer. 2002. The necessity
+of parsing for predicate argument recognition. In
+Proc. of ACL.
+
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian
+Sun. 2016. Deep residual learning for image recog-
+nition. Proc. of CVPR.
+
+https://github.com/Noahs-ARK/PaLM
+https://github.com/Noahs-ARK/PaLM
+
+
+3649
+
+Sepp Hochreiter and Jürgen Schmidhuber. 1997.
+Long short-term memory. Neural computation,
+9(8):1735–1780.
+
+Jeremy Howard and Sebastian Ruder. 2018. Universal
+language model fine-tuning for text classification. In
+Proc. of ACL.
+
+Phu Mon Htut, Kyunghyun Cho, and Samuel Bow-
+man. 2018. Grammar induction with neural lan-
+guage models: An unusual replication. In Proc. of
+EMNLP.
+
+Frederick Jelinek and John D. Lafferty. 1991. Compu-
+tation of the probability of initial substring genera-
+tion by stochastic context-free grammars. Computa-
+tional Linguistics, 17(3):315–353.
+
+Rafal Jozefowicz, Oriol Vinyals, Mike Schuster, Noam
+Shazeer, and Yonghui Wu. 2016. Exploring the lim-
+its of language modeling. arXiv:1602.02410.
+
+Yoon Kim, Alexander M. Rush, Lei Yu, Adhiguna
+Kuncoro, Chris Dyer, and Gábor Melis. 2019. Un-
+supervised recurrent neural network grammars. In
+Proc. of NAACL.
+
+Diederik P. Kingma and Jimmy Ba. 2014.
+Adam: A method for stochastic optimization.
+arXiv:1412.6980.
+
+Lingpeng Kong, Chris Dyer, and Noah A. Smith. 2016.
+Segmental recurrent neural networks. In Proc. of
+ICLR.
+
+Kenton Lee, Luheng He, Mike Lewis, and Luke Zettle-
+moyer. 2017. End-to-end neural coreference resolu-
+tion. In Proc. of EMNLP.
+
+Mitchell P. Marcus, Mary Ann Marcinkiewicz, and
+Beatrice Santorini. 1993. Building a large annotated
+corpus of English: The Penn Treebank. Computa-
+tional Linguistics, 19(2):313–330.
+
+Stephen Merity, Nitish Shirish Keskar, and Richard
+Socher. 2018. Regularizing and optimizing LSTM
+language models. In Proc. of ICLR.
+
+Stephen Merity, Caiming Xiong, James Bradbury, and
+Richard Socher. 2017. Pointer sentinel mixture
+models. In Proc. of ICLR.
+
+Tomáš Mikolov, Martin Karafiát, Lukáš Burget, Jan
+Černockỳ, and Sanjeev Khudanpur. 2010. Recur-
+rent neural network based language model. In Proc.
+of INTERSPEECH.
+
+Ankur Parikh, Oscar Täckström, Dipanjan Das, and
+Jakob Uszkoreit. 2016. A decomposable attention
+model for natural language inference. In Proc. of
+EMNLP.
+
+Hao Peng, Roy Schwartz, Sam Thomson, and Noah A.
+Smith. 2018a. Rational recurrences. In Proc. of
+EMNLP.
+
+Hao Peng, Sam Thomson, and Noah A. Smith. 2018b.
+Backpropagating through structured argmax using a
+spigot. In Proc. of ACL.
+
+Hao Peng, Sam Thomson, Swabha Swayamdipta, and
+Noah A. Smith. 2018c. Learning joint semantic
+parsers from disjoint data. In Proc. of NAACL.
+
+Matthew Peters, Mark Neumann, Mohit Iyyer, Matt
+Gardner, Christopher Clark, Kenton Lee, and Luke
+Zettlemoyer. 2018. Deep contextualized word rep-
+resentations. In Proc. of NAACL.
+
+B. T. Polyak and A. B. Juditsky. 1992. Acceleration
+of stochastic approximation by averaging. SIAM J.
+Control Optim., 30(4):838–855.
+
+Vasin Punyakanok, Dan Roth, and Wen-tau Yih. 2008.
+The importance of syntactic parsing and inference in
+semantic role labeling. American Journal of Com-
+putational Linguistics, 34(2):257–287.
+
+Alec Radford, Jeffrey Wu, Rewon Child, David Luan,
+Dario Amodei, and Ilya Sutskever. 2019. Language
+models are unsupervised multitask learners. Ope-
+nAI Blog.
+
+Brian Roark. 2001. Probabilistic top-down parsing
+and language modeling. Computational Linguistics,
+27(2):249–276.
+
+Yikang Shen, Zhouhan Lin, Chin wei Huang, and
+Aaron Courville. 2018a. Neural language modeling
+by jointly learning syntax and lexicon. In Proc. of
+ICLR.
+
+Yikang Shen, Shawn Tan, Alessandro Sordoni, and
+Aaron C. Courville. 2018b. Ordered neurons: In-
+tegrating tree structures into recurrent neural net-
+works. In Proc. of ICLR.
+
+Mitchell Stern, Jacob Andreas, and Dan Klein. 2017. A
+minimal span-based neural constituency parser. In
+Proc. of ACL.
+
+Emma Strubell, Patrick Verga, Daniel Andor,
+David Weiss, and Andrew McCallum. 2018.
+Linguistically-informed self-attention for semantic
+role labeling. In Proc. of EMNLP.
+
+Swabha Swayamdipta, Sam Thomson, Kenton Lee,
+Luke Zettlemoyer, Chris Dyer, and Noah A. Smith.
+2018. Syntactic scaffolds for semantic structures. In
+Proc. of EMNLP.
+
+Sho Takase, Jun Suzuki, and Masaaki Nagata. 2018.
+Direct output connection for a high-rank language
+model. In Proc. of EMNLP.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Ł ukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. In Proc. of NeurIPS.
+
+Zhilin Yang, Zihang Dai, Ruslan Salakhutdinov, and
+William W. Cohen. 2019. Breaking the softmax
+bottleneck: A high-rank RNN language model. In
+Proc. of ICLR.
+
+
+
+3650
+
+Rowan Zellers, Yonatan Bisk, Roy Schwartz, and
+Yejin Choi. 2018. SWAG: A large-scale adversar-
+ial dataset for grounded commonsense inference. In
+Proc. of EMNLP.
+
+
+
+3651
+
+Appendices
+A Implementation Details
+
+Neural Network Architecture Our implemen-
+tation is based on AWD-LSTM (Merity et al.,
+2018).17 It uses a three-layer LSTM, with care-
+fully designed regularization techniques. PaLM
+includes the span attention after the second layer.
+Preliminary results show that it yields similar re-
+sults, but is less sensitive to hyperparameters,
+compared to adding it to the last layer.
+
+The context is concatenated to the hidden state
+(h̄t = [ht;at]), and then fed to a tanh-MLP con-
+trolled by a residual gate gr (He et al., 2016), be-
+fore fed onward into the next LSTM layer:
+
+ĥt = gr �MLP
+(
+h̄t
+)
+
++ (1− gr)� ht. (6)
+
+The rest of the architecture stays the same as
+AWD-LSTM. We refer the readers to Merity et al.
+(2018) for more details.
+
+More details on PaLM-S. PaLM-S uses exactly
+the same architecture and hyperparameters as its
+unsupervised counterpart. We derive, from PTB
+training data, a m-dimensional 0-1 vector for each
+token. Each element specifies whether the corre-
+sponding span appears in the gold parse. Trivial
+spans (i.e., the ones over single tokens and full
+sentences) are ignored. The vector are normalized
+to sum to one, in order to facilitate the use of cross-
+entropy loss. λ in Eq. 5 is set to 0.01.
+
+Hyperparameters. The regularization and hy-
+perparameters largely follow Merity et al. (2018).
+We only differ from them by using smaller hidden
+size (and hence smaller dropout rate) to control for
+the amount of parameters in the PTB experiments,
+summarized in Table 5 For the WikiText-2 experi-
+ments, we use 200 rational RNN size and 400 di-
+mensional context vectors. Other hyperparameters
+follow Merity et al. (2018). The max span length
+m is set to 20 for PTB experiments, and 10 for
+WikiText-2.
+
+Merity et al. (2018) start by using SGD to train
+the model, and switch to averaged SGD (Polyak
+and Juditsky, 1992) after 5 nonimprovement-
+epochs. We instead use Adam (Kingma and Ba,
+2014) with default PyTorch settings to train the
+model for 40 epochs, and then switch to ASGD,
+allowing for faster convergence.
+
+17https://github.com/salesforce/
+awd-lstm-lm
+
+Type Values
+
+Rational RNN size 200
+Context Vector Size 400
+
+LSTM Hidden Size 1020
+Weight Dropout 0.45
+Vertical Dropout 0.2
+
+Table 5: The hyperparameters used in the PTB lan-
+guage modeling experiment.
+
+B Span Representations
+
+Below is the derivation for Eq. 2.
+
+−→c i,j = −→u j +
+j−1∑
+k=i
+
+−→u k
+j⊙
+
+`=k+1
+
+−→
+f `
+
+= −→u j +
+j−1∑
+k=1
+
+−→u k
+j⊙
+
+`=k+1
+
+−→
+f ` −
+
+i−1∑
+k=1
+
+−→u k
+j⊙
+
+`=k+1
+
+−→
+f `
+
+= −→c j −
+
+(
+−→u i−1 +
+
+i−2∑
+k=1
+
+−→u k
+i−1⊙
+
+`=k+1
+
+−→
+f `
+
+)
+j⊙
+
+`=i
+
+−→
+f `
+
+= −→c j −−→c i−1
+j⊙
+
+k=i
+
+−→
+f k
+
+https://github.com/salesforce/awd-lstm-lm
+https://github.com/salesforce/awd-lstm-lm
+
