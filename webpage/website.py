@@ -100,7 +100,7 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
 
     # authors = {author_id: {university1_domain: {2019: [score, num_pub], 2018: [score, num_pub]}}}
     authors = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0,0])))
-    maxYear = 2010 # take the latest year in the data (initialize at 2010)
+    maxYear = 2010 # take the latest year in the data (initialize at 2010, which is the earliest year)
 
     for k, v in venue_pub.items():
         bib = next((y for y in bibmap if y['id'] == k), None)
@@ -166,7 +166,6 @@ def ranking(authors, startYear, endYear, top_k):
     uni_authors = defaultdict(lambda: defaultdict(lambda: [0, 0, 0, 0]))  # authors in each university, score + num_pub
     for author, institutions in authors.items():
         for institution, years in institutions.items():
-            uni_authors[institution][author][2] = int(max(years.keys()))
             for year,value in years.items():
                 if int(year) in range(startYear, endYear+1):
 
@@ -182,6 +181,7 @@ def ranking(authors, startYear, endYear, top_k):
 
                     uni_authors[institution][author][0] += value[0] # score
                     uni_authors[institution][author][1] += value[1] # num_pub
+                    uni_authors[institution][author][2] = int(max(years.keys())) # latest publication year
 
 
     # author rank
