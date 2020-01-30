@@ -109,6 +109,7 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
         else:
             venue_pub[venue] = [pub_id]
 
+
     # scoring each venue type
     score = {'journal': 3, 'conference': 3, 'workshop': 1, 'demonstration': 1}
 
@@ -157,13 +158,23 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
                             uni_domain = 'washington.edu'
                         if uni_domain == 'iub.edu': # indiana university bloomington (2 domains)
                             uni_domain = 'indiana.edu'
-                        pages = pub['pages'].split('--')
-                        if len(pages) > 1:
-                            num_pages = int(pages[1]) - int(pages[0]) + 1
-                            if num_pages > 5:
-                                #score
+
+                        if bib['type'] not in ['workshop', 'demonstration']:
+                            # score
+                            authors[author_id][uni_domain][year][0] += 1 / len(pub['authors']) * venue_score
+                            # num of publications
+                            authors[author_id][uni_domain][year][1] += 1
+                        else:
+                            try:
+                                pages = pub['pages'].split('--')
+                                num_pages = int(pages[1]) - int(pages[0]) + 1
+                            except:  # pages with roman numbers or single page
+                                continue
+
+                            if num_pages > 4:
+                                # score
                                 authors[author_id][uni_domain][year][0] += 1 / len(pub['authors']) * venue_score
-                                #num of publications
+                                # num of publications
                                 authors[author_id][uni_domain][year][1] += 1
 
     return authors,maxYear
@@ -257,7 +268,6 @@ def find_venue(pub_id):
 
 if __name__ == '__main__':
     # authors,maxYear = get_author_dict(3,3,3,3,3,2,2,2,2,1)
-    # print(authors['hal-daume-iii'])
     # rank1,rank2,list1 = ranking(authors, 2010, 2019, 100)
     # print(len(rank1.Institution.unique()))
     # print(len(rank1['Institution']))
