@@ -7,9 +7,6 @@ from collections import defaultdict
 
 def university_pub():
 
-    universities = pd.read_csv('us_universities.tsv', sep='\t', names=['university', 'domain', 'city', 'state'])
-
-
     uni = {}
 
 
@@ -25,20 +22,19 @@ def university_pub():
                     # print(record['emails'])
                     c = Counter(domains)
                     for key in c.keys():
-                        if key in universities['domain'].tolist():
+                        if 'edu' in key.split('.'):
                             if key in uni.keys():
-                                # (pub_id, year, contribution_percentage)
+                                # (pub_id, contribution_percentage)
                                 uni[key].append((record['id'], c[key]/len(record['authors'])))
                             else:
                                 uni[key] = [(record['id'], c[key]/len(record['authors']))]
 
 
 
-    print(uni)
+    print(uni['isi.edu'])
 
     university_list = []
     for k,v in uni.items():
-        name = universities[universities['domain'] == k]['university'].values[0]
         university_list.append({'domain_id': k, 'publications': v})
 
     df = pd.DataFrame(university_list)
