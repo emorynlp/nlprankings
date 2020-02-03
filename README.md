@@ -1,6 +1,6 @@
-# NLP Ranking
+# NLPRankings
 
-NLP Ranking site.
+http://nlprankings.org
 
 ## Contact
 
