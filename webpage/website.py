@@ -141,7 +141,7 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
                 venue_score = COLING
             elif 'I' in k:
                 venue_score = IJCNLP
-            elif bib['type'] in ['workshop', 'demonstration']:
+            elif bib['type'] in ['workshop', 'demonstration'] or 'W' in k:
                 venue_score = WKSPDEMO
             else:
                 venue_score = score[bib['type']]
@@ -268,7 +268,10 @@ def find_venue(pub_id):
 
 if __name__ == '__main__':
     # authors,maxYear = get_author_dict(3,3,3,3,3,2,2,2,2,1)
-    # rank1,rank2,list1 = ranking(authors, 2010, 2019, 100)
+    # print(authors['asdfkjhaelf'])
+    # print(len(authors))
+    # rank1,rank2,list1 = ranking(authors, 2010, 2019, 6000)
+    # print(len(rank2))
     # print(len(rank1.Institution.unique()))
     # print(len(rank1['Institution']))
     # author_ranking(authors, 2010, 2019, 100)
