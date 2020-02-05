@@ -71,12 +71,12 @@ def crawl_aclbib(bib_map_txt):
 
 
 
-def downloadPDF(dir, bibfile_ID):
+def downloadPDF(dir, bib_ID):
 
     parser = bibtexparser.bparser.BibTexParser(common_strings=True)
 
     bibs = {}
-    filepath = os.path.join(dir, bibfile_ID + '.bib')
+    filepath = os.path.join(dir, bib_ID + '.bib')
     f = open(filepath)
     bib = bibtexparser.loads(f.read(), parser=parser)
 
@@ -85,7 +85,7 @@ def downloadPDF(dir, bibfile_ID):
          if ('author' in entry and 'pages' in entry and 'url' in entry)])
 
     bib.entries = []
-    print('Viewing files in ' + bibfile_ID)
+    print('Viewing files in ' + bib_ID)
 
     for k, v in bibs.items():
         pdf = requests.get(v['url'] + '.pdf')
