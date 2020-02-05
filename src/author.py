@@ -6,15 +6,15 @@ from os import walk
 
 
 
-def add_new_pub(new_pub):
-    dat = pd.read_csv('author_pub.txt', sep='\t', header=None)
+def add_new_pub(pubs):
+    dat = pd.read_csv('../dat/author_pub.txt', sep='\t', header=None)
     dat.columns = ['author_id', 'firstname', 'lastname', 'publications']
     dat = dat.replace(np.nan, '', regex=True)
     author_pub = dat.set_index(dat.author_id).T.to_dict()
 
 
     i = 0
-    for pub_id in new_pub:
+    for pub_id in pubs:
         r = requests.get('https://www.aclweb.org/anthology/' + pub_id)
         soup = BeautifulSoup(r.text, 'html.parser')
 
@@ -39,10 +39,10 @@ def add_new_pub(new_pub):
 
 
         i += 1
-        print(str(len(new_pub)-i) + ' more publications to add')
+        print(str(len(pubs)-i) + ' more publications to add')
 
 
-        with open('author_pub.txt', 'w') as f:
+        with open('../dat/author_pub.txt', 'w') as f:
             for v1 in author_pub.values():
                 f.write('\t'.join([v2 for v2 in v1.values()]) + '\n')
 
@@ -50,19 +50,19 @@ def add_new_pub(new_pub):
 
 def author2json():
 
-    dat = pd.read_csv('author_pub.txt', sep='\t', header=None)
+    dat = pd.read_csv('../dat/author_pub.txt', sep='\t', header=None)
     dat.columns = ['author_id', 'firstname', 'lastname', 'publications']
 
     dat['publications'] = dat['publications'].str.split(',')
 
-    dat.to_json('author.json', orient='records')
+    dat.to_json('../dat/author.json', orient='records')
 
 
 
 
 if __name__ == '__main__':
-    # new_pub = [file[:-4] for (dirpath, dirnames, filenames) in walk('./pdf/') for file in filenames]
-    #
+    # new_pub = [file[:-4] for (dirpath, dirnames, filenames) in walk('../data-collection/pdf/') for file in filenames]
+
     # add_new_pub(new_pub)
     author2json()
 
