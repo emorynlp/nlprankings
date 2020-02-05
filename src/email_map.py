@@ -2,11 +2,93 @@ import re
 import os
 import pandas as pd
 import bibtexparser
+from os import walk
+
+
+
+
+def publication_json(bib_ID):
+
+    parser = bibtexparser.bparser.BibTexParser(common_strings=True)
+
+
+    # a dictionary with key = pub_id, value = list of author_id
+    author_dict = {}
+    author_info = pd.read_json('../dat/author.json')
+    for a in author_info.values.tolist():
+        for pub_id in a[3]:
+            if pub_id in author_dict.keys():
+                author_dict[pub_id].append(a[0])
+            else:
+                author_dict[pub_id] = [a[0]]
+
+
+    bibs = {}
+    pub_data = []
+
+    filepath = '../dat/acl_anthology/' + bib_ID + '.bib'
+    f = open(filepath)
+    bib = bibtexparser.loads(f.read(), parser=parser)
+    try:
+        bibs.update(
+            [(entry['url'].split('/')[-1], entry) for entry in bib.entries
+             if ('author' in entry and 'pages' in entry and 'url' in entry)])
+
+        for k, v in bibs.items():
+            pub_dict = {}
+            pub_dict['id'] = k
+            pub_dict['title'] = v['title']
+            del v['title']
+
+            pub_dict['authors'] = v['author'].split('  and\n')
+            del v['author']
+
+            pub_dict['emails'] = get_emails(k, pub_dict['authors'])
+            pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
+
+            pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
+
+            del v['ENTRYTYPE']
+            del v['ID']
+            pub_dict.update(v)
+
+            pub_data.append(pub_dict)
+
+    except:  # some workshops have different bib file format
+
+        bibs.update(
+            [(entry['ID'], entry) for entry in bib.entries
+             if ('author' in entry and 'pages' in entry and 'url' in entry)])
+
+        for k, v in bibs.items():
+            pub_dict = {}
+            pub_dict['id'] = k
+            pub_dict['title'] = v['title']
+            del v['title']
+
+            pub_dict['authors'] = v['author'].split('  and\n')
+            del v['author']
+
+            pub_dict['emails'] = get_emails(k, pub_dict['authors'])
+            pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
+
+            pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
+
+            del v['ENTRYTYPE']
+            del v['ID']
+            pub_dict.update(v)
+
+            pub_data.append(pub_dict)
+
+    df = pd.DataFrame(pub_data)
+    df.to_json('../dat/acl_anthology/' + bib_ID + '.json', orient='records')
+    print("Added " + bib_ID + ".json to file")
+
 
 
 
 def get_emails(txtfile, authors):
-    filepath = os.path.join('./txt/', txtfile + '.txt')
+    filepath = os.path.join('../data-collection/txt/', txtfile + '.txt')
 
     doc = []
     n = 0
@@ -64,98 +146,6 @@ def get_emails(txtfile, authors):
 
 
     return emails
-
-
-from os import walk
-
-def publication_json():
-
-    bibmap = pd.read_json('bibmap.json')
-    parser = bibtexparser.bparser.BibTexParser(common_strings=True)
-
-    # files already in pub_json dir
-    files = []
-    for (dirpath, dirnames, filenames) in walk('./pub_json/'):
-        for filename in filenames:
-            if '.json' in filename:
-                files.append(filename.split('.')[0])
-
-
-    # a dictionary with key = pub_id, value = list of author_id
-    author_dict = {}
-    author_info = pd.read_json('author.json')
-    for a in author_info.values.tolist():
-        for pub_id in a[3]:
-            if pub_id in author_dict.keys():
-                author_dict[pub_id].append(a[0])
-            else:
-                author_dict[pub_id] = [a[0]]
-
-
-
-    for ID in bibmap['id'].tolist()[773:]:
-        bibs = {}
-        pub_data = []
-
-        filepath = './bib/' + ID + '.bib'
-        f = open(filepath)
-        bib = bibtexparser.loads(f.read(), parser=parser)
-        try:
-            bibs.update(
-                [(entry['url'].split('/')[-1], entry) for entry in bib.entries
-                 if ('author' in entry and 'pages' in entry and 'url' in entry)])
-
-            for k, v in bibs.items():
-                pub_dict = {}
-                pub_dict['id'] = k
-                pub_dict['title'] = v['title']
-                del v['title']
-
-                pub_dict['authors'] = v['author'].split('  and\n')
-                del v['author']
-
-                pub_dict['emails'] = get_emails(k, pub_dict['authors'])
-                pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
-
-                pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
-
-                del v['ENTRYTYPE']
-                del v['ID']
-                pub_dict.update(v)
-
-                pub_data.append(pub_dict)
-
-        except: # some workshops have different bib file format
-
-            bibs.update(
-                [(entry['ID'], entry) for entry in bib.entries
-                 if ('author' in entry and 'pages' in entry and 'url' in entry)])
-
-            for k, v in bibs.items():
-                pub_dict = {}
-                pub_dict['id'] = k
-                pub_dict['title'] = v['title']
-                del v['title']
-
-                pub_dict['authors'] = v['author'].split('  and\n')
-                del v['author']
-
-                pub_dict['emails'] = get_emails(k, pub_dict['authors'])
-                pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
-
-                pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
-
-                del v['ENTRYTYPE']
-                del v['ID']
-                pub_dict.update(v)
-
-                pub_data.append(pub_dict)
-
-        df = pd.DataFrame(pub_data)
-        df.to_json('./pub_json/' + ID + '.json', orient='records')
-        print("Added " + ID + ".json to file")
-
-
 
 
 
@@ -263,5 +253,9 @@ def author_id(authors, IDs):
 
 
 if __name__ == '__main__':
-    publication_json()
+
+    add_bib = ['W19-86', 'W19-85', 'D19-66', 'W19-63', 'D19-50', 'D19-55', 'D19-56', 'W19-78', 'W19-77', 'D19-60', 'D19-52', 'W19-61', 'W19-90', 'W19-75', 'D19-54', 'W19-84', 'W19-59', 'D19-62', 'W19-64', 'W19-79', 'W19-87', 'D19-65', 'D19-61', 'W19-31', 'D19-59', 'W19-83', 'W19-80', 'W19-81', 'W19-65', 'D19-58', 'W19-76', 'D19-57', 'D19-63', 'D19-64', 'D19-53', 'W19-89', 'W19-62', 'D19-51']
+
+    for bib_id in add_bib:
+        publication_json(bib_id)
 
