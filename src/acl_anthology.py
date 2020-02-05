@@ -6,197 +6,115 @@ import os
 import os.path
 from os import walk
 
-def get_bib(venues):
 
-    url = 'https://www.aclweb.org/anthology/'
+def crawl_aclbib(bib_map_txt):
+    map = pd.read_csv(bib_map_txt, sep='\t', header=None)
 
-    r = requests.get(url)
-    soup = BeautifulSoup(r.text, 'html.parser')
+    bibmap = pd.DataFrame(columns=['venue', 'id', 'year', 'type', 'description'])
 
-    tables = soup.find('div', class_ = 'col-12 col-xl-10 col-xl-width-auto').find_all('table')
+    for event,issues in map.values.tolist():
 
-    years = [10 + x for x in range(10)] # 10-19
+        url = 'https://www.aclweb.org/anthology/events/' + event
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
 
-    # bib_map = pd.DataFrame(columns=['venue', 'ID', 'title'])
-    bib_map = pd.read_csv('bib_map.csv')
+        div = soup.find('section').find_all('div')
 
+        for d in div:
+            if d.get('id') is not None and 'abstract' not in d.get('id'):
+                id = d.get('id').upper()
+                description = d.find('h4').select("a[class='align-middle']")[0].text
 
-    for table in tables:
-        for tr in table.find('tbody').find_all('tr'):
-            venue = tr.find('th').text
-            if venue in venues:
-                for td in tr.find_all('td'):
-                    try:
-                        if int(td.text) in years:
-                            cite = 'https://www.aclweb.org' + td.find('a').get('href')
-                            print('Getting bib files for venue ' + venue + ' in year 20' + td.text)
-                            for k,v in get_bibFiles(cite).items():
-                                bib_map = bib_map.append({'venue': venue, 'ID': k, 'title': v}, ignore_index=True)
-                    except:
-                        continue
+                if id not in issues.split(',') and issues != 'all':
+                    continue
 
-    bib_map.to_csv('bib_map.csv', index=False)
+                bib = d.find('h4').find('span').find('a', class_='badge badge-secondary align-middle mr-1').get('href')
 
-def get_bibFiles(url):
-
-    r = requests.get(url)
-    soup = BeautifulSoup(r.text, 'html.parser')
-
-    div = soup.find('section').find_all('div')
-
-    result = {}
-
-    for d in div:
-        if d.get('id') is not None and 'abstract' not in d.get('id'):
-            id = d.get('id').upper()
-            title = d.find('h4').select("a[class='align-middle']")[0].text
-            bib = d.find('h4').find('span').find('a', class_ = 'badge badge-secondary align-middle mr-1').get('href')
-
-            bibfile = requests.get('https://www.aclweb.org' + bib)
-            filename = bib.split('/')[-1]
-            filepath = './bib/' + filename
-            with open(filepath, 'wb') as f:
-                print('Writing file ' + filename + '...')
-                f.write(bibfile.content)
-
-            result[id] = title
-
-    return result
-
-def filter_bib():
-    bibmap = pd.read_csv('bib_map.csv')
-
-    i_bib = pd.read_csv('bib_map.tsv', sep='\t', names=['ID', 'Score', 'Type'])
-
-    for (dirpath, dirnames, filenames) in walk('./bib/'):
-        include_ws = [filename[:-4] for filename in filenames if 'W' in filename]
-
-    include = []
-    for id in bibmap['ID']:
-        if id in list(i_bib['ID']) or 'J' in id:
-            include.append(1)
-        else:
-            include.append(0)
-
-    bibmap['include'] = include
-
-    # student research workshop, demonstration
-
-    interested = ['P19-1', 'P18-1', 'P18-2', 'K18-1', 'D18-1', 'N19-1', 'N19-2', 'N18-1', 'N18-2', 'N18-3', 'S19-1',
-                'S19-2', 'S18-1', 'S18-2', 'C18-1', 'D19-1', 'D19-3', 'K19-1']
-
-    for i, b in bibmap.iterrows():
-        if 'student research workshop' in b['title'].lower() or 'demonstration' in b['title'].lower() \
-                or b['venue'] == 'TACL' or b['ID'] in interested:
-            if b['include'] == 0:
-                bibmap.iloc[i,3] = 1
-        if b['venue'] == 'WS' and b['ID'] in include_ws:
-            bibmap.iloc[i,3] = 1
-        if 'tutorial' in b['title'].lower():
-            bibmap.iloc[i,3] = 0
-
-    bibmap = bibmap[bibmap['include'] == 1]
-    bibmap = bibmap.drop(columns='include')
-
-    type = ['']*bibmap.shape[0]
-    bibmap['type'] = type
+                bibfile = requests.get('https://www.aclweb.org' + bib)
+                filename = bib.split('/')[-1]
+                filepath = '../dat/acl_anthology/' + filename
+                with open(filepath, 'wb') as f:
+                    print('Writing file ' + filename + '...')
+                    f.write(bibfile.content)
 
 
-    # type = journal, conference, workshop, demonstration
+                venue = event.split('-')[0].upper()
+                if venue == 'CONLL': venue = 'CoNLL'
 
-    journal = ['CL', 'TACL']
-    con = ['ACL', 'NAACL', 'EMNLP', 'CoNLL', 'EACL', 'COLING', 'IJCNLP']
+                year = event.split('-')[1]
+
+                journal = ['CL', 'TACL']
+                con = ['ACL', 'NAACL', 'EMNLP', 'CoNLL', 'EACL', 'COLING', 'IJCNLP']
+                ws = ['SEMEVAL']
 
 
-    for i, b in bibmap.iterrows():
+                if 'workshop' in description.lower():
+                    type = 'workshop'
+                elif 'demonstration' in description.lower():
+                    type = 'demonstration'
+                elif venue in journal:
+                    type = 'journal'
+                elif venue in con:
+                    type = 'conference'
+                elif venue in ws:
+                    type = 'workshop'
+                else:
+                    type = 'workshop'
 
-        if any(j == b['venue'] for j in journal):
-            b['type'] = 'journal'
-        elif any(c == b['venue'] for c in con):
-            b['type'] = 'conference'
-        elif b['venue'] == '*SEMEVAL':
-            b['type'] = 'workshop'
-        else:
-            b['type'] = 'workshop'
+                if id not in bibmap['id'].tolist(): # WS may contain issues of other venues (e.g. CoNLL 2014)
 
-        if 'workshop' in b['title'].lower():
-            b['type'] = 'workshop'
-        elif 'demonstration' in b['title'].lower():
-            b['type'] = 'demonstration'
-
-    bibmap['year'] = bibmap.ID.apply(lambda x: '20' + x[1:3])
-
-    bibmap = bibmap.rename(columns={'title': 'description', 'ID': 'id'})
-
-    bibmap.to_json('bibmap.json', orient='records')
+                    bibmap = bibmap.append({'venue': venue, 'id': id, 'year': year, 'type': type, 'description': description}, ignore_index=True)
 
 
 
-def downloadPDF():
+    bibmap.to_json('../dat/bibmap.json', orient='records')
 
-    bibmap = pd.read_json('bibmap.json')
-    dir = './bib/'
+
+
+def downloadPDF(dir, bibfile_ID):
+
     parser = bibtexparser.bparser.BibTexParser(common_strings=True)
 
-    files = []
-    for (dirpath, dirnames, filenames) in walk('./txt/'):
-        for filename in filenames:
-            if '.txt' in filename:
-                files.append(filename.split('.')[0])
+    bibs = {}
+    filepath = os.path.join(dir, bibfile_ID + '.bib')
+    f = open(filepath)
+    bib = bibtexparser.loads(f.read(), parser=parser)
 
+    bibs.update(
+        [(entry['url'].split('/')[-1], entry) for entry in bib.entries
+         if ('author' in entry and 'pages' in entry and 'url' in entry)])
 
-    for ID in bibmap['id'].tolist():
+    bib.entries = []
+    print('Viewing files in ' + bibfile_ID)
 
-        bibs = {}
-        filepath = os.path.join(dir, ID + '.bib')
-        f = open(filepath)
-        bib = bibtexparser.loads(f.read(), parser=parser)
+    for k, v in bibs.items():
+        pdf = requests.get(v['url'] + '.pdf')
+        filepath = '../data-collection/pdf/' + k + '.pdf'
+        with open(filepath, 'wb') as pdf_file:
+            print('Saving PDF file ' + k)
+            pdf_file.write(pdf.content)
 
-        bibs.update(
-            [(entry['url'].split('/')[-1], entry) for entry in bib.entries
-             if ('author' in entry and 'pages' in entry and 'url' in entry)])
-
-        bib.entries = []
-        print('Viewing files in ' + ID)
-
-        for k, v in bibs.items():
-            if k not in files:
-                pdf = requests.get(v['url'] + '.pdf')
-                filepath = './pdf/' + k + '.pdf'
-                with open(filepath, 'wb') as pdf_file:
-                    print('Saving PDF file ' + k)
-                    pdf_file.write(pdf.content)
-
-                    files.append(k)
 
 
 from tika import parser
 
-
+# converting everything in /pdf/ folder to txt
 def pdf2txt():
-    files = []
-    for (dirpath, dirnames, filenames1) in walk('./txt/'):
-        for filename1 in filenames1:
-            if '.txt' in filename1:
-                files.append(filename1.split('.')[0])
 
 
-
-    for (dirpath, dirnames, filenames) in walk('./pdf/'):
+    for (dirpath, dirnames, filenames) in walk('../data-collection/pdf/'):
         for filename in filenames:
             if '.pdf' in filename:
                 filename = filename.split('.')[0]
-                # if filename not in files:
                 print(filename)
-                raw = parser.from_file('./pdf/' + filename + '.pdf')
+                raw = parser.from_file('../data-collection/pdf/' + filename + '.pdf')
 
-                filepath = './txt/' + filename + '.txt'
+                filepath = '../data-collection/txt/' + filename + '.txt'
                 txt_file = open(filepath, 'w')
                 print('Converting ' + filename + ' to txt file')
                 try:
                     txt_file.write(raw['content'])
                     txt_file.close()
-                    files.append(filename)
                 except:
                     continue
 
@@ -204,8 +122,15 @@ def pdf2txt():
 
 
 if __name__ == '__main__':
-    # venues = ['ACL', 'CL', 'CoNLL', 'EACL', 'EMNLP', 'NAACL', '*SEMEVAL', 'TACL', 'WS', 'COLING', 'IJCNLP']
-    # get_bib(venues)
-    filter_bib()
-    # downloadPDF()
+
+    bib_map_txt = '../dat/bib_map.txt'
+    # crawl_aclbib(bib_map_txt)
+
+    dir = '../dat/acl_anthology/'
+    # bib files of additional issues
+    add_bib = ['W19-86', 'W19-85', 'D19-66', 'W19-63', 'D19-50', 'D19-55', 'D19-56', 'W19-78', 'W19-77', 'D19-60', 'D19-52', 'W19-61', 'W19-90', 'W19-75', 'D19-54', 'W19-84', 'W19-59', 'D19-62', 'W19-64', 'W19-79', 'W19-87', 'D19-65', 'D19-61', 'W19-31', 'D19-59', 'W19-83', 'W19-80', 'W19-81', 'W19-65', 'D19-58', 'W19-76', 'D19-57', 'D19-63', 'D19-64', 'D19-53', 'W19-89', 'W19-62', 'D19-51']
+
+    #
+    # for bid_id in add_bib:
+    #     downloadPDF(dir, bid_id)
     # pdf2txt()
