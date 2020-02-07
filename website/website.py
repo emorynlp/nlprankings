@@ -98,8 +98,8 @@ def methodology():
 
 def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,WKSPDEMO):
 
-    university = pd.read_json('../data-collection/university.json', orient='records')
-    bibmap = json.load(open('../data-collection/bibmap.json'))
+    university = pd.read_json('../dat/university_us.json', orient='records')
+    bibmap = json.load(open('../dat/bibmap.json'))
 
     venue_pub = {}  # only look at publications with authors from an university institution
     for pub_id in [y[0] for x in university['publications'].values.tolist() if x for y in x]:
@@ -109,9 +109,16 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
         else:
             venue_pub[venue] = [pub_id]
 
+    university_info = pd.read_json('../dat/university_info_us.json', orient='records')
+
+    # list of us university domains
+    us_domains = [domain for u_domains in university_info['domain'].tolist() for domain in u_domains]
+
 
     # scoring each venue type
     score = {'journal': 3, 'conference': 3, 'workshop': 1, 'demonstration': 1}
+
+
 
     # authors = {author_id: {university1_domain: {2019: [score, num_pub], 2018: [score, num_pub]}}}
     authors = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0,0])))
@@ -119,63 +126,62 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
 
     for k, v in venue_pub.items():
         bib = next((y for y in bibmap if y['id'] == k), None)
-        with open('../data-collection/pub_json/' + k + '.json') as p:
+        with open('../dat/acl_anthology/json/' + k + '.json') as p:
             json_file = json.load(p)
 
             # customized scoring weights
-            if 'J' in k:
+            if bib['venue'] == 'CL':
                 venue_score = CL
-            elif 'Q' in k:
+            elif bib['venue'] == 'TACL':
                 venue_score = TACL
-            elif 'P' in k and bib['type'] == 'conference':
+            elif bib['venue'] == 'ACL' and bib['type'] == 'conference':
                 venue_score = ACL_C
-            elif 'N' in k and bib['type'] == 'conference':
+            elif bib['venue'] == 'NAACL' and bib['type'] == 'conference':
                 venue_score = NAACL_C
-            elif 'D' in k and bib['type'] == 'conference':
+            elif bib['venue'] == 'EMNLP' and bib['type'] == 'conference':
                 venue_score = EMNLP_C
-            elif 'K' in k and bib['type'] == 'conference':
+            elif bib['venue'] == 'CoNLL' and bib['type'] == 'conference':
                 venue_score = CoNLL_C
-            elif 'E' in k and bib['type'] == 'conference':
+            elif bib['venue'] == 'EACL' and bib['type'] == 'conference':
                 venue_score = EACL_C
-            elif 'C' in k:
+            elif bib['venue'] == 'COLING':
                 venue_score = COLING
-            elif 'I' in k:
+            elif bib['venue'] == 'IJCNLP':
                 venue_score = IJCNLP
-            elif bib['type'] in ['workshop', 'demonstration'] or 'W' in k:
+            elif bib['type'] in ['workshop', 'demonstration']:
                 venue_score = WKSPDEMO
             else:
                 venue_score = score[bib['type']]
 
             for pub in [x for x in json_file if x['id'] in v]:
                 for i in range(len(pub['authors'])):
-                    if '.edu' == pub['emails'][i][-4:]:
-                        author_id = pub['author_id'][i]
-                        year = pub['year']
-                        if int(year) > maxYear:
-                            maxYear = int(year)
+                    if pub['emails'][i] != "":
                         uni_domain = parse_email(pub['emails'][i].split('@')[1])
-                        if uni_domain == 'uw.edu': # university of washington has 2 domains (washington.edu & uw.edu)
-                            uni_domain = 'washington.edu'
-                        if uni_domain == 'iub.edu': # indiana university bloomington (2 domains)
-                            uni_domain = 'indiana.edu'
+                        if uni_domain in us_domains:
+                            author_id = pub['author_id'][i]
+                            year = pub['year']
+                            if int(year) > maxYear:
+                                maxYear = int(year)
 
-                        if bib['type'] not in ['workshop', 'demonstration']:
-                            # score
-                            authors[author_id][uni_domain][year][0] += 1 / len(pub['authors']) * venue_score
-                            # num of publications
-                            authors[author_id][uni_domain][year][1] += 1
-                        else:
-                            try:
-                                pages = pub['pages'].split('--')
-                                num_pages = int(pages[1]) - int(pages[0]) + 1
-                            except:  # pages with roman numbers or single page
-                                continue
 
-                            if num_pages > 4:
+
+                            if bib['type'] not in ['workshop', 'demonstration']:
                                 # score
                                 authors[author_id][uni_domain][year][0] += 1 / len(pub['authors']) * venue_score
                                 # num of publications
                                 authors[author_id][uni_domain][year][1] += 1
+                            else:
+                                try:
+                                    pages = pub['pages'].split('--')
+                                    num_pages = int(pages[1]) - int(pages[0]) + 1
+                                except:  # pages with roman numbers or single page
+                                    continue
+
+                                if num_pages > 4:
+                                    # score
+                                    authors[author_id][uni_domain][year][0] += 1 / len(pub['authors']) * venue_score
+                                    # num of publications
+                                    authors[author_id][uni_domain][year][1] += 1
 
     return authors,maxYear
 
@@ -185,12 +191,25 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
 
 def ranking(authors, startYear, endYear, top_k):
 
+    us_universities = pd.read_json('../dat/university_info_us.json', orient='records')
+
+
+    # create dictionary with all the possible domains as key, and the domain_id (the first domain) as value
+    # such that for university with multiple domains, domains will be "converted" to domain_id for matching purpose
+    domain_ids = {}
+    for domains in us_universities['domain']:
+        for domain in domains:
+            domain_ids[domain] = domains[0]
+
+
+
     uni_score = {} # university score rank
     author_score = {}  # author score rank
     # uni_authors = {uni: {author1: [score, num_pub, last_year_pub, href], author2: [score, num_pub, last_year_pub, href]}}
     uni_authors = defaultdict(lambda: defaultdict(lambda: [0, 0, 0, 0]))  # authors in each university, score + num_pub
     for author, institutions in authors.items():
         for institution, years in institutions.items():
+            institution = domain_ids[institution] # convert other domains to domain_id
             for year,value in years.items():
                 if int(year) in range(startYear, endYear+1):
 
@@ -210,7 +229,7 @@ def ranking(authors, startYear, endYear, top_k):
 
 
     # author rank
-    author_info = pd.read_json('../data-collection/author.json', orient='records')
+    author_info = pd.read_json('../dat/author.json', orient='records')
     author_info['firstname'] = author_info.firstname.fillna('')
     author_info['name'] = author_info['firstname'] + ' ' + author_info['lastname']
     author_names = dict(zip(author_info.author_id, author_info.name))
@@ -223,9 +242,8 @@ def ranking(authors, startYear, endYear, top_k):
 
 
     # uni rank
-    us_universities = pd.read_csv('../data-collection/us_universities.tsv', sep='\t', names=['name', 'domain', 'city', 'state'])
-
-    us_name = dict(zip(us_universities.domain, us_universities.name))
+    us_universities['domain_id'] = us_universities['domain'].apply(lambda x: x[0]) # take first domain as key
+    us_name = dict(zip(us_universities.domain_id, us_universities.name))
 
     rank = pd.DataFrame(sorted(list(uni_score.items()), key=lambda x: x[1], reverse=True), columns=['domain', 'Score'])
     rank = rank[rank['domain'].isin(us_name.keys())]
@@ -259,7 +277,7 @@ def parse_email(domain):
 
 
 def find_venue(pub_id):
-    if 'W' in pub_id:
+    if 'W' in pub_id or 'D19-5' in pub_id or 'D19-6' in pub_id:
         return pub_id[:-2]
     else:
         return pub_id[:-3]
@@ -268,11 +286,5 @@ def find_venue(pub_id):
 
 if __name__ == '__main__':
     # authors,maxYear = get_author_dict(3,3,3,3,3,2,2,2,2,1)
-    # print(authors['asdfkjhaelf'])
-    # print(len(authors))
-    # rank1,rank2,list1 = ranking(authors, 2010, 2019, 6000)
-    # print(len(rank2))
-    # print(len(rank1.Institution.unique()))
-    # print(len(rank1['Institution']))
-    # author_ranking(authors, 2010, 2019, 100)
+    # rank1,rank2,list1 = ranking(authors, 2010, 2019, 100)
     app.run(debug=True, use_debugger=False, use_reloader=False, passthrough_errors=True)
