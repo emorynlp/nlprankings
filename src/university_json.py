@@ -1,16 +1,19 @@
 import pandas as pd
 from os import walk
 from collections import Counter
-from collections import defaultdict
 
 
-# create json file with universities and its corresponding publications
-# will count as an university if the email domain contains .edu
-def university_pub():
+def university_pub(university_info_json, country):
+
+    university_info = pd.read_json(university_info_json, orient='records')
+
+    # country-specific university domains
+    c_domains = [domain for u_domains in university_info['domain'].tolist() for domain in u_domains]
+
 
     uni = {}
 
-    for (dirpath, dirnames, filenames) in walk('../dat/acl_anthology/'):
+    for (dirpath, dirnames, filenames) in walk('../dat/acl_anthology/json/'):
         for filename in filenames:
             if '.json' in filename:
                 pub = pd.read_json(dirpath + filename)
@@ -20,7 +23,7 @@ def university_pub():
                     domains = [parse_email(e.split('@')[-1]) for e in record['emails']]
                     c = Counter(domains)
                     for key in c.keys():
-                        if 'edu' in key.split('.'):
+                        if key in c_domains:
                             if key in uni.keys():
                                 # (pub_id, contribution_percentage)
                                 uni[key].append((record['id'], c[key]/len(record['authors'])))
@@ -34,9 +37,9 @@ def university_pub():
         university_list.append({'domain_id': k, 'publications': v})
 
     df = pd.DataFrame(university_list)
-    df.to_json('../dat/university.json', orient='records')
 
-
+    output_filename = '../dat/university_' + country + '.json'
+    df.to_json(output_filename, orient='records')
 
 
 
@@ -53,6 +56,9 @@ def parse_email(domain):
 
 
 if __name__ == '__main__':
-    university_pub()
+
+    us_uni_info = '../dat/university_info_us.json'
+    country = 'us'
+    university_pub(us_uni_info, country)
 
 
