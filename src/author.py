@@ -2,69 +2,71 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
+import json
 from os import walk
 
 
 
-def add_new_pub(pubs):
-    dat = pd.read_csv('../dat/author_pub.txt', sep='\t', header=None)
-    dat.columns = ['author_id', 'firstname', 'lastname', 'publications']
-    dat = dat.replace(np.nan, '', regex=True)
-    author_pub = dat.set_index(dat.author_id).T.to_dict()
 
+def author_pub(issue_id):
+
+    author = pd.read_json('../dat/author.json')
+    author.columns = ['author_id', 'firstname', 'lastname', 'publications']
+    author = author.replace(np.nan, '', regex=True)
+    author_pub = author.set_index(author.author_id).T.to_dict()
+
+
+    pub_json = json.load(open('../dat/acl_anthology/json/' + issue_id + '.json'))
+
+    print('Adding pubs from ' + issue_id)
 
     i = 0
-    for pub_id in pubs:
-        r = requests.get('https://www.aclweb.org/anthology/' + pub_id)
-        soup = BeautifulSoup(r.text, 'html.parser')
+    for pub in pub_json:
 
+        pub_id = pub['id']
 
-        author_ids = [a.get('href').split('/')[-2] for a in soup.find('p', class_ = 'lead').find_all('a') if '/people/' in a.get('href')]
+        for author_id in pub['author_id']:
 
-        for id in author_ids:
-            if id not in author_pub.keys():
-                author_webpage = 'https://www.aclweb.org/anthology/people/' + id[0] + '/' + id
+            if author_id not in author_pub.keys():
+                author_webpage = 'https://www.aclweb.org/anthology/people/' + author_id[0] + '/' + author_id
                 r_author = requests.get(author_webpage)
                 a_soup = BeautifulSoup(r_author.text, 'html.parser')
                 firstname = a_soup.find('span', class_='font-weight-normal').text
                 lastname = a_soup.find('span', class_='font-weight-bold').text
 
-                author_pub[id] = {'author_id': id, 'firstname': firstname, 'lastname': lastname, 'publications': pub_id}
+                author_pub[author_id] = {'author_id': author_id, 'firstname': firstname, 'lastname': lastname, 'publications': [pub_id]}
 
             else:
-                if pub_id not in author_pub[id]['publications']:
-                    author_pub[id]['publications'] += ',' + pub_id
-
-
-
+                if pub_id not in author_pub[author_id]['publications']:
+                    author_pub[author_id]['publications'].append(pub_id)
 
         i += 1
-        print(str(len(pubs)-i) + ' more publications to add')
-
-
-        with open('../dat/author_pub.txt', 'w') as f:
-            for v1 in author_pub.values():
-                f.write('\t'.join([v2 for v2 in v1.values()]) + '\n')
+        print(str(len(pub_json) - i) + ' more publications to add')
 
 
 
-def author2json():
+    with open('../dat/author.json', 'w') as json_file:
+        json.dump(list(author_pub.values()), json_file)
 
-    dat = pd.read_csv('../dat/author_pub.txt', sep='\t', header=None)
-    dat.columns = ['author_id', 'firstname', 'lastname', 'publications']
 
-    dat['publications'] = dat['publications'].str.split(',')
+    print('Added ' + issue_id + ' to author.json')
 
-    dat.to_json('../dat/author.json', orient='records')
+
+
+
+
+
+
 
 
 
 
 if __name__ == '__main__':
-    # new_pub = [file[:-4] for (dirpath, dirnames, filenames) in walk('../data-collection/pdf/') for file in filenames]
 
-    # add_new_pub(new_pub)
-    author2json()
+    all_pub = [filename[:-5] for (dirpath, dirnames, filenames) in walk('../dat/acl_anthology/json/') for filename in filenames if '.json' in filename][160:]
+
+    for issue_id in all_pub:
+        author_pub(issue_id)
 
 
 
