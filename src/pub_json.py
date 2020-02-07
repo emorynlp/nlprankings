@@ -2,6 +2,8 @@ import re
 import os
 import pandas as pd
 import bibtexparser
+import requests
+from bs4 import BeautifulSoup
 from os import walk
 
 
@@ -12,21 +14,10 @@ def publication_json(bib_ID):
     parser = bibtexparser.bparser.BibTexParser(common_strings=True)
 
 
-    # a dictionary with key = pub_id, value = list of author_id
-    author_dict = {}
-    author_info = pd.read_json('../dat/author.json')
-    for a in author_info.values.tolist():
-        for pub_id in a[3]:
-            if pub_id in author_dict.keys():
-                author_dict[pub_id].append(a[0])
-            else:
-                author_dict[pub_id] = [a[0]]
-
-
     bibs = {}
     pub_data = []
 
-    filepath = '../dat/acl_anthology/' + bib_ID + '.bib'
+    filepath = '../dat/acl_anthology/bib/' + bib_ID + '.bib'
     f = open(filepath)
     bib = bibtexparser.loads(f.read(), parser=parser)
     try:
@@ -46,7 +37,7 @@ def publication_json(bib_ID):
             pub_dict['emails'] = get_emails(k, pub_dict['authors'])
             pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
 
-            pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
+            pub_dict['author_id'] = author_id(k)
 
             del v['ENTRYTYPE']
             del v['ID']
@@ -72,7 +63,7 @@ def publication_json(bib_ID):
             pub_dict['emails'] = get_emails(k, pub_dict['authors'])
             pub_dict['emails'] = email_match(pub_dict['authors'], pub_dict['emails'])
 
-            pub_dict['author_id'] = author_id(pub_dict['authors'], author_dict[k])
+            pub_dict['author_id'] = author_id(k)
 
             del v['ENTRYTYPE']
             del v['ID']
@@ -81,14 +72,14 @@ def publication_json(bib_ID):
             pub_data.append(pub_dict)
 
     df = pd.DataFrame(pub_data)
-    df.to_json('../dat/acl_anthology/' + bib_ID + '.json', orient='records')
+    df.to_json('../dat/acl_anthology/json/' + bib_ID + '.json', orient='records')
     print("Added " + bib_ID + ".json to file")
 
 
 
 
 def get_emails(txtfile, authors):
-    filepath = os.path.join('../data-collection/txt/', txtfile + '.txt')
+    filepath = os.path.join('/Users/Chloe/PycharmProjects/nlp_ranking/data-collection/txt/', txtfile + '.txt')
 
     doc = []
     n = 0
@@ -219,43 +210,28 @@ def email_match(authors, emails):
 
 
 
+def author_id(pub_id):
+    r = requests.get('https://www.aclweb.org/anthology/' + pub_id)
+    soup = BeautifulSoup(r.text, 'html.parser')
 
-def author_id(authors, IDs):
-
-    result = [''] * len(authors)
-
-    authors = ['-'.join([b for b in reversed(a.lower().replace(',', '').split(' '))]) for a in authors]
-
-    matrix = []
-    for id in IDs:
-        ratio = [fuzz.ratio(id, name) for name in authors]
-        matrix.append(ratio)
+    author_ids = [a.get('href').split('/')[-2] for a in soup.find('p', class_='lead').find_all('a') if '/people/' in a.get('href')]
 
 
-    matrix = np.array(matrix)
+    return author_ids
 
-    indices = {}
-    for score in sorted(set(matrix.flat), reverse=True):
-        cord = np.where(matrix == score)
-        for c in list(zip(cord[0], cord[1])):
-            if c[0] not in indices.keys() and c[1] not in indices.values():
-                indices[c[0]] = c[1]
 
-            if len(indices) == len(authors):
-                break
 
-    for k,v in indices.items():
-        result[v] = IDs[k]
 
-    return result
 
 
 
 
 if __name__ == '__main__':
 
-    add_bib = ['W19-86', 'W19-85', 'D19-66', 'W19-63', 'D19-50', 'D19-55', 'D19-56', 'W19-78', 'W19-77', 'D19-60', 'D19-52', 'W19-61', 'W19-90', 'W19-75', 'D19-54', 'W19-84', 'W19-59', 'D19-62', 'W19-64', 'W19-79', 'W19-87', 'D19-65', 'D19-61', 'W19-31', 'D19-59', 'W19-83', 'W19-80', 'W19-81', 'W19-65', 'D19-58', 'W19-76', 'D19-57', 'D19-63', 'D19-64', 'D19-53', 'W19-89', 'W19-62', 'D19-51']
 
-    for bib_id in add_bib:
+    all_bib = [filename[:-5] for (dirpath, dirnames, filenames) in walk('../dat/acl_anthology/json/') for filename in filenames if '.json' in filename]
+
+    for bib_id in all_bib:
         publication_json(bib_id)
+
 
