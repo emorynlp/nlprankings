@@ -3,9 +3,7 @@ import json
 from collections import defaultdict
 import pandas as pd
 import boto3
-from dynamodb_json import json_util
 from datetime import datetime
-from decimal import Decimal
 
 
 app = Flask(__name__)
@@ -13,24 +11,24 @@ app = Flask(__name__)
 @app.route('/', methods=['GET', 'POST'])
 def home():
     if request.method == 'POST':
-        dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
-        table = dynamodb.Table('nlp-ranking-logs')
+
+        s3 = boto3.resource('s3', region_name='us-east-2')
 
         # journal
-        CL = float(request.form['CL'])
-        TACL = float(request.form['TACL'])
+        CL = int(request.form['CL'])
+        TACL = int(request.form['TACL'])
 
         # conference
-        ACL_C = float(request.form['ACL-C'])
-        NAACL_C = float(request.form['NAACL-C'])
-        EMNLP_C = float(request.form['EMNLP-C'])
-        CoNLL_C = float(request.form['CoNLL-C'])
-        EACL_C = float(request.form['EACL-C'])
-        COLING = float(request.form['COLING'])
-        IJCNLP = float(request.form['IJCNLP'])
+        ACL_C = int(request.form['ACL-C'])
+        NAACL_C = int(request.form['NAACL-C'])
+        EMNLP_C = int(request.form['EMNLP-C'])
+        CoNLL_C = int(request.form['CoNLL-C'])
+        EACL_C = int(request.form['EACL-C'])
+        COLING = int(request.form['COLING'])
+        IJCNLP = int(request.form['IJCNLP'])
 
         # workshop or demo
-        WKSPDEMO = float(request.form['WKSPDEMO'])
+        WKSPDEMO = int(request.form['WKSPDEMO'])
 
 
         startYear = int(request.form['start-year'])
@@ -39,25 +37,14 @@ def home():
         num_uni = int(request.form['num_uni'])
         num_author = int(request.form['num_author'])
 
-        table.put_item(
-            Item={
-                'UTCtime': str(datetime.utcnow()),
-                'startYear': startYear,
-                'endYear': endYear,
-                'num_uni': num_uni,
-                'num_author': num_author,
-                'CL': Decimal(CL),
-                'TACL': Decimal(TACL),
-                'ACL_C': Decimal(ACL_C),
-                'NAACL_C': Decimal(NAACL_C),
-                'EMNLP_C': Decimal(EMNLP_C),
-                'CoNLL_C': Decimal(CoNLL_C),
-                'EACL_C': Decimal(EACL_C),
-                'COLING': Decimal(COLING),
-                'IJCNLP': Decimal(IJCNLP),
-                'WKSPDEMO': Decimal(WKSPDEMO),
-            }
-        )
+
+        # storing log info to s3
+        info = [startYear,endYear,num_uni,num_author,CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,WKSPDEMO]
+        data = ','.join(map(str, info))
+
+        filename = 'log/' + str(datetime.utcnow()) + '.txt'
+        object = s3.Object('nlprankings', filename)
+        object.put(Body=data)
 
 
 
