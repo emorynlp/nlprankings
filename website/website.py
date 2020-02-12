@@ -10,9 +10,9 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    if request.method == 'POST':
+    s3 = boto3.resource('s3', region_name='us-east-2')
 
-        s3 = boto3.resource('s3', region_name='us-east-2')
+    if request.method == 'POST':
 
         # journal
         CL = int(request.form['CL'])
@@ -39,7 +39,8 @@ def home():
 
 
         # storing log info to s3
-        info = [startYear,endYear,num_uni,num_author,CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,WKSPDEMO]
+        ip = request.remote_addr
+        info = [ip,startYear,endYear,num_uni,num_author,CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,WKSPDEMO]
         data = ','.join(map(str, info))
 
         filename = 'log/' + str(datetime.utcnow()) + '.txt'
@@ -72,6 +73,17 @@ def home():
         rank1.index = rank1.index + 1
 
         years = list(range(2010, maxYear+1))
+
+
+        # storing log info to s3
+        ip = request.remote_addr
+        info = [ip, 2010, maxYear, 100, 100, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1]
+        data = ','.join(map(str, info))
+
+        filename = 'log/' + str(datetime.utcnow()) + '.txt'
+        object = s3.Object('nlprankings', filename)
+        object.put(Body=data)
+
 
         return render_template('home.html', ranking1=rank1, ranking2=rank2, year=[2010, maxYear], years=years,
                                weights=[3,3,3,3,3,2,2,2,2,1], num=[100, 100], uni_authors=uni_authors)
