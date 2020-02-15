@@ -8,11 +8,9 @@ from os import walk
 
 
 
-
 def publication_json(bib_ID):
 
     parser = bibtexparser.bparser.BibTexParser(common_strings=True)
-
 
     bibs = {}
     pub_data = []
@@ -26,12 +24,15 @@ def publication_json(bib_ID):
              if ('author' in entry and 'pages' in entry and 'url' in entry)])
 
         for k, v in bibs.items():
+            print('Scanning publication', k)
+
             pub_dict = {}
             pub_dict['id'] = k
             pub_dict['title'] = v['title']
             del v['title']
 
             pub_dict['authors'] = v['author'].split('  and\n')
+
             del v['author']
 
             pub_dict['emails'] = get_emails(k, pub_dict['authors'])
@@ -45,6 +46,7 @@ def publication_json(bib_ID):
 
             pub_data.append(pub_dict)
 
+
     except:  # some workshops have different bib file format
 
         bibs.update(
@@ -52,6 +54,8 @@ def publication_json(bib_ID):
              if ('author' in entry and 'pages' in entry and 'url' in entry)])
 
         for k, v in bibs.items():
+            print('Scanning publication', k)
+
             pub_dict = {}
             pub_dict['id'] = k
             pub_dict['title'] = v['title']
@@ -120,7 +124,7 @@ def get_emails(txtfile, authors):
     for email in emails:
         if any(regex.findall(email) for regex in re_name_list):
             for m in re_email.findall(email):
-                if 'first' in m[0]:
+                if any(c in m[0] for c in ['first.last', 'name.surname', 'firstname', 'first-name']):
                     domain = m[1]
 
             for author in authors:
@@ -157,6 +161,7 @@ def email_match(authors, emails):
     for email in emails:
         ratios = []
         for author in author_list:
+
             try:
                 email_id = email.split('@')[0]
 
@@ -167,20 +172,34 @@ def email_match(authors, emails):
                     fname = author.split(' ')[0].lower()
                     lname = author.split(' ')[1].lower()
 
+
+                # firstname
+                fname
+
+                # lastname
+                lname
+
+                # f (m) l
                 initial = ''.join([i[0].lower() for i in re.findall(r"[\w']+", fname)]) + ''.join(
                     [j[0].lower() for j in re.findall(r"[\w']+", lname)])
-                f_lastname = fname[0] + lname
+
+                # f (m) lastname
+                f_lastname = ''.join([i[0].lower() for i in re.findall(r"[\w']+", fname)]) + lname
+
+                # firstname lastname
                 name = fname + lname
 
+                # lastname f (m)
+                lastname_f = lname + ''.join([i[0].lower() for i in re.findall(r"[\w']+", fname)])
 
-                ratios.append([fuzz.partial_ratio(lname, email_id), fuzz.partial_ratio(fname, email_id),
-                               fuzz.partial_ratio(initial, email_id), fuzz.partial_ratio(f_lastname, email_id),
-                               fuzz.ratio(name, email_id)])
 
+                ratios.append([fuzz.ratio(lname, email_id), fuzz.ratio(fname, email_id),
+                               fuzz.ratio(initial, email_id), fuzz.ratio(f_lastname, email_id),
+                               fuzz.ratio(name, email_id), fuzz.ratio(lastname_f, email_id)])
 
 
             except:
-                ratios.append([0] * 5)
+                ratios.append([0] * 6) # because there're 6 patterns
 
 
         ratios = np.array(ratios)
@@ -190,13 +209,12 @@ def email_match(authors, emails):
 
     matrix = np.array(matrix)
 
-
     indices = {}
     for score in sorted(set(matrix.flat), reverse=True):
             cord = np.where(matrix == score)
             for c in list(zip(cord[0], cord[1])):
-                if c[0]//5 not in indices.keys() and c[1] not in indices.values():
-                    indices[c[0]//5] = c[1]
+                if c[0]//6 not in indices.keys() and c[1] not in indices.values():
+                    indices[c[0]//6] = c[1]
 
                 if len(indices) == len(emails):
                     break
@@ -204,7 +222,6 @@ def email_match(authors, emails):
 
     for k,v in indices.items():
         result[v] = emails[k]
-
 
     return result
 
@@ -233,5 +250,4 @@ if __name__ == '__main__':
 
     for bib_id in all_bib:
         publication_json(bib_id)
-
 
