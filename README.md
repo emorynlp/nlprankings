@@ -39,7 +39,7 @@ The JSON format for `university_info_us.json` is as followed:
 ### Adding International University (outside of U.S.) Info
 At the moment, universities outside of the United States are not included in [NLP Rankings](http://www.nlprankings.org/). However we will include international education institutions once we have sufficient data. 
 
-If you belong to an university outside of U.S. and would like to have your institution included, please fill in the JSON file `x` as followed:
+If you belong to an university outside of U.S. and would like to have your institution included, please fill in the JSON file `_____________` as followed:
 {
   "name": `university name`,
   "domain": `list of university email domains`,
