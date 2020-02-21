@@ -246,7 +246,7 @@ def author_id(pub_id):
 if __name__ == '__main__':
 
 
-    all_bib = [filename[:-5] for (dirpath, dirnames, filenames) in walk('../dat/acl_anthology/json/') for filename in filenames if '.json' in filename]
+    all_bib = [filename[:-4] for (dirpath, dirnames, filenames) in walk('../dat/acl_anthology/bib/') for filename in filenames if '.bib' in filename]
 
     for bib_id in all_bib:
         publication_json(bib_id)
