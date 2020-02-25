@@ -108,7 +108,7 @@ def home():
 
 
 @app.route('/articles/')
-def methodology():
+def articles():
     return render_template("articles.html");
 
 
