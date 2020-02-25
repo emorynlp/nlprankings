@@ -5,6 +5,9 @@ import pandas as pd
 import boto3
 from datetime import datetime
 
+from bokeh.models import LogColorMapper
+from bokeh.plotting import figure
+from bokeh.embed import components
 
 app = Flask(__name__)
 
@@ -53,24 +56,34 @@ def home():
             CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO
         )
 
-        rank1,rank2,uni_authors = ranking(authors, startYear, endYear, num_author)
+        rank1,rank2,uni_authors,scores = ranking(authors, startYear, endYear)
         rank1 = rank1.head(n=num_uni)
         rank1.index = rank1.index + 1
+        rank2 = rank2.head(n=num_author)
 
         weights = [CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO]
 
         years = list(range(2010, maxYear+1))
 
+
+
+        # us map
+        plot = create_us_state_map(scores)
+        script, div = components(plot) # Embed plot into HTML via Flask Render
+
+
         return render_template('home.html', ranking1=rank1, ranking2=rank2, year=[startYear, endYear],
-        years=years, weights=list(map(int, weights)), num=[num_uni, num_author], uni_authors=uni_authors)
+        years=years, weights=list(map(int, weights)), num=[num_uni, num_author], uni_authors=uni_authors,
+        script=script, div=div)
 
     else:
 
         authors,maxYear = get_author_dict(3,3,3,3,3,2,2,2,2,1)
 
-        rank1,rank2,uni_authors = ranking(authors, 2010, maxYear, 100)
+        rank1,rank2,uni_authors,scores = ranking(authors, 2010, maxYear)
         rank1 = rank1.head(n=100)
         rank1.index = rank1.index + 1
+        rank2 = rank2.head(n=100)
 
         years = list(range(2010, maxYear+1))
 
@@ -84,14 +97,19 @@ def home():
         object = s3.Object('nlprankings', filename)
         object.put(Body=data)
 
+        # us map
+        plot = create_us_state_map(scores)
+        script, div = components(plot)  # Embed plot into HTML via Flask Render
+
+
 
         return render_template('home.html', ranking1=rank1, ranking2=rank2, year=[2010, maxYear], years=years,
-                               weights=[3,3,3,3,3,2,2,2,2,1], num=[100, 100], uni_authors=uni_authors)
+        weights=[3,3,3,3,3,2,2,2,2,1], num=[100, 100], uni_authors=uni_authors, script=script, div=div)
 
 
-@app.route('/methodology/')
+@app.route('/articles/')
 def methodology():
-    return render_template("methodology.html");
+    return render_template("articles.html");
 
 
 
@@ -188,7 +206,7 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
 
 
 
-def ranking(authors, startYear, endYear, top_k):
+def ranking(authors, startYear, endYear):
 
     us_universities = pd.read_json('../dat/university_info_us.json', orient='records')
 
@@ -233,7 +251,7 @@ def ranking(authors, startYear, endYear, top_k):
     author_info['name'] = author_info['firstname'] + ' ' + author_info['lastname']
     author_names = dict(zip(author_info.author_id, author_info.name))
 
-    author_rank = pd.DataFrame(sorted(list(author_score.items()), key=lambda x: x[1], reverse=True)[:top_k],
+    author_rank = pd.DataFrame(sorted(list(author_score.items()), key=lambda x: x[1], reverse=True),
                                columns=['author_id', 'Score'])
     author_rank['url'] = author_rank['author_id'].str[0] + '/' + author_rank['author_id']
     author_rank['Author'] = author_rank['author_id'].map(author_names)
@@ -246,9 +264,11 @@ def ranking(authors, startYear, endYear, top_k):
 
     rank = pd.DataFrame(sorted(list(uni_score.items()), key=lambda x: x[1], reverse=True), columns=['domain', 'Score'])
     rank = rank[rank['domain'].isin(us_name.keys())]
+    rank = rank.round(2)
+
+    state_scores = rank # use the same data for us_state map
 
     rank['Institution'] = rank['domain'].map(us_name)
-    rank = rank.round(2)
     rank = rank.reset_index(drop=True)
 
     # rounding & sorting by individual author scores
@@ -263,9 +283,61 @@ def ranking(authors, startYear, endYear, top_k):
     rank['authors'] = rank['domain'].map(uni_authors)
 
 
-    return rank, author_rank, uni_authors
+    # us_map (score by states)
+    us_states = dict(zip(us_universities.domain_id, us_universities.state))
+    state_scores['State'] = rank['domain'].map(us_states)
+    state_scores = state_scores.groupby('State').sum()
+    state_scores = state_scores.round(2)
+    state_scores = state_scores.reset_index()
+    state_score_dict = dict(zip(state_scores.State, state_scores.Score))
+
+    return rank, author_rank, uni_authors,state_score_dict
 
 
+
+
+def create_us_state_map(scores):
+    from bokeh.sampledata.us_states import data as states
+
+    states = {
+        code: states for code, states in states.items() if code not in ['AK', 'HI']
+    }
+
+    state_xs = [state["lons"] for state in states.values()]
+    state_ys = [state["lats"] for state in states.values()]
+
+    teal_palette = ['#ffffff', '#e0f2f1', '#b2dfdb', '#80cbc4', '#4db6ac', '#26a69a', '#009688', '#00897b', '#00796b',
+                    '#00695c']
+
+    state_names = [state['name'] for state in states.values()]
+    state_scores = [scores[code] if code in scores.keys() else 0 for code in states.keys()]
+    color_mapper = LogColorMapper(palette=teal_palette, low=0.01, high=max(scores.values()))
+
+    data = dict(
+        x=state_xs,
+        y=state_ys,
+        name=state_names,
+        rate=state_scores,
+    )
+
+    TOOLS = "pan,wheel_zoom,reset,hover,save"
+
+    p = figure(
+        title="NLP Ranking Score Across U.S. States", tools=TOOLS,
+        x_axis_location=None, y_axis_location=None,
+        sizing_mode="scale_width",
+        plot_width=1100, plot_height=700,
+        tooltips=[
+            ("State", "@name"), ("Score", "@rate{0,0.00}")
+        ])
+    p.grid.grid_line_color = None
+    p.hover.point_policy = "follow_mouse"
+
+    p.patches('x', 'y', source=data,
+              fill_color={'field': 'rate', 'transform': color_mapper},
+              fill_alpha=0.7, line_color="black", line_width=0.5)
+
+    return p
 
 def parse_email(domain):
     if '.edu' in domain:
@@ -285,5 +357,5 @@ def find_venue(pub_id):
 
 if __name__ == '__main__':
     # authors,maxYear = get_author_dict(3,3,3,3,3,2,2,2,2,1)
-    # rank1,rank2,list1 = ranking(authors, 2010, 2019, 100)
+    # rank1,rank2,list1,score = ranking(authors, 2010, 2019)
     app.run(debug=True, use_debugger=False, use_reloader=False, passthrough_errors=True)
