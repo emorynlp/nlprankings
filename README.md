@@ -30,8 +30,8 @@ If your email address is either incorrectly matched or excluded in the publicati
 
 ### Updating University Information
 
-* The JSON file `dat/university_*.json` contains the name, the email domains, and the location of each university grouped by country (`us`: United States).
-* If your university is listed not on [nlpankings.org](http://www.nlprankings.org/), please update `university_*.json` accordingly.
+* The JSON file `dat/university_domain_*.json` contains the name, the email domains, and the location of each university grouped by country (`us`: United States).
+* If your university is listed not on [nlpankings.org](http://www.nlprankings.org/), please update `university_domain_*.json` accordingly.
 * If there is more than one email domain for the university, please add the addtional domains to the list. Please do not add subdomains such as `cs.emory.edu`. 
 
 ### Adding Universities Outside of U.S.
