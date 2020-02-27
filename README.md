@@ -36,4 +36,4 @@ If your email address is either incorrectly matched or excluded in the publicati
 
 ### Adding Universities Outside of U.S.
 
-* If we wish to contribute to add universities in other countries, please create the JSON file `dat/university_CC.json` where `CC` is the [country code top-level domain](https://en.wikipedia.org/wiki/List_of_Internet_top-level_domains#Country_code_top-level_domains) in lowercase (e.g., for universities in South Korea, please create `dat/university_kr.json`).
+* If we wish to contribute to add universities in other countries, please create the JSON file `dat/university_domain_CC.json` where `CC` is the [country code top-level domain](https://en.wikipedia.org/wiki/List_of_Internet_top-level_domains#Country_code_top-level_domains) in lowercase (e.g., for universities in South Korea, please create `dat/university_domain_kr.json`).
