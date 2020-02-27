@@ -126,7 +126,7 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
         else:
             venue_pub[venue] = [pub_id]
 
-    university_info = pd.read_json('../dat/university_info_us.json', orient='records')
+    university_info = pd.read_json('../dat/university_domain_us.json', orient='records')
 
     # list of us university domains
     us_domains = [domain for u_domains in university_info['domain'].tolist() for domain in u_domains]
@@ -208,7 +208,7 @@ def get_author_dict(CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,W
 
 def ranking(authors, startYear, endYear):
 
-    us_universities = pd.read_json('../dat/university_info_us.json', orient='records')
+    us_universities = pd.read_json('../dat/university_domain_us.json', orient='records')
 
 
     # create dictionary with all the possible domains as key, and the domain_id (the first domain) as value
@@ -291,7 +291,7 @@ def ranking(authors, startYear, endYear):
     state_scores = state_scores.reset_index()
     state_score_dict = dict(zip(state_scores.State, state_scores.Score))
 
-    return rank, author_rank, uni_authors,state_score_dict
+    return rank, author_rank, uni_authors, state_score_dict
 
 
 
@@ -323,7 +323,7 @@ def create_us_state_map(scores):
     TOOLS = "pan,wheel_zoom,reset,hover,save"
 
     p = figure(
-        title="NLP Ranking Score Across U.S. States", tools=TOOLS,
+        title="NLP Ranking Scores Across U.S. States", tools=TOOLS,
         x_axis_location=None, y_axis_location=None,
         sizing_mode="scale_width",
         plot_width=1100, plot_height=700,

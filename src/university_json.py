@@ -3,9 +3,9 @@ from os import walk
 from collections import Counter
 
 
-def university_pub(university_info_json, country):
+def university_pub(university_domain_json, country):
 
-    university_info = pd.read_json(university_info_json, orient='records')
+    university_info = pd.read_json(university_domain_json, orient='records')
 
     # country-specific university domains
     c_domains = [domain for u_domains in university_info['domain'].tolist() for domain in u_domains]
@@ -57,7 +57,7 @@ def parse_email(domain):
 
 if __name__ == '__main__':
 
-    us_uni_info = '../dat/university_info_us.json'
+    us_uni_info = '../dat/university_domain_us.json'
     country = 'us'
     university_pub(us_uni_info, country)
 
