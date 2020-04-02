@@ -5,9 +5,11 @@ import pandas as pd
 import boto3
 from datetime import datetime
 
-from bokeh.models import LogColorMapper
+from bokeh.models import LogColorMapper, ColumnDataSource, FactorRange, Legend
 from bokeh.plotting import figure
 from bokeh.embed import components
+from bokeh.palettes import Set2_5
+from bokeh.transform import factor_cmap
 
 app = Flask(__name__)
 
@@ -16,7 +18,6 @@ def home():
     s3 = boto3.resource('s3', region_name='us-east-2')
 
     if request.method == 'POST':
-
         # journal
         CL = int(request.form['CL'])
         TACL = int(request.form['TACL'])
@@ -33,43 +34,38 @@ def home():
         # workshop or demo
         WKSPDEMO = int(request.form['WKSPDEMO'])
 
-
         startYear = int(request.form['start-year'])
         endYear = int(request.form['end-year'])
 
         num_uni = int(request.form['num_uni'])
         num_author = int(request.form['num_author'])
 
-
         # storing log info to s3
         ip = request.remote_addr
-        info = [ip,startYear,endYear,num_uni,num_author,CL,TACL,ACL_C,NAACL_C,EMNLP_C,CoNLL_C,EACL_C,COLING,IJCNLP,WKSPDEMO]
+        info = [ip, startYear, endYear, num_uni, num_author,
+                CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING,IJCNLP, WKSPDEMO]
         data = ','.join(map(str, info))
 
         filename = 'log/' + str(datetime.utcnow()) + '.txt'
         object = s3.Object('nlprankings', filename)
         object.put(Body=data)
 
-
-
-        authors,maxYear = get_author_dict(
+        authors, maxYear = get_author_dict(
             CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO
         )
 
-        rank1,rank2,uni_authors,scores = ranking(authors, startYear, endYear)
+        rank1, rank2, uni_authors, scores = ranking(authors, startYear, endYear)
         rank1 = rank1.head(n=num_uni)
         rank1.index = rank1.index + 1
         rank2 = rank2.head(n=num_author)
 
         weights = [CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO]
 
-        years = list(range(2010, maxYear+1))
-
-
+        years = list(range(2010, maxYear + 1))
 
         # us map
         plot = create_us_state_map(scores)
-        script, div = components(plot) # Embed plot into HTML via Flask Render
+        script, div = components(plot)  # Embed plot into HTML via Flask Render
 
 
         return render_template('home.html', ranking1=rank1, ranking2=rank2, year=[startYear, endYear],
@@ -353,6 +349,437 @@ def find_venue(pub_id):
     else:
         return pub_id[:-3]
 
+
+@app.route('/visualizations/', methods=['GET', 'POST'])
+def visualizations():
+    df = pd.read_csv('../dat/graph_data.csv')
+
+    if request.method == 'POST':
+        selected = request.form.getlist('selected-university')
+
+        # journal
+        CL = int(request.form['CL'])
+        TACL = int(request.form['TACL'])
+
+        # conference
+        ACL_C = int(request.form['ACL-C'])
+        NAACL_C = int(request.form['NAACL-C'])
+        EMNLP_C = int(request.form['EMNLP-C'])
+        CoNLL_C = int(request.form['CoNLL-C'])
+        EACL_C = int(request.form['EACL-C'])
+        COLING = int(request.form['COLING'])
+        IJCNLP = int(request.form['IJCNLP'])
+
+        # workshop or demo
+        WKSPDEMO = int(request.form['WKSPDEMO'])
+
+        df = get_dataset(df, CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO)
+
+        df_c = df.groupby('university')['score'].sum().reset_index()
+        df_c = df_c.sort_values(by='score', ascending=False).reset_index()
+        df_c.index = df_c.index + 1
+        choices = df_c.university.to_dict()
+
+
+        # ----------------------visualizations-----------------------
+
+        p1 = score_timeline(df, selected)
+        p2 = numpub(df, selected)
+        p3 = ratio_of_contribution(df, selected)
+        p4 = avg_author_num(df, selected)
+        p_label = selected_color_legend(selected)
+
+        script1, div1 = components(p1)
+        script2, div2 = components(p2)
+        script3, div3 = components(p3)
+        script4, div4 = components(p4)
+        scriptL, divL = components(p_label)
+
+
+        return render_template("visualizations.html", choices=choices,
+                               weights=[CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO],
+                               script1=script1, div1=div1, script2=script2, div2=div2, script3=script3, div3=div3,
+                               script4=script4, div4=div4, scriptL=scriptL, divL=divL)
+
+    else:
+        df = get_dataset(df, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1)
+
+        df_c = df.groupby('university')['score'].sum().reset_index()
+        df_c = df_c.sort_values(by='score', ascending=False).reset_index()
+        df_c.index = df_c.index + 1
+        choices = df_c.university.to_dict()
+
+        selected = []
+
+        # ----------------------visualizations-----------------------
+
+        p1 = score_timeline(df, selected)
+        p2 = numpub(df, selected)
+        p3 = ratio_of_contribution(df, selected)
+        p4 = avg_author_num(df, selected)
+        p_label = selected_color_legend(selected)
+
+        script1, div1 = components(p1)
+        script2, div2 = components(p2)
+        script3, div3 = components(p3)
+        script4, div4 = components(p4)
+        scriptL, divL = components(p_label)
+
+
+        return render_template("visualizations.html", weights=[3,3,3,3,3,2,2,2,2,1], choices=choices,
+                               script1=script1, div1=div1, script2=script2, div2=div2, script3=script3, div3=div3,
+                               script4=script4, div4=div4, scriptL=scriptL, divL=divL)
+
+
+def get_dataset(df, CL, TACL, ACL_C, NAACL_C, EMNLP_C, CoNLL_C, EACL_C, COLING, IJCNLP, WKSPDEMO):
+
+    def get_score(venue, type, numAuthor):
+
+        score = {'journal': 3, 'conference': 3, 'workshop': 1, 'demonstration': 1}
+
+        if venue == 'CL':
+            venue_score = CL
+        elif venue == 'TACL':
+            venue_score = TACL
+        elif venue == 'ACL' and type == 'conference':
+            venue_score = ACL_C
+        elif venue == 'NAACL' and type == 'conference':
+            venue_score = NAACL_C
+        elif venue == 'EMNLP' and type == 'conference':
+            venue_score = EMNLP_C
+        elif venue == 'CoNLL' and type == 'conference':
+            venue_score = CoNLL_C
+        elif venue == 'EACL' and type == 'conference':
+            venue_score = EACL_C
+        elif venue == 'COLING':
+            venue_score = COLING
+        elif venue == 'IJCNLP':
+            venue_score = IJCNLP
+        elif venue in ['workshop', 'demonstration']:
+            venue_score = WKSPDEMO
+        else:
+            venue_score = score[type]
+
+        return 1 / numAuthor * venue_score
+
+    df['score'] = df.apply(lambda x: get_score(x.venue, x.type, x.numAuthor), axis=1)
+
+    return df
+
+# stacked bar chart
+def score_timeline(df, selected):
+
+    df = df[df['university'].isin(selected)]
+    df = df.groupby(['authorID', 'university', 'year'])['score'].sum().reset_index()
+    df['90th'] = df.groupby(['university', 'year'])['score'].transform(lambda x: x.quantile(.9))
+    df['top10'] = df['score'] >= df['90th']
+    df['s_score'] = df.groupby(['university', 'year', 'top10'])['score'].transform('sum')
+    df = df[['university', 'year', 'top10', 's_score']].drop_duplicates()
+
+
+    def getColumnDataSource(df, selected):
+
+        years = list(range(2010, 2020))
+        factors = [(x, y) for x in years for y in selected]
+
+
+
+        others = df[df['top10'] == False].set_index(['year', 'university']).to_dict()['s_score']
+        top10 = df[df['top10']==True].set_index(['year', 'university']).to_dict()['s_score']
+        labels = selected * len(years)
+
+
+        source = ColumnDataSource(data=dict(
+            x=factors,
+            others=[others[f] if f in others.keys() else 0 for f in factors],
+            top10=[top10[f] if f in top10.keys() else 0 for f in factors],
+            labels=labels,
+        ))
+
+        return source,factors
+
+    def make_plot(source, factors, selected):
+
+        categories = ['others', 'top10']
+
+        factors = [tuple(str(x) for x in tup) for tup in factors]
+
+        TOOLS = "pan,wheel_zoom,reset,hover,save"
+
+        p = figure(x_range=FactorRange(*factors),
+                   plot_height=400, plot_width=800,
+                   title="University Score Timeline",
+                   tools=TOOLS,
+                   tooltips = [("University", "@labels"), ("Top10% Score", "@top10{0,0.00}"), ("Others Score", "@others{0,0.00}")]
+                   )
+
+        v = p.vbar_stack(categories, x='x', width=0.9,
+                     source=source,
+                     line_color=None,
+                     fill_alpha=[1, 0.6],
+                     fill_color=factor_cmap('x', palette=Set2_5, factors=selected, start=1, end=2))
+
+        p.y_range.start = 0
+        p.x_range.range_padding = 0.1
+        p.xaxis.major_label_text_font_size = '0pt'
+        p.xgrid.grid_line_color = None
+
+        p.hover.point_policy = "follow_mouse"
+
+        legend1 = Legend(items=[
+            ("by top10%", [v[1]]),
+            ("others", [v[0]]),
+        ], location='center',
+        label_width=30
+        )
+
+        p.add_layout(legend1, 'right')
+
+        return p
+
+
+    source,factors = getColumnDataSource(df, selected)
+
+
+    return make_plot(source, factors, selected)
+
+
+def numpub(df, selected):
+
+    df = df[df['university'].isin(selected)]
+    df = df.groupby(['authorID', 'university']).size().reset_index(name='pubCounts')
+    df['numPub'] = df.pubCounts.apply(lambda x: '1' if x==1 else '2' if x==2 else '3 or more')
+    df = df.groupby(['university', 'numPub']).size().reset_index(name='count')
+
+
+    def getColumnDataSource(df, selected):
+
+        one = df[df['numPub'] == '1'].set_index('university').to_dict()['count']
+        two = df[df['numPub'] == '2'].set_index('university').to_dict()['count']
+        three = df[df['numPub'] == '3 or more'].set_index('university').to_dict()['count']
+
+        source = {'university': selected,
+                'one': [one[s] if s in one.keys() else 0 for s in selected],
+                'two': [two[s] if s in two.keys() else 0 for s in selected],
+                'three': [three[s] if s in three.keys() else 0 for s in selected]}
+
+
+        return source
+
+    def make_plot(source, selected):
+
+        num = ['one', 'two', 'three']
+        TOOLS = "pan,wheel_zoom,reset,hover,save"
+
+        p = figure(x_range=selected,
+                   plot_height=400, plot_width=800,
+                   title="Number of Authors in Various Publication Amount",
+                   tools=TOOLS,
+                   tooltips=[("University", "@university"), ("one", "@one"),("two", "@two"),("three or more", "@three")]
+                   )
+
+        v = p.vbar_stack(num, x='university', width=0.6,
+                     source=source,
+                     line_color=None,
+                     fill_alpha=[1, 0.7, 0.4],
+                     fill_color=factor_cmap('university', palette=Set2_5, factors=selected)
+                     )
+
+        p.y_range.start = 0
+        p.x_range.range_padding = 0.1
+        p.xaxis.major_label_text_font_size = '0pt'
+        p.xgrid.grid_line_color = None
+        p.yaxis.axis_label = "Number of Authors"
+        p.yaxis.axis_label_text_font_style = "normal"
+        p.xaxis.axis_label = "Universities"
+        p.xaxis.axis_label_text_font_style = "normal"
+        p.axis.minor_tick_line_color = None
+        p.outline_line_color = None
+
+
+        p.hover.point_policy = "follow_mouse"
+
+        legend1 = Legend(title="# of pub per authors",
+            items=[
+            ("one", [v[1]]),
+            ("two", [v[0]]),
+            ("three or more", [v[0]]),
+        ], location='center',
+            label_width=30
+        )
+
+        p.add_layout(legend1, 'right')
+
+        return p
+
+
+    source = getColumnDataSource(df,selected)
+
+
+    return make_plot(source,selected)
+
+
+# avg or median
+def ratio_of_contribution(df, selected):
+
+    df = df.groupby(['university', 'pubID', 'year', 'numAuthor']).size().reset_index(name='AuthorCount')
+    df['contribution'] = df.apply(lambda x: x.AuthorCount / x.numAuthor, axis=1)
+    df = df.groupby(['university','year']).agg({'pubID': 'size', 'contribution': 'mean'}).\
+        rename(columns={'pubID': 'count', 'contribution': 'mean_contribution'}).reset_index()
+
+
+
+    def getColumnDataSource(df, selected):
+
+        df = df[df['university'].isin(selected)]
+
+        years = list(range(2010, 2020))
+
+        x = [years] * len(selected)
+
+        dict_data = df.set_index(['university','year']).to_dict()
+
+        y = []
+        for uni in selected:
+            mean_contribution_value = []
+            for year in years:
+                try:
+                    mean_contribution_value.append(dict_data['mean_contribution'][(uni, year)])
+                except:
+                    mean_contribution_value.append(0)
+
+
+            y.append(mean_contribution_value)
+
+
+        source = ColumnDataSource(data=dict(
+            xs=x,
+            ys=y,
+            university=selected,
+            color=Set2_5[:len(selected)],
+        ))
+
+
+        return source
+
+    def make_plot(source, selected):
+
+
+        TOOLS = "pan,wheel_zoom,reset,hover,save"
+
+        p = figure(plot_height=400, plot_width=800,
+                   title="Average Publication Percent Contribution Overtime",
+                   tools=TOOLS,
+                   tooltips=[("University", "@university"), ("year", "$data_x"), ("score", "$data_y")]
+                   )
+
+        p.multi_line(xs='xs', ys='ys', source=source, line_color='color')
+
+
+        p.xaxis[0].ticker.desired_num_ticks = 10
+        p.xaxis.axis_label = "Years"
+        p.xaxis.axis_label_text_font_style = "normal"
+        p.yaxis.axis_label = "Contribution Percentage"
+        p.yaxis.axis_label_text_font_style = "normal"
+        p.xgrid.grid_line_color = None
+
+        return p
+
+    source = getColumnDataSource(df, selected)
+
+
+    return make_plot(source,selected)
+
+
+def avg_author_num(df, selected):
+
+    df = df[['university','pubID','numAuthor','year']].drop_duplicates()
+    df = df.groupby(['university','year'])['numAuthor'].mean().reset_index()
+
+    def getColumnDataSource(df, selected):
+
+        df = df[df['university'].isin(selected)]
+
+        years = list(range(2010, 2020))
+
+        x = [years] * len(selected)
+
+        dict_data = df.set_index(['university','year']).to_dict()
+
+        y = []
+        for uni in selected:
+            mean_numAuthor = []
+            for year in years:
+                try:
+                    mean_numAuthor.append(dict_data['numAuthor'][(uni, year)])
+                except:
+                    mean_numAuthor.append(0)
+
+
+            y.append(mean_numAuthor)
+
+
+        source = ColumnDataSource(data=dict(
+            xs=x,
+            ys=y,
+            university=selected,
+            color=Set2_5[:len(selected)],
+        ))
+
+
+        return source
+
+    def make_plot(source, selected):
+
+        TOOLS = "pan,wheel_zoom,reset,hover,save"
+
+        p = figure(plot_height=400, plot_width=800,
+                   title="Average Number of Authors per Publication Overtime",
+                   tools=TOOLS,
+                   tooltips=[("University", "@university"), ("year", "$data_x"), ("score", "$data_y")]
+                   )
+
+        p.multi_line(xs='xs', ys='ys', source=source, line_color='color')
+
+
+        p.xaxis[0].ticker.desired_num_ticks = 10
+        p.xaxis.axis_label = "Years"
+        p.xaxis.axis_label_text_font_style = "normal"
+        p.yaxis.axis_label = "Avg. Number of Authors"
+        p.yaxis.axis_label_text_font_style = "normal"
+        p.xgrid.grid_line_color = None
+
+        return p
+
+    source = getColumnDataSource(df, selected)
+
+
+    return make_plot(source,selected)
+
+def selected_color_legend(selected):
+
+    empty = False
+    if selected == []:
+        empty = True
+        selected = ['']
+
+    height = 20 + len(selected) * 40
+
+    p = figure(toolbar_location=None, plot_width=400, plot_height=height)
+
+    if empty:
+        p.square(x=0, y=0, size=0, color="white", legend_label='Please choose up to 5 universities')
+    else:
+        for i in range(len(selected)):
+            p.square(x=0, y=0, size = 0, color=Set2_5[i], legend_label=selected[i])
+
+    p.xgrid.grid_line_color = None
+    p.ygrid.grid_line_color = None
+    p.axis.visible = False
+
+    p.legend.location = "center"
+
+    return p
 
 
 if __name__ == '__main__':
