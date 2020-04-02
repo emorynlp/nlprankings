@@ -25,10 +25,10 @@ def university_pub(university_domain_json, country):
                     for key in c.keys():
                         if key in c_domains:
                             if key in uni.keys():
-                                # (pub_id, contribution_percentage)
-                                uni[key].append((record['id'], c[key]/len(record['authors'])))
+                                # (pub_id, contribution_percentage, num_authors)
+                                uni[key].append((record['id'], c[key]/len(record['authors']), c[key]))
                             else:
-                                uni[key] = [(record['id'], c[key]/len(record['authors']))]
+                                uni[key] = [(record['id'], c[key]/len(record['authors']), c[key])]
 
 
 
