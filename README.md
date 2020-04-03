@@ -15,6 +15,7 @@ Currently, the site gives rankings for only universities in the United States, b
 ## References
 
 * [Ranking U.S. Universities in NLP — Part 1: Data Collection](https://medium.com/@chloelee_62702/ranking-u-s-universities-in-nlp-part-1-data-collection-e30bcbe4c9a5)
+* [Ranking U.S. Universities for NLP Research Part 2: Scoring Mechanism](https://medium.com/emorynlp/ranking-u-s-universities-for-nlp-research-part-2-scoring-mechanism-ac4341ab6dd)
 
 
 ## How to Contribute
